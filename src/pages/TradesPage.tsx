@@ -4,7 +4,7 @@ import { PageHero } from "../components/PageHero";
 import { PlaceholderPanel } from "../components/PlaceholderPanel";
 import { PreviewTable } from "../components/PreviewTable";
 import { SearchableTagPopover } from "../components/SearchableTagPopover";
-import { TradeChart } from "../components/TradeChart";
+import { TradeChart, type TradeChartLayerVisibility } from "../components/TradeChart";
 import { WorkspaceIcon } from "../components/WorkspaceIcon";
 import { tradeTagFieldLabels } from "../lib/trades/tradeTagCatalog";
 import type { ChartInterval, HistoricalBarSet } from "../types/chart";
@@ -23,6 +23,7 @@ interface TradesPageProps {
   externalStatusFilter?: string;
   externalGameFilter?: string;
   externalExecutionFilter?: string;
+  externalSelectedTradeId?: string;
   reviews: TradeReviewRecord[];
   historicalBarSets: HistoricalBarSet[];
   reviewChartInterval: ChartInterval;
@@ -31,7 +32,7 @@ interface TradesPageProps {
   busy: boolean;
   onUpdateReview: (
     tradeId: string,
-    updates: Partial<Pick<TradeReviewRecord, "notes" | "chartContext" | "screenshotUrl">>
+    updates: Partial<Pick<TradeReviewRecord, "notes" | "chartContext" | "screenshotUrl" | "drawings">>
   ) => void;
   onImportHistoricalBars: (trade: GroupedTrade, file: File) => Promise<void>;
   onFetchHistoricalBars: (trade: GroupedTrade) => Promise<void>;
@@ -43,21 +44,6 @@ interface TradesPageProps {
   onBulkUpdateTradeTags: (tradeIds: string[], field: EditableTradeTagField, value: string | null) => void;
   onCreateTradeTagOption: (field: EditableTradeTagField, value: string) => void;
 }
-
-const readFileAsDataUrl = (file: File): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        resolve(reader.result);
-        return;
-      }
-
-      reject(new Error("The screenshot file could not be read."));
-    };
-    reader.onerror = () => reject(reader.error ?? new Error("The screenshot file could not be read."));
-    reader.readAsDataURL(file);
-  });
 
 const formatActiveDateRange = (startValue: string, endValue: string): string => {
   if (startValue && endValue) {
@@ -73,6 +59,19 @@ const formatActiveDateRange = (startValue: string, endValue: string): string => 
 
 const intradayChartIntervals: ChartInterval[] = ["1m", "5m", "15m", "1h"];
 const secondaryChartIntervals: ChartInterval[] = ["1m", "5m", "15m", "1h", "1D", "1W"];
+const defaultChartLayerVisibility: TradeChartLayerVisibility = {
+  entry: true,
+  addToWinner: true,
+  averageDown: true,
+  exit: true,
+  ema9: true,
+  ema12: true,
+  open: true,
+  hod: true,
+  lod: true,
+  vwap: true,
+  volume: true
+};
 
 export const TradesPage = ({
   fileName,
@@ -85,6 +84,7 @@ export const TradesPage = ({
   externalStatusFilter = "all",
   externalGameFilter = "all",
   externalExecutionFilter = "all",
+  externalSelectedTradeId = "",
   reviews,
   historicalBarSets,
   reviewChartInterval,
@@ -111,12 +111,12 @@ export const TradesPage = ({
   const [selectedStatusFilter, setSelectedStatusFilter] = useState(externalStatusFilter);
   const [selectedGameFilter, setSelectedGameFilter] = useState(externalGameFilter);
   const [selectedExecutionFilter, setSelectedExecutionFilter] = useState(externalExecutionFilter);
+  const [chartLayerVisibility, setChartLayerVisibility] = useState<TradeChartLayerVisibility>(defaultChartLayerVisibility);
   const [showUntaggedPlaybookOnly, setShowUntaggedPlaybookOnly] = useState(false);
   const [showUntaggedMistakesOnly, setShowUntaggedMistakesOnly] = useState(false);
   const [bulkField, setBulkField] = useState<EditableTradeTagField>("playbook");
   const [bulkEditorAnchor, setBulkEditorAnchor] = useState<DOMRect | null>(null);
   const barsInputRef = useRef<HTMLInputElement | null>(null);
-  const screenshotInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setSelectedTradeDateFilterStart(externalTradeDateFilterStart);
@@ -145,6 +145,12 @@ export const TradesPage = ({
   useEffect(() => {
     setSelectedExecutionFilter(externalExecutionFilter);
   }, [externalExecutionFilter]);
+
+  useEffect(() => {
+    if (externalSelectedTradeId) {
+      setSelectedTradeId(externalSelectedTradeId);
+    }
+  }, [externalSelectedTradeId]);
 
   const tradeDateOptions = useMemo(
     () => Array.from(new Set(databaseTrades.map((trade) => trade.tradeDate))).sort((left, right) => right.localeCompare(left)),
@@ -299,11 +305,6 @@ export const TradesPage = ({
       ) ?? null
     );
   }, [historicalBarSets, selectedTrade]);
-
-  const canPreviewScreenshot = Boolean(
-    selectedReview?.screenshotUrl &&
-      /(\.png|\.jpg|\.jpeg|\.gif|\.webp|^https?:\/\/|^data:image\/)/i.test(selectedReview.screenshotUrl)
-  );
 
   const workspaceHint =
     trades.length > 0
@@ -472,7 +473,7 @@ export const TradesPage = ({
         </div>
       </section>
       <section className="trades-review-grid trades-review-grid-advanced">
-        <article className="placeholder-panel chart-panel">
+        <article className="placeholder-panel chart-panel chart-panel-wide">
           <div className="chart-panel-header">
             <div className="panel-header">
               <WorkspaceIcon icon="trades" alt="Chart area icon" className="panel-header-icon" />
@@ -559,48 +560,91 @@ export const TradesPage = ({
                   <span>{selectedTrade.exitPrice.toFixed(4)}</span>
                 </div>
               </div>
-              <div className="chart-meta">
-                {selectedBarSet ? (
-                  <>
-                    <span>{selectedBarSet.bars.length} bars loaded</span>
-                    <span>{selectedBarSet.sourceFileName}</span>
-                    <span>Updated {new Date(selectedBarSet.updatedAt).toLocaleString()}</span>
-                  </>
+              <div className="chart-toolbar-stack">
+                <div className="chart-toolbar-row">
+                  <div className="chart-toolbar-group chart-toolbar-group-meta">
+                    <span className="chart-toolbar-label">Data</span>
+                    <div className="chart-toolbar-chip-row">
+                      {selectedBarSet ? (
+                        <>
+                          <span className="chart-meta-badge">{selectedBarSet.bars.length} bars loaded</span>
+                          <span className="chart-meta-badge">{selectedBarSet.sourceFileName}</span>
+                          <span className="chart-meta-badge">
+                            Updated {new Date(selectedBarSet.updatedAt).toLocaleString()}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="chart-meta-badge">No bar data loaded yet</span>
+                          <span className="chart-meta-badge">{selectedTrade.symbol}</span>
+                          <span className="chart-meta-badge">{selectedTrade.tradeDate}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="trade-chart-grid">
+                <div className="trade-chart-pane trade-chart-pane-main">
+                  <div className="trade-chart-pane-header">
+                    <div>
+                      <span className="trade-chart-pane-eyebrow">Trade Review</span>
+                      <strong>Main Chart</strong>
+                    </div>
+                    <span>{selectedTrade.symbol} · {reviewChartInterval}</span>
+                  </div>
+                  <TradeChart
+                    bars={selectedBarSet?.bars ?? []}
+                    trade={selectedTrade}
+                    interval={reviewChartInterval}
+                    layerVisibility={chartLayerVisibility}
+                    onToggleLayerVisibility={(layer) =>
+                      setChartLayerVisibility((current) => ({
+                        ...current,
+                        [layer]: !current[layer]
+                      }))
+                    }
+                    drawings={selectedReview?.drawings ?? []}
+                    onDrawingsChange={(drawings) => selectedTrade && onUpdateReview(selectedTrade.id, { drawings })}
+                    showDrawingTools
+                    availableIntervals={intradayChartIntervals}
+                    onChangeInterval={onChangeReviewChartInterval}
+                  />
+                </div>
+                {selectedTrade && selectedBarSet ? (
+                  <div className="trade-chart-pane trade-chart-pane-secondary day-view-chart-card">
+                    <div className="trade-chart-pane-header">
+                      <div>
+                        <span className="trade-chart-pane-eyebrow">Context</span>
+                        <strong>Day View</strong>
+                      </div>
+                      <span>{selectedTrade.symbol} · {dayChartInterval}</span>
+                    </div>
+                    <TradeChart
+                      bars={
+                        dayChartInterval === "1D" || dayChartInterval === "1W"
+                          ? (selectedBarSet.dailyBars ?? selectedBarSet.bars)
+                          : selectedBarSet.bars
+                      }
+                      trade={selectedTrade}
+                      height={500}
+                      showMarkers={false}
+                      showEma={false}
+                      focusMode="day"
+                      interval={dayChartInterval}
+                      availableIntervals={secondaryChartIntervals}
+                      onChangeInterval={onChangeDayChartInterval}
+                    />
+                  </div>
                 ) : (
-                  <>
-                    <span>No bar data loaded yet</span>
-                    <span>{selectedTrade.symbol}</span>
-                    <span>{selectedTrade.tradeDate}</span>
-                  </>
+                  <div className="trade-chart-pane trade-chart-pane-secondary day-view-chart-card">
+                    <PlaceholderPanel
+                      title="No Day View Loaded"
+                      description="Choose a trade with historical bars to inspect the full session context."
+                    />
+                  </div>
                 )}
               </div>
-              <div className="chart-marker-legend">
-                <span><i className="legend-swatch legend-entry" />Entry</span>
-                <span><i className="legend-swatch legend-add" />Add to winner</span>
-                <span><i className="legend-swatch legend-average" />Average down</span>
-                <span><i className="legend-swatch legend-exit" />Exit</span>
-                <span><i className="legend-swatch legend-ema" />EMA 9</span>
-                <span><i className="legend-swatch legend-ema-slow" />EMA 12</span>
-                <span><i className="legend-swatch legend-vwap" />VWAP</span>
-                <span><i className="legend-swatch legend-volume" />Volume</span>
-              </div>
-              <div className="chart-interval-toolbar" aria-label="Review chart timeframe">
-                {intradayChartIntervals.map((intervalOption) => (
-                  <button
-                    key={intervalOption}
-                    type="button"
-                    className={`chart-interval-chip${reviewChartInterval === intervalOption ? " is-active" : ""}`}
-                    onClick={() => onChangeReviewChartInterval(intervalOption)}
-                  >
-                    {intervalOption}
-                  </button>
-                ))}
-              </div>
-              <TradeChart
-                bars={selectedBarSet?.bars ?? []}
-                trade={selectedTrade}
-                interval={reviewChartInterval}
-              />
               {!selectedBarSet ? (
                 <div className="empty-chart-state">
                   <strong>No historical bars loaded yet.</strong>
@@ -613,163 +657,6 @@ export const TradesPage = ({
               ) : null}
             </>
           ) : null}
-        </article>
-        <article className="placeholder-panel trade-review-dock">
-          <div className="panel-header">
-            <WorkspaceIcon icon="camera" alt="" className="panel-header-icon visually-hidden" />
-            <WorkspaceIcon icon="journal" alt="Trade review icon" className="panel-header-icon" />
-            <h2>Trade Review</h2>
-          </div>
-          {selectedTrade ? (
-            <div className="trade-review-form">
-              <input
-                ref={screenshotInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
-                className="drop-zone-input"
-                onChange={(event) => {
-                  const file = event.target.files?.item(0);
-                  if (!file || !selectedTrade) {
-                    event.currentTarget.value = "";
-                    return;
-                  }
-
-                  void readFileAsDataUrl(file)
-                    .then((dataUrl) => {
-                      onUpdateReview(selectedTrade.id, { screenshotUrl: dataUrl });
-                    })
-                    .catch(() => undefined);
-
-                  event.currentTarget.value = "";
-                }}
-              />
-              <label className="review-field">
-                <span>Chart Focus</span>
-                <input
-                  value={selectedReview?.chartContext ?? ""}
-                  onChange={(event) =>
-                    onUpdateReview(selectedTrade.id, { chartContext: event.target.value })
-                  }
-                  placeholder="Example: Opening drive reclaim over VWAP"
-                />
-              </label>
-              <label className="review-field">
-                <span>Screenshot URL</span>
-                <input
-                  value={selectedReview?.screenshotUrl ?? ""}
-                  onChange={(event) =>
-                    onUpdateReview(selectedTrade.id, { screenshotUrl: event.target.value })
-                  }
-                  placeholder="Paste a chart or screenshot URL"
-                />
-              </label>
-              <label className="review-field">
-                <span>Review Notes</span>
-                <textarea
-                  value={selectedReview?.notes ?? ""}
-                  onChange={(event) =>
-                    onUpdateReview(selectedTrade.id, { notes: event.target.value })
-                  }
-                  placeholder="Capture execution notes, emotions, and what to improve next time."
-                />
-              </label>
-              <div className="review-media-actions">
-                <button
-                  type="button"
-                  className="mini-action"
-                  disabled={!selectedTrade || busy}
-                  onClick={() => screenshotInputRef.current?.click()}
-                >
-                  <WorkspaceIcon icon="camera" alt="Upload screenshot icon" className="mini-action-icon" />
-                  Upload Screenshot
-                </button>
-                <button
-                  type="button"
-                  className="mini-action"
-                  disabled={!selectedTrade || !selectedReview?.screenshotUrl}
-                  onClick={() => selectedTrade && onUpdateReview(selectedTrade.id, { screenshotUrl: "" })}
-                >
-                  <WorkspaceIcon icon="data" alt="Clear screenshot icon" className="mini-action-icon" />
-                  Clear Screenshot
-                </button>
-              </div>
-              {selectedReview ? (
-                <div className="review-meta">
-                  <span>Last updated {new Date(selectedReview.updatedAt).toLocaleString()}</span>
-                </div>
-              ) : null}
-              {selectedReview?.screenshotUrl ? (
-                <div className="screenshot-preview-card">
-                  <div className="panel-header">
-                    <WorkspaceIcon icon="camera" alt="Screenshot preview icon" className="panel-header-icon" />
-                    <h3>Screenshot Preview</h3>
-                  </div>
-                  {canPreviewScreenshot ? (
-                    <img
-                      className="screenshot-preview-image"
-                      src={selectedReview.screenshotUrl}
-                      alt={`${selectedTrade.symbol} trade screenshot`}
-                    />
-                  ) : (
-                    <div className="empty-inline-state">
-                      Preview is not available for this link, but the screenshot URL is still saved.
-                    </div>
-                  )}
-                  <a
-                    className="review-link"
-                    href={selectedReview.screenshotUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Open linked screenshot
-                  </a>
-                </div>
-              ) : (
-                <span className="empty-inline-state">No screenshot linked yet.</span>
-              )}
-              {selectedBarSet ? (
-                <div className="screenshot-preview-card day-view-chart-card">
-                  <div className="panel-header">
-                    <WorkspaceIcon icon="dashboard" alt="Day view chart icon" className="panel-header-icon" />
-                    <h3>Day View</h3>
-                  </div>
-                  <span className="empty-inline-state">
-                    Daily candles with VWAP and volume for {selectedTrade.symbol} on {selectedTrade.tradeDate}.
-                  </span>
-                  <div className="chart-interval-toolbar" aria-label="Day view timeframe">
-                    {secondaryChartIntervals.map((intervalOption) => (
-                      <button
-                        key={intervalOption}
-                        type="button"
-                        className={`chart-interval-chip${dayChartInterval === intervalOption ? " is-active" : ""}`}
-                        onClick={() => onChangeDayChartInterval(intervalOption)}
-                      >
-                        {intervalOption}
-                      </button>
-                    ))}
-                  </div>
-                  <TradeChart
-                    bars={
-                      dayChartInterval === "1D" || dayChartInterval === "1W"
-                        ? (selectedBarSet.dailyBars ?? selectedBarSet.bars)
-                        : selectedBarSet.bars
-                    }
-                    trade={selectedTrade}
-                    height={420}
-                    showMarkers={false}
-                    showEma={false}
-                    focusMode="day"
-                    interval={dayChartInterval}
-                  />
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <PlaceholderPanel
-              title="No Review Loaded"
-              description="Choose a trade to add notes, context, and screenshot links."
-            />
-          )}
         </article>
         <article className="placeholder-panel trade-inspector">
           <div className="panel-header">
@@ -850,6 +737,36 @@ export const TradesPage = ({
             <span className="empty-inline-state">
               {selectedTrade ? "No other trades from this symbol and date." : "Select a trade to compare nearby setups."}
             </span>
+          )}
+        </article>
+        <article className="placeholder-panel trade-review-dock trade-review-bottom">
+          <div className="panel-header">
+            <WorkspaceIcon icon="journal" alt="Trade review icon" className="panel-header-icon" />
+            <h2>Trade Review</h2>
+          </div>
+          {selectedTrade ? (
+            <div className="trade-review-form">
+              <label className="review-field">
+                <span>Review Notes</span>
+                <textarea
+                  value={selectedReview?.notes ?? ""}
+                  onChange={(event) =>
+                    onUpdateReview(selectedTrade.id, { notes: event.target.value })
+                  }
+                  placeholder="Capture execution notes, emotions, and what to improve next time."
+                />
+              </label>
+              {selectedReview ? (
+                <div className="review-meta">
+                  <span>Last updated {new Date(selectedReview.updatedAt).toLocaleString()}</span>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <PlaceholderPanel
+              title="No Review Loaded"
+              description="Choose a trade to add review notes."
+            />
           )}
         </article>
       </section>

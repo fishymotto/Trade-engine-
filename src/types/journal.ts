@@ -19,7 +19,13 @@ export interface JournalBlock {
 }
 
 export type JournalSectionField = "morningBlocks" | "closingBlocks" | "mppPlanBlocks" | "blocks";
-export type JournalContentField = "morningContent" | "closingContent" | "mppPlanContent" | "notesContent";
+export type JournalContentField =
+  | "closingChecklistContent"
+  | "morningChecklistContent"
+  | "morningContent"
+  | "closingContent"
+  | "mppPlanContent"
+  | "notesContent";
 
 export interface JournalPageRecord {
   id: string;
@@ -27,6 +33,9 @@ export interface JournalPageRecord {
   tradeDate: string;
   dayGrade: string;
   mpp: string;
+  screenshotUrls: string[];
+  closingChecklistContent: JSONContent;
+  morningChecklistContent: JSONContent;
   morningContent: JSONContent;
   closingContent: JSONContent;
   mppPlanContent: JSONContent;

@@ -443,6 +443,24 @@ export const JournalRichTextEditor = ({
     };
   }, [editor]);
 
+  useEffect(() => {
+    setPendingContent(content);
+
+    if (!editor) {
+      return;
+    }
+
+    const currentSerialized = JSON.stringify(editor.getJSON());
+    const nextSerialized = JSON.stringify(content);
+
+    if (currentSerialized === nextSerialized) {
+      return;
+    }
+
+    editor.commands.setContent(content, { emitUpdate: false });
+    setSaveState("saved");
+  }, [content, editor]);
+
   if (!editor) {
     return null;
   }

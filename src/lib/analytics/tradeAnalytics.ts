@@ -2,6 +2,7 @@ import type { GroupedTrade } from "../../types/trade";
 
 export interface TradeSummary {
   totalTrades: number;
+  totalSharesTraded: number;
   totalNetPnl: number;
   totalFees: number;
   winCount: number;
@@ -15,6 +16,7 @@ export interface TradeSummary {
 export interface DatabaseStats {
   totalTrades: number;
   totalExecutions: number;
+  totalSharesTraded: number;
   sessions: number;
   symbols: number;
 }
@@ -82,6 +84,15 @@ const filterTradesBetween = (
     return tradeDate >= start && tradeDate <= end;
   });
 
+const getTotalSharesTraded = (trades: GroupedTrade[]): number =>
+  trades.reduce(
+    (sum, trade) =>
+      sum +
+      trade.openingExecutions.reduce((pieceSum, piece) => pieceSum + Math.abs(piece.quantity), 0) +
+      trade.closingExecutions.reduce((pieceSum, piece) => pieceSum + Math.abs(piece.quantity), 0),
+    0
+  );
+
 const summarizeGroup = (label: string, trades: GroupedTrade[]): PerformanceRow => {
   const tradeCount = trades.length;
   const winCount = trades.filter((trade) => trade.status === "Win").length;
@@ -100,6 +111,7 @@ const summarizeGroup = (label: string, trades: GroupedTrade[]): PerformanceRow =
 
 export const getTradeSummary = (trades: GroupedTrade[]): TradeSummary => {
   const totalTrades = trades.length;
+  const totalSharesTraded = getTotalSharesTraded(trades);
   const totalNetPnl = trades.reduce((sum, trade) => sum + trade.netPnlUsd, 0);
   const totalFees = trades.reduce((sum, trade) => sum + trade.feesUsd, 0);
   const winCount = trades.filter((trade) => trade.status === "Win").length;
@@ -115,6 +127,7 @@ export const getTradeSummary = (trades: GroupedTrade[]): TradeSummary => {
 
   return {
     totalTrades,
+    totalSharesTraded,
     totalNetPnl: round(totalNetPnl),
     totalFees: round(totalFees),
     winCount,
@@ -154,6 +167,7 @@ export const getDatabaseStats = (trades: GroupedTrade[]): DatabaseStats => ({
     (sum, trade) => sum + trade.openingExecutions.length + trade.closingExecutions.length,
     0
   ),
+  totalSharesTraded: getTotalSharesTraded(trades),
   sessions: new Set(trades.map((trade) => trade.tradeDate)).size,
   symbols: new Set(trades.map((trade) => trade.symbol)).size
 });

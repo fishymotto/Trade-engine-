@@ -16,6 +16,64 @@ const createDoc = (content: JSONContent[]): JSONContent => ({
 
 export const createEmptyJournalDoc = (): JSONContent => createDoc([createParagraphNode("")]);
 
+export const createMorningChecklistDoc = (): JSONContent =>
+  createDoc([
+    {
+      type: "taskList",
+      content: [
+        {
+          type: "taskItem",
+          attrs: { checked: false },
+          content: [createParagraphNode("Levels marked out")]
+        },
+        {
+          type: "taskItem",
+          attrs: { checked: false },
+          content: [createParagraphNode("Catalysts reviewed")]
+        },
+        {
+          type: "taskItem",
+          attrs: { checked: false },
+          content: [createParagraphNode("Primary watchlist confirmed")]
+        },
+        {
+          type: "taskItem",
+          attrs: { checked: false },
+          content: [createParagraphNode("Risk limits reviewed")]
+        }
+      ]
+    }
+  ]);
+
+export const createClosingChecklistDoc = (): JSONContent =>
+  createDoc([
+    {
+      type: "taskList",
+      content: [
+        {
+          type: "taskItem",
+          attrs: { checked: false },
+          content: [createParagraphNode("Fill out tickers traded")]
+        },
+        {
+          type: "taskItem",
+          attrs: { checked: false },
+          content: [createParagraphNode("Add charts and screenshots")]
+        },
+        {
+          type: "taskItem",
+          attrs: { checked: false },
+          content: [createParagraphNode("Review mistakes and lessons")]
+        },
+        {
+          type: "taskItem",
+          attrs: { checked: false },
+          content: [createParagraphNode("Set tomorrow focus")]
+        }
+      ]
+    }
+  ]);
+
 export const hasJournalDocContent = (content?: JSONContent | null): boolean => {
   if (!content || content.type !== "doc" || !Array.isArray(content.content)) {
     return false;

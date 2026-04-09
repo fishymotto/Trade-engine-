@@ -34,6 +34,7 @@ interface DashboardPageProps {
     game: string;
     execution: string;
   }) => void;
+  onSelectTrade?: (tradeId: string, tradeDate: string) => void;
 }
 
 const formatMonthLabel = (monthKey: string): string => {
@@ -154,6 +155,10 @@ const DashboardSummaryCard = ({
         <small>{summary.winCount}W - {summary.lossCount}L</small>
       </div>
       <div>
+        <span>Shares Traded</span>
+        <strong>{summary.totalSharesTraded.toLocaleString()}</strong>
+      </div>
+      <div>
         <span>Avg Trade</span>
         <strong>${summary.avgTrade.toFixed(2)}</strong>
       </div>
@@ -228,6 +233,22 @@ const getDashboardRangeLabel = (startValue: string, endValue: string): string =>
   return "All saved sessions";
 };
 
+const getOverallPerformanceBadge = (startValue: string, endValue: string): string => {
+  if (startValue && endValue) {
+    if (startValue === endValue) {
+      return startValue;
+    }
+
+    return `${startValue} to ${endValue}`;
+  }
+
+  if (startValue || endValue) {
+    return startValue || endValue;
+  }
+
+  return "All Time";
+};
+
 export const DashboardPage = ({
   trades,
   externalTradeDateFilterStart = "",
@@ -237,7 +258,8 @@ export const DashboardPage = ({
   externalStatusFilter = "all",
   externalGameFilter = "all",
   externalExecutionFilter = "all",
-  onFiltersChange
+  onFiltersChange,
+  onSelectTrade
 }: DashboardPageProps) => {
   const today = new Date();
   const [selectedTradeDateFilterStart, setSelectedTradeDateFilterStart] = useState(externalTradeDateFilterStart);
@@ -392,6 +414,44 @@ export const DashboardPage = ({
     ]
   );
 
+  const attributeFilteredTrades = useMemo(
+    () =>
+      trades.filter((trade) => {
+        if (selectedPlaybookFilter !== "all" && (trade.setups[0] ?? "") !== selectedPlaybookFilter) {
+          return false;
+        }
+
+        if (selectedSymbolFilter !== "all" && trade.symbol !== selectedSymbolFilter) {
+          return false;
+        }
+
+        if (selectedStatusFilter !== "all" && trade.status !== selectedStatusFilter) {
+          return false;
+        }
+
+        if (selectedGameFilter !== "all" && trade.game !== selectedGameFilter) {
+          return false;
+        }
+
+        if (
+          selectedExecutionFilter !== "all" &&
+          !trade.execution.includes(selectedExecutionFilter)
+        ) {
+          return false;
+        }
+
+        return true;
+      }),
+    [
+      selectedExecutionFilter,
+      selectedGameFilter,
+      selectedPlaybookFilter,
+      selectedStatusFilter,
+      selectedSymbolFilter,
+      trades
+    ]
+  );
+
   const overallSummary = getTradeSummary(filteredTrades);
   const databaseStats = getDatabaseStats(filteredTrades);
   const intradayMetrics = getIntradayMetrics(filteredTrades);
@@ -400,17 +460,17 @@ export const DashboardPage = ({
   const calendarSummary = getCalendarSummary(filteredTrades);
   const maxHourlyMagnitude = Math.max(...hourlyBreakdown.map((row) => Math.abs(row.netPnl)), 1);
 
-  const sortedTradeDates = Array.from(new Set(filteredTrades.map((trade) => trade.tradeDate))).sort();
+  const sortedTradeDates = Array.from(new Set(attributeFilteredTrades.map((trade) => trade.tradeDate))).sort();
   const recentTradeDate = sortedTradeDates[sortedTradeDates.length - 1] ?? "";
   const recentSessionTrades = recentTradeDate
-    ? filteredTrades.filter((trade) => trade.tradeDate === recentTradeDate)
+    ? attributeFilteredTrades.filter((trade) => trade.tradeDate === recentTradeDate)
     : [];
 
-  const currentWeekTrades = filterTradesBetween(filteredTrades, getStartOfWeek(today), getEndOfWeek(today));
+  const currentWeekTrades = filterTradesBetween(attributeFilteredTrades, getStartOfWeek(today), getEndOfWeek(today));
   const lastWeekEnd = new Date(getStartOfWeek(today));
   lastWeekEnd.setMilliseconds(-1);
-  const lastWeekTrades = filterTradesBetween(filteredTrades, getStartOfWeek(lastWeekEnd), getEndOfWeek(lastWeekEnd));
-  const currentMonthTrades = filteredTrades.filter((trade) => trade.tradeDate.startsWith(getTodayMonthKey()));
+  const lastWeekTrades = filterTradesBetween(attributeFilteredTrades, getStartOfWeek(lastWeekEnd), getEndOfWeek(lastWeekEnd));
+  const currentMonthTrades = attributeFilteredTrades.filter((trade) => trade.tradeDate.startsWith(getTodayMonthKey()));
 
   const recentSessionSummary = getTradeSummary(recentSessionTrades);
   const currentWeekSummary = getTradeSummary(currentWeekTrades);
@@ -754,7 +814,9 @@ export const DashboardPage = ({
           <article className="placeholder-panel analytics-panel dashboard-stat-panel">
             <div className="dashboard-summary-header">
               <h2>Overall Performance</h2>
-              <span className="dashboard-summary-badge">All Time</span>
+              <span className="dashboard-summary-badge">
+                {getOverallPerformanceBadge(selectedTradeDateFilterStart, selectedTradeDateFilterEnd)}
+              </span>
             </div>
             <div className="dashboard-line-stat-list">
               <div><span>Net P&L</span><strong>${overallSummary.totalNetPnl.toFixed(2)}</strong></div>
@@ -771,6 +833,7 @@ export const DashboardPage = ({
             <div className="dashboard-line-stat-list">
               <div><span>Total Trades</span><strong>{databaseStats.totalTrades}</strong></div>
               <div><span>Executions</span><strong>{databaseStats.totalExecutions}</strong></div>
+              <div><span>Shares Traded</span><strong>{databaseStats.totalSharesTraded.toLocaleString()}</strong></div>
               <div><span>Sessions</span><strong>{databaseStats.sessions}</strong></div>
               <div><span>Symbols</span><strong>{databaseStats.symbols}</strong></div>
             </div>
@@ -862,39 +925,28 @@ export const DashboardPage = ({
           </div>
           {selectedDaySummary ? (
             <>
-              <div className="session-detail-stats">
-                <div>
-                  <strong>Net P&L</strong>
-                  <span>{selectedDaySummary.netPnl >= 0 ? "+" : ""}${selectedDaySummary.netPnl.toFixed(2)}</span>
-                </div>
-                <div>
-                  <strong>Trades</strong>
-                  <span>{selectedDaySummary.trades}</span>
-                </div>
-                <div>
-                  <strong>Win Rate</strong>
-                  <span>{selectedDaySummary.winRate.toFixed(1)}%</span>
-                </div>
-                <div>
-                  <strong>Fees</strong>
-                  <span>${selectedDayTradeSummary.totalFees.toFixed(2)}</span>
-                </div>
-                <div>
-                  <strong>Avg Trade</strong>
-                  <span>{formatSignedMoney(selectedDayTradeSummary.avgTrade)}</span>
-                </div>
-                <div>
-                  <strong>Profit Factor</strong>
-                  <span>{selectedDayTradeSummary.profitFactor.toFixed(2)}</span>
-                </div>
-              </div>
               <div className="selected-session-list">
                 {selectedDayTrades.map((trade) => (
-                  <div key={trade.id} className="selected-session-item">
+                  <button
+                    key={trade.id}
+                    type="button"
+                    className={`selected-session-item selected-session-item-button ${
+                      trade.status === "Win"
+                        ? "selected-session-item-positive"
+                        : "selected-session-item-negative"
+                    }`}
+                    onClick={() => onSelectTrade?.(trade.id, trade.tradeDate)}
+                  >
                     <strong>{trade.name}</strong>
                     <span>{trade.symbol} · {trade.openTime} to {trade.closeTime}</span>
-                    <span>{trade.netPnlUsd >= 0 ? "+" : ""}${trade.netPnlUsd.toFixed(2)}</span>
-                  </div>
+                    <span
+                      className={`selected-session-pnl ${
+                        trade.status === "Win" ? "selected-session-pnl-positive" : "selected-session-pnl-negative"
+                      }`}
+                    >
+                      {trade.netPnlUsd >= 0 ? "+" : ""}${trade.netPnlUsd.toFixed(2)}
+                    </span>
+                  </button>
                 ))}
               </div>
             </>

@@ -4,7 +4,18 @@ import { AppLayout } from "./components/AppLayout";
 import { DashboardPage } from "./pages/DashboardPage";
 import { DataPage } from "./pages/DataPage";
 import { ImportPage } from "./pages/ImportPage";
-import { createEmptyJournalDoc } from "./lib/journal/journalContent";
+import {
+  createClosingChecklistDoc,
+  createEmptyJournalDoc,
+  createMorningChecklistDoc
+} from "./lib/journal/journalContent";
+import {
+  getDefaultChecklistContent,
+  loadJournalChecklistTemplates,
+  saveJournalChecklistTemplates,
+  type JournalChecklistTemplates,
+  type NamedChecklistTemplate
+} from "./lib/journal/journalTemplateStore";
 import { JournalPage } from "./pages/JournalPage";
 import { ReportsPage } from "./pages/ReportsPage";
 import { SettingsModal } from "./components/SettingsModal";
@@ -64,10 +75,13 @@ const navItems: AppNavItem[] = [
   { id: "data", label: "Data", icon: "data" }
 ];
 
-const buildJournalTemplate = () => ({
+const buildJournalTemplate = (checklistTemplates: JournalChecklistTemplates) => ({
   title: "Daily Journal",
   dayGrade: "",
   mpp: "",
+  screenshotUrls: [],
+  closingChecklistContent: getDefaultChecklistContent(checklistTemplates, "closing"),
+  morningChecklistContent: getDefaultChecklistContent(checklistTemplates, "morning"),
   morningContent: createEmptyJournalDoc(),
   closingContent: createEmptyJournalDoc(),
   mppPlanContent: createEmptyJournalDoc(),
@@ -135,6 +149,7 @@ function App() {
   const [dashboardStatusFilter, setDashboardStatusFilter] = useState("all");
   const [dashboardGameFilter, setDashboardGameFilter] = useState("all");
   const [dashboardExecutionFilter, setDashboardExecutionFilter] = useState("all");
+  const [dashboardSelectedTradeId, setDashboardSelectedTradeId] = useState("");
   const [reviewChartInterval, setReviewChartInterval] = useState<ChartInterval>(
     initialWorkspaceStateRef.current.reviewChartInterval
   );
@@ -143,6 +158,9 @@ function App() {
   );
   const [historicalBarSets, setHistoricalBarSets] = useState<HistoricalBarSet[]>(() => loadHistoricalBarSets());
   const [journalPages, setJournalPages] = useState<JournalPageRecord[]>(() => loadJournalPages());
+  const [journalChecklistTemplates, setJournalChecklistTemplates] = useState<JournalChecklistTemplates>(() =>
+    loadJournalChecklistTemplates()
+  );
   const [tradeReviews, setTradeReviews] = useState<TradeReviewRecord[]>(() => loadTradeReviews());
   const [selectedJournalPageId, setSelectedJournalPageId] = useState("");
   const [isCurrentImportSaved, setIsCurrentImportSaved] = useState(false);
@@ -264,6 +282,10 @@ function App() {
 
     saveJournalPages(dedupedPages);
   }, [journalPages]);
+
+  useEffect(() => {
+    saveJournalChecklistTemplates(journalChecklistTemplates);
+  }, [journalChecklistTemplates]);
 
   useEffect(() => {
     saveTradeReviews(tradeReviews);
@@ -626,13 +648,16 @@ function App() {
     }
 
     const timestamp = new Date().toISOString();
-    const templateContent = buildJournalTemplate();
+    const templateContent = buildJournalTemplate(journalChecklistTemplates);
     const newPage: JournalPageRecord = {
       id: `journal-${timestamp}`,
       title: templateContent.title,
       tradeDate: normalizedTradeDate,
       dayGrade: templateContent.dayGrade,
       mpp: templateContent.mpp,
+      screenshotUrls: templateContent.screenshotUrls,
+      closingChecklistContent: templateContent.closingChecklistContent,
+      morningChecklistContent: templateContent.morningChecklistContent,
       morningContent: templateContent.morningContent,
       closingContent: templateContent.closingContent,
       mppPlanContent: templateContent.mppPlanContent,
@@ -656,7 +681,7 @@ function App() {
     updates: Partial<
       Pick<
         JournalPageRecord,
-        "title" | "tradeDate" | "dayGrade" | "mpp"
+        "title" | "tradeDate" | "dayGrade" | "mpp" | "screenshotUrls"
       >
     >
   ) => {
@@ -696,9 +721,58 @@ function App() {
     );
   };
 
+  const saveJournalChecklistTemplateAs = (
+    type: "morning" | "closing",
+    name: string,
+    content: NamedChecklistTemplate["content"]
+  ) => {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      return;
+    }
+
+    setJournalChecklistTemplates((current) => ({
+      ...current,
+      [type === "morning" ? "morningTemplates" : "closingTemplates"]: [
+        ...(type === "morning" ? current.morningTemplates : current.closingTemplates).filter(
+          (template) => template.name.toLowerCase() !== trimmedName.toLowerCase()
+        ),
+        {
+          id: `template-${Date.now()}`,
+          name: trimmedName,
+          content
+        }
+      ]
+    }));
+    setMessage(`${type === "morning" ? "Morning" : "Closing"} checklist template "${trimmedName}" saved.`);
+  };
+
+  const deleteJournalChecklistTemplate = (type: "morning" | "closing", templateId: string) => {
+    setJournalChecklistTemplates((current) => {
+      const templateKey = type === "morning" ? "morningTemplates" : "closingTemplates";
+      const templates = current[templateKey];
+
+      if (templates.length <= 1) {
+        return current;
+      }
+
+      const nextTemplates = templates.filter((template) => template.id !== templateId);
+      if (nextTemplates.length === templates.length) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [templateKey]: nextTemplates
+      };
+    });
+
+    setMessage(`${type === "morning" ? "Morning" : "Closing"} checklist template deleted.`);
+  };
+
   const updateTradeReview = (
     tradeId: string,
-    updates: Partial<Pick<TradeReviewRecord, "notes" | "chartContext" | "screenshotUrl">>
+    updates: Partial<Pick<TradeReviewRecord, "notes" | "chartContext" | "screenshotUrl" | "drawings">>
   ) => {
     setTradeReviews((current) => {
       const existing = current.find((review) => review.tradeId === tradeId);
@@ -712,6 +786,7 @@ function App() {
             notes: updates.notes ?? "",
             chartContext: updates.chartContext ?? "",
             screenshotUrl: updates.screenshotUrl ?? "",
+            drawings: updates.drawings ?? [],
             updatedAt
           }
         ];
@@ -801,6 +876,12 @@ function App() {
               setDashboardGameFilter(game);
               setDashboardExecutionFilter(execution);
             }}
+            onSelectTrade={(tradeId, tradeDate) => {
+              setDashboardTradeDateFilterStart(tradeDate);
+              setDashboardTradeDateFilterEnd(tradeDate);
+              setDashboardSelectedTradeId(tradeId);
+              setActiveRoute("trades");
+            }}
           />
         );
       case "trades":
@@ -820,6 +901,7 @@ function App() {
               externalStatusFilter={dashboardStatusFilter}
               externalGameFilter={dashboardGameFilter}
               externalExecutionFilter={dashboardExecutionFilter}
+              externalSelectedTradeId={dashboardSelectedTradeId}
               reviews={tradeReviews}
               historicalBarSets={historicalBarSets}
               reviewChartInterval={reviewChartInterval}
@@ -844,6 +926,7 @@ function App() {
               pages={journalPages}
               selectedPageId={selectedJournalPageId}
               trades={allStoredTrades}
+              checklistTemplates={journalChecklistTemplates}
               externalSelectedTradeDate={
                 dashboardTradeDateFilterStart &&
                 dashboardTradeDateFilterEnd &&
@@ -855,8 +938,10 @@ function App() {
               onCreatePage={createJournalPage}
               onUpdatePage={updateJournalPage}
               onUpdateContent={updateJournalContent}
+              onSaveChecklistTemplateAs={saveJournalChecklistTemplateAs}
+              onDeleteChecklistTemplate={deleteJournalChecklistTemplate}
             />
-        );
+          );
       case "reports":
         return (
           <ReportsPage

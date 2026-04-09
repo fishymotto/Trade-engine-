@@ -1,6 +1,12 @@
 import type { JSONContent } from "@tiptap/core";
 import type { JournalBlock, JournalPageRecord, JournalBlockType } from "../../types/journal";
-import { createEmptyJournalDoc, hasJournalDocContent, journalBlocksToDoc } from "./journalContent";
+import {
+  createClosingChecklistDoc,
+  createEmptyJournalDoc,
+  createMorningChecklistDoc,
+  hasJournalDocContent,
+  journalBlocksToDoc
+} from "./journalContent";
 
 const STORAGE_KEY = "trade-engine-journal-pages";
 
@@ -114,6 +120,8 @@ const normalizeJournalPage = (
   page: JournalPageRecord & {
     content?: string;
     morningJournal?: string;
+    closingChecklistContent?: JSONContent;
+    morningChecklistContent?: JSONContent;
     closingJournal?: string;
     mppPlan?: string;
     morningContent?: JSONContent;
@@ -133,6 +141,17 @@ const normalizeJournalPage = (
     tradeDate: normalizeTradeDate(page.tradeDate),
     dayGrade: page.dayGrade ?? "",
     mpp: page.mpp ?? "",
+    screenshotUrls: Array.isArray((page as { screenshotUrls?: unknown }).screenshotUrls)
+      ? ((page as { screenshotUrls?: unknown[] }).screenshotUrls ?? []).filter(
+          (value): value is string => typeof value === "string" && value.trim().length > 0
+        )
+      : [],
+    closingChecklistContent: hasJournalDocContent(page.closingChecklistContent)
+      ? (page.closingChecklistContent as JSONContent)
+      : createClosingChecklistDoc(),
+    morningChecklistContent: hasJournalDocContent(page.morningChecklistContent)
+      ? (page.morningChecklistContent as JSONContent)
+      : createMorningChecklistDoc(),
     morningContent: ensureContent(page.morningContent, morningBlocks, page.morningJournal ?? ""),
     closingContent: ensureContent(page.closingContent, closingBlocks, page.closingJournal ?? ""),
     mppPlanContent: ensureContent(page.mppPlanContent, mppPlanBlocks, page.mppPlan ?? ""),
