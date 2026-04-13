@@ -2,6 +2,11 @@ import Papa from "papaparse";
 import type { ParsedCsvResult } from "../../types/csv";
 import type { RawExecutionRow } from "../../types/trade";
 
+interface CurrencyConversionOptions {
+  brlToUsdRate?: number;
+  brlSymbols?: string[];
+}
+
 const REQUIRED_COLUMNS = [
   "DATE",
   "TIME",
@@ -40,6 +45,14 @@ const parseNumber = (value: string | undefined): number => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const normalizeTickerToken = (symbol: string): string => symbol.trim().toUpperCase();
+
+const symbolTokens = (symbol: string): string[] => {
+  const normalized = normalizeTickerToken(symbol);
+  const parts = normalized.split(/[^A-Z0-9]+/).filter(Boolean);
+  return [normalized, ...parts];
+};
+
 const normalizeTime = (value: string | undefined): string => {
   if (!value) {
     return "";
@@ -66,7 +79,24 @@ const requireColumns = (headers: string[]) => {
 };
 
 export const parseTradeDetailCsv = async (file: File): Promise<ParsedCsvResult<RawExecutionRow>> => {
+  return parseTradeDetailCsvWithOptions(file, {});
+};
+
+const normalizeBrlSymbols = (symbols: string[] | undefined): Set<string> =>
+  new Set(
+    (symbols ?? [])
+      .flatMap((symbol) => symbol.split(/[\s,;]+/))
+      .map(normalizeTickerToken)
+      .filter(Boolean)
+  );
+
+export const parseTradeDetailCsvWithOptions = async (
+  file: File,
+  options: CurrencyConversionOptions
+): Promise<ParsedCsvResult<RawExecutionRow>> => {
   const text = await file.text();
+  const brlSymbols = normalizeBrlSymbols(options.brlSymbols);
+  const brlToUsdRate = options.brlToUsdRate && options.brlToUsdRate > 0 ? options.brlToUsdRate : 0;
 
   return new Promise((resolve, reject) => {
     Papa.parse<Record<string, string>>(text, {
@@ -77,6 +107,9 @@ export const parseTradeDetailCsv = async (file: File): Promise<ParsedCsvResult<R
         try {
           const headers = (results.meta.fields ?? []).map(normalizeHeader);
           requireColumns(headers);
+          const matchedBrlSymbols = new Set<string>();
+          let convertedBrlRows = 0;
+          let skippedBrlRowsWithoutRate = 0;
 
           const rows = results.data
             .map((row, index) => {
@@ -89,21 +122,35 @@ export const parseTradeDetailCsv = async (file: File): Promise<ParsedCsvResult<R
               const secFee = parseNumber(read("SEC"));
               const activityFee = parseNumber(read("TAF"));
               const clearingFee = parseNumber(read("NSCC"));
-              const feesUsd = gatewayFee + secFee + activityFee + clearingFee;
+              const rawFees = gatewayFee + secFee + activityFee + clearingFee;
+              const symbol = normalizeTickerToken(read("SYMBOL") ?? "");
+              const matchedBrlSymbol = symbolTokens(symbol).some((token) => brlSymbols.has(token));
+              const shouldConvertFromBrl = brlToUsdRate > 0 && matchedBrlSymbol;
+              if (matchedBrlSymbol) {
+                matchedBrlSymbols.add(symbol);
+                if (shouldConvertFromBrl) {
+                  convertedBrlRows += 1;
+                } else {
+                  skippedBrlRowsWithoutRate += 1;
+                }
+              }
+              const toUsd = (value: number) =>
+                shouldConvertFromBrl ? Number((value * brlToUsdRate).toFixed(4)) : value;
+              const feesUsd = toUsd(rawFees);
 
               return {
                 originalIndex: index,
                 tradeDate: (read("DATE") ?? "").trim(),
                 time: normalizeTime(read("TIME")),
-                symbol: (read("SYMBOL") ?? "").trim().toUpperCase(),
+                symbol,
                 gatewayName: (row.GATEWAY_NAME ?? "").trim().toUpperCase(),
                 orderSide: (read("ORDER_SIDE") ?? "").trim().toUpperCase(),
                 quantity: Math.abs(parseNumber(read("QTY"))),
                 price: parseNumber(read("PRICE")),
-                grossPnlUsd: parseNumber(read("GROSS_PNL")),
-                netPnlUsd: parseNumber(read("NET_PNL")),
+                grossPnlUsd: toUsd(parseNumber(read("GROSS_PNL"))),
+                netPnlUsd: toUsd(parseNumber(read("NET_PNL"))),
                 feesUsd,
-                gatewayFee,
+                gatewayFee: toUsd(gatewayFee),
                 sourceRow: row
               } satisfies RawExecutionRow;
             })
@@ -111,10 +158,23 @@ export const parseTradeDetailCsv = async (file: File): Promise<ParsedCsvResult<R
 
           resolve({
             rows,
-            warnings:
-              rows.length === 0
-                ? ["No trade rows were found in this file."]
-                : []
+            warnings: [
+              ...(rows.length === 0 ? ["No trade rows were found in this file."] : []),
+              ...(skippedBrlRowsWithoutRate > 0
+                ? [
+                    `Found ${skippedBrlRowsWithoutRate} Bovespa execution rows (${Array.from(matchedBrlSymbols).join(
+                      ", "
+                    )}), but BRL to USD Rate is blank. Set the fixed rate in Settings before importing.`
+                  ]
+                : []),
+              ...(convertedBrlRows > 0
+                ? [
+                    `Converted ${convertedBrlRows} Bovespa execution rows (${Array.from(matchedBrlSymbols).join(
+                      ", "
+                    )}) from BRL to USD.`
+                  ]
+                : [])
+            ]
           });
         } catch (error) {
           reject(error);

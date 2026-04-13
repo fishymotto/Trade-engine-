@@ -74,6 +74,62 @@ export const createClosingChecklistDoc = (): JSONContent =>
     }
   ]);
 
+export const createMppPlanDoc = (): JSONContent =>
+  createDoc([
+    {
+      type: "heading",
+      attrs: { level: 2 },
+      content: createTextContent("Objective")
+    },
+    createParagraphNode(
+      "Stabilize equity curve, eliminate unforced errors, and build MPP through disciplined execution and controlled exposure."
+    ),
+    {
+      type: "heading",
+      attrs: { level: 2 },
+      content: createTextContent("Key Focus")
+    },
+    {
+      type: "bulletList",
+      content: [
+        {
+          type: "listItem",
+          content: [createParagraphNode("Trade only A and A+ setups, no B trades to get active.")]
+        },
+        {
+          type: "listItem",
+          content: [createParagraphNode("Entry requires tape confirmation plus sector alignment, no exceptions.")]
+        },
+        {
+          type: "listItem",
+          content: [createParagraphNode("Prioritize fast profit capture, do not let green trades drift back to red.")]
+        }
+      ]
+    },
+    {
+      type: "heading",
+      attrs: { level: 2 },
+      content: createTextContent("Execution Rules")
+    },
+    {
+      type: "bulletList",
+      content: [
+        {
+          type: "listItem",
+          content: [createParagraphNode("Risk stays fixed, no size increases until MPP is flat or positive.")]
+        },
+        {
+          type: "listItem",
+          content: [createParagraphNode("If the tape goes quiet or contradicts the thesis, flatten immediately.")]
+        },
+        {
+          type: "listItem",
+          content: [createParagraphNode("No revenge trades, no reclaiming losses.")]
+        }
+      ]
+    }
+  ]);
+
 export const hasJournalDocContent = (content?: JSONContent | null): boolean => {
   if (!content || content.type !== "doc" || !Array.isArray(content.content)) {
     return false;

@@ -102,6 +102,15 @@ export const tradeTagOptionsByField: Record<EditableTradeTagField, string[]> = {
   execution: executionOptions
 };
 
+export const tradeTagFields: EditableTradeTagField[] = [
+  "status",
+  "mistake",
+  "playbook",
+  "game",
+  "outTag",
+  "execution"
+];
+
 export const buildTradeTagOptionsByField = (
   customOptions: TradeTagOptionsRecord = {}
 ): Record<EditableTradeTagField, string[]> => ({

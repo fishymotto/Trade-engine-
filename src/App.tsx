@@ -1,14 +1,9 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { AppLayout } from "./components/AppLayout";
-import { DashboardPage } from "./pages/DashboardPage";
-import { DataPage } from "./pages/DataPage";
-import { ImportPage } from "./pages/ImportPage";
-import {
-  createClosingChecklistDoc,
-  createEmptyJournalDoc,
-  createMorningChecklistDoc
-} from "./lib/journal/journalContent";
+import { AuthModal } from "./components/AuthModal";
+import { authService, type User } from "./lib/auth";
+import { createEmptyJournalDoc } from "./lib/journal/journalContent";
 import {
   getDefaultChecklistContent,
   loadJournalChecklistTemplates,
@@ -16,10 +11,6 @@ import {
   type JournalChecklistTemplates,
   type NamedChecklistTemplate
 } from "./lib/journal/journalTemplateStore";
-import { JournalPage } from "./pages/JournalPage";
-import { ReportsPage } from "./pages/ReportsPage";
-import { SettingsModal } from "./components/SettingsModal";
-import { TradesPage } from "./pages/TradesPage";
 import { buildCsvContent, toExportRows } from "./lib/export/csvExporter";
 import { dedupeJournalPages, loadJournalPages, saveJournalPages } from "./lib/journal/journalStore";
 import {
@@ -42,7 +33,7 @@ import {
 import { parseHistoricalBarsCsv } from "./lib/parser/historicalBarsParser";
 import { loadTradeSessions, mergeTradesIntoSessions, saveTradeSessions } from "./lib/sessions/tradeSessionStore";
 import { processTradeFile } from "./lib/tradePipeline";
-import { buildTradeTagOptionsByField } from "./lib/trades/tradeTagCatalog";
+import { buildTradeTagOptionsByField, tradeTagFields } from "./lib/trades/tradeTagCatalog";
 import { loadTradeTagOptions, saveTradeTagOptions } from "./lib/trades/tradeTagOptionStore";
 import { loadTradeTagOverrides, saveTradeTagOverrides } from "./lib/trades/tradeTagOverrideStore";
 import {
@@ -70,21 +61,57 @@ const navItems: AppNavItem[] = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard" },
   { id: "trades", label: "Trades", icon: "trades" },
   { id: "journal", label: "Journal", icon: "journal" },
+  { id: "library", label: "Library", icon: "library" },
+  { id: "playbooks", label: "Playbooks", icon: "playbooks" },
   { id: "reports", label: "Reports", icon: "reports" },
   { id: "import", label: "Import", icon: "import" },
   { id: "data", label: "Data", icon: "data" }
 ];
 
+const DashboardPage = lazy(() =>
+  import("./pages/DashboardPage").then((module) => ({ default: module.DashboardPage }))
+);
+const TradesPage = lazy(() =>
+  import("./pages/TradesPage").then((module) => ({ default: module.TradesPage }))
+);
+const JournalPage = lazy(() =>
+  import("./pages/JournalPage").then((module) => ({ default: module.JournalPage }))
+);
+const LibraryPage = lazy(() =>
+  import("./pages/LibraryPage").then((module) => ({ default: module.LibraryPage }))
+);
+const PlaybooksPage = lazy(() =>
+  import("./pages/PlaybooksPage").then((module) => ({ default: module.PlaybooksPage }))
+);
+const ReportsPage = lazy(() =>
+  import("./pages/ReportsPage").then((module) => ({ default: module.ReportsPage }))
+);
+const ImportPage = lazy(() =>
+  import("./pages/ImportPage").then((module) => ({ default: module.ImportPage }))
+);
+const DataPage = lazy(() =>
+  import("./pages/DataPage").then((module) => ({ default: module.DataPage }))
+);
+const SettingsModal = lazy(() =>
+  import("./components/SettingsModal").then((module) => ({ default: module.SettingsModal }))
+);
+
 const buildJournalTemplate = (checklistTemplates: JournalChecklistTemplates) => ({
   title: "Daily Journal",
   dayGrade: "",
   mpp: "",
+  sleepHours: "7.5",
+  sleepScore: "",
+  morningMood: "",
+  openMood: "",
+  afternoonMood: "",
+  closeMood: "",
   screenshotUrls: [],
   closingChecklistContent: getDefaultChecklistContent(checklistTemplates, "closing"),
   morningChecklistContent: getDefaultChecklistContent(checklistTemplates, "morning"),
   morningContent: createEmptyJournalDoc(),
   closingContent: createEmptyJournalDoc(),
-  mppPlanContent: createEmptyJournalDoc(),
+  mppPlanContent: getDefaultChecklistContent(checklistTemplates, "mpp"),
   notesContent: createEmptyJournalDoc()
 });
 
@@ -150,6 +177,7 @@ function App() {
   const [dashboardGameFilter, setDashboardGameFilter] = useState("all");
   const [dashboardExecutionFilter, setDashboardExecutionFilter] = useState("all");
   const [dashboardSelectedTradeId, setDashboardSelectedTradeId] = useState("");
+  const [dashboardSelectedTradeRequestId, setDashboardSelectedTradeRequestId] = useState(0);
   const [reviewChartInterval, setReviewChartInterval] = useState<ChartInterval>(
     initialWorkspaceStateRef.current.reviewChartInterval
   );
@@ -374,6 +402,17 @@ function App() {
     () => buildTradeTagOptionsByField(tradeTagOptions),
     [tradeTagOptions]
   );
+  const activeTradeTagOptionsByField = useMemo(
+    () =>
+      tradeTagFields.reduce(
+        (options, field) => ({
+          ...options,
+          [field]: settings.tradeTagVisibility[field] ? mergedTradeTagOptionsByField[field] : []
+        }),
+        {} as Record<EditableTradeTagField, string[]>
+      ),
+    [mergedTradeTagOptionsByField, settings.tradeTagVisibility]
+  );
 
   const handleFileDrop = async (file: File) => {
     setBusy(true);
@@ -382,11 +421,16 @@ function App() {
         throw new Error("Use a CSV file exported from PPro8.");
       }
 
-      const processed = await processTradeFile(file, allowedSymbols);
+      const processed = await processTradeFile(file, allowedSymbols, settings);
       setFileName(file.name);
       setTrades(processed.trades);
       setIsCurrentImportSaved(false);
-      setMessage(`Loaded ${processed.trades.length} grouped trades from ${file.name}. Review them, then click Save To Database when you're ready.`);
+      setMessage(
+        [
+          `Loaded ${processed.trades.length} grouped trades from ${file.name}. Review them, then click Save To Database when you're ready.`,
+          ...processed.warnings.filter((warning) => warning.includes("Converted"))
+        ].join(" ")
+      );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "The file could not be processed.");
       setTrades([]);
@@ -655,6 +699,12 @@ function App() {
       tradeDate: normalizedTradeDate,
       dayGrade: templateContent.dayGrade,
       mpp: templateContent.mpp,
+      sleepHours: templateContent.sleepHours,
+      sleepScore: templateContent.sleepScore,
+      morningMood: templateContent.morningMood,
+      openMood: templateContent.openMood,
+      afternoonMood: templateContent.afternoonMood,
+      closeMood: templateContent.closeMood,
       screenshotUrls: templateContent.screenshotUrls,
       closingChecklistContent: templateContent.closingChecklistContent,
       morningChecklistContent: templateContent.morningChecklistContent,
@@ -681,10 +731,21 @@ function App() {
     updates: Partial<
       Pick<
         JournalPageRecord,
-        "title" | "tradeDate" | "dayGrade" | "mpp" | "screenshotUrls"
+        | "title"
+        | "tradeDate"
+        | "dayGrade"
+        | "mpp"
+        | "sleepHours"
+        | "sleepScore"
+        | "morningMood"
+        | "openMood"
+        | "afternoonMood"
+        | "closeMood"
+        | "screenshotUrls"
       >
     >
   ) => {
+    setSelectedJournalPageId(pageId);
     setJournalPages((current) =>
       current
         .map((page) =>
@@ -722,7 +783,7 @@ function App() {
   };
 
   const saveJournalChecklistTemplateAs = (
-    type: "morning" | "closing",
+    type: "morning" | "closing" | "mpp",
     name: string,
     content: NamedChecklistTemplate["content"]
   ) => {
@@ -733,8 +794,14 @@ function App() {
 
     setJournalChecklistTemplates((current) => ({
       ...current,
-      [type === "morning" ? "morningTemplates" : "closingTemplates"]: [
-        ...(type === "morning" ? current.morningTemplates : current.closingTemplates).filter(
+      [type === "morning" ? "morningTemplates" : type === "closing" ? "closingTemplates" : "mppTemplates"]: [
+        ...(
+          type === "morning"
+            ? current.morningTemplates
+            : type === "closing"
+              ? current.closingTemplates
+              : current.mppTemplates
+        ).filter(
           (template) => template.name.toLowerCase() !== trimmedName.toLowerCase()
         ),
         {
@@ -744,12 +811,15 @@ function App() {
         }
       ]
     }));
-    setMessage(`${type === "morning" ? "Morning" : "Closing"} checklist template "${trimmedName}" saved.`);
+    setMessage(
+      `${type === "morning" ? "Morning" : type === "closing" ? "Closing" : "MPP"} template "${trimmedName}" saved.`
+    );
   };
 
-  const deleteJournalChecklistTemplate = (type: "morning" | "closing", templateId: string) => {
+  const deleteJournalChecklistTemplate = (type: "morning" | "closing" | "mpp", templateId: string) => {
     setJournalChecklistTemplates((current) => {
-      const templateKey = type === "morning" ? "morningTemplates" : "closingTemplates";
+      const templateKey =
+        type === "morning" ? "morningTemplates" : type === "closing" ? "closingTemplates" : "mppTemplates";
       const templates = current[templateKey];
 
       if (templates.length <= 1) {
@@ -767,7 +837,7 @@ function App() {
       };
     });
 
-    setMessage(`${type === "morning" ? "Morning" : "Closing"} checklist template deleted.`);
+    setMessage(`${type === "morning" ? "Morning" : type === "closing" ? "Closing" : "MPP"} template deleted.`);
   };
 
   const updateTradeReview = (
@@ -880,6 +950,7 @@ function App() {
               setDashboardTradeDateFilterStart(tradeDate);
               setDashboardTradeDateFilterEnd(tradeDate);
               setDashboardSelectedTradeId(tradeId);
+              setDashboardSelectedTradeRequestId((current) => current + 1);
               setActiveRoute("trades");
             }}
           />
@@ -902,11 +973,12 @@ function App() {
               externalGameFilter={dashboardGameFilter}
               externalExecutionFilter={dashboardExecutionFilter}
               externalSelectedTradeId={dashboardSelectedTradeId}
+              externalSelectedTradeRequestId={dashboardSelectedTradeRequestId}
               reviews={tradeReviews}
               historicalBarSets={historicalBarSets}
               reviewChartInterval={reviewChartInterval}
               dayChartInterval={dayChartInterval}
-              tagOptionsByField={mergedTradeTagOptionsByField}
+              tagOptionsByField={activeTradeTagOptionsByField}
               busy={busy}
               onUpdateReview={updateTradeReview}
               onImportHistoricalBars={importHistoricalBars}
@@ -918,6 +990,7 @@ function App() {
               onUpdateTradeTag={updateTradeTag}
               onBulkUpdateTradeTags={bulkUpdateTradeTags}
               onCreateTradeTagOption={createTradeTagOption}
+              onClearExternalSelectedTrade={() => setDashboardSelectedTradeId("")}
             />
         );
       case "journal":
@@ -926,6 +999,7 @@ function App() {
               pages={journalPages}
               selectedPageId={selectedJournalPageId}
               trades={allStoredTrades}
+              tagOptionsByField={activeTradeTagOptionsByField}
               checklistTemplates={journalChecklistTemplates}
               externalSelectedTradeDate={
                 dashboardTradeDateFilterStart &&
@@ -935,13 +1009,38 @@ function App() {
                   : ""
               }
               onSelectPage={setSelectedJournalPageId}
+              onSelectTrade={(tradeId, tradeDate) => {
+                setDashboardTradeDateFilterStart(tradeDate);
+                setDashboardTradeDateFilterEnd(tradeDate);
+                setDashboardSelectedTradeId(tradeId);
+                setDashboardSelectedTradeRequestId((current) => current + 1);
+                setActiveRoute("trades");
+              }}
               onCreatePage={createJournalPage}
               onUpdatePage={updateJournalPage}
               onUpdateContent={updateJournalContent}
               onSaveChecklistTemplateAs={saveJournalChecklistTemplateAs}
               onDeleteChecklistTemplate={deleteJournalChecklistTemplate}
+              onUpdateTradeTag={updateTradeTag}
+              onCreateTradeTagOption={createTradeTagOption}
             />
           );
+      case "library":
+        return <LibraryPage />;
+      case "playbooks":
+        return (
+          <PlaybooksPage
+            trades={allStoredTrades}
+            onSelectTrade={(tradeId, tradeDate) => {
+              setDashboardTradeDateFilterStart(tradeDate);
+              setDashboardTradeDateFilterEnd(tradeDate);
+              setDashboardSelectedTradeId(tradeId);
+              setDashboardSelectedTradeRequestId((current) => current + 1);
+              setDashboardPlaybookFilter("all");
+              setActiveRoute("trades");
+            }}
+          />
+        );
       case "reports":
         return (
           <ReportsPage
@@ -977,6 +1076,7 @@ function App() {
             onImport={handleImport}
             onClear={handleClear}
             onSettings={() => setSettingsOpen(true)}
+            tagOptionsByField={activeTradeTagOptionsByField}
           />
         );
       case "data":
@@ -995,18 +1095,34 @@ function App() {
 
   return (
     <>
-      <AppLayout activeRoute={activeRoute} navItems={navItems} onNavigate={setActiveRoute}>
-        {renderActivePage()}
-      </AppLayout>
+      <Suspense
+        fallback={
+          <div className="page-loading-shell">
+            <div className="page-loading-state">
+              <div className="page-loading-orb" aria-hidden="true" />
+              <div className="page-loading-copy">
+                <strong>Loading workspace</strong>
+                <span>Preparing charts, reports, and journal tools.</span>
+              </div>
+            </div>
+          </div>
+        }
+      >
+        <AppLayout activeRoute={activeRoute} navItems={navItems} onNavigate={setActiveRoute}>
+          {renderActivePage()}
+        </AppLayout>
+      </Suspense>
       <footer className="status-bar">{message}</footer>
-      <SettingsModal
-        isOpen={settingsOpen}
-        settings={settings}
-        onClose={() => setSettingsOpen(false)}
-        onChange={setSettings}
-        onBrowse={handleBrowseFolder}
-        onTestConnection={runConnectionTest}
-      />
+      <Suspense fallback={null}>
+        <SettingsModal
+          isOpen={settingsOpen}
+          settings={settings}
+          onClose={() => setSettingsOpen(false)}
+          onChange={setSettings}
+          onBrowse={handleBrowseFolder}
+          onTestConnection={runConnectionTest}
+        />
+      </Suspense>
     </>
   );
 }

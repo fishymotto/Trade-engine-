@@ -1,6 +1,14 @@
 import type { WorkspaceIconKey } from "../lib/ui/workspaceIcons";
 
-export type AppRoute = "dashboard" | "trades" | "journal" | "reports" | "import" | "data";
+export type AppRoute =
+  | "dashboard"
+  | "trades"
+  | "journal"
+  | "library"
+  | "playbooks"
+  | "reports"
+  | "import"
+  | "data";
 
 export interface AppNavItem {
   id: AppRoute;

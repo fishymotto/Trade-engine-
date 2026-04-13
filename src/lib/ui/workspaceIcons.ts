@@ -10,6 +10,7 @@ import importIcon from "../../assets/ui-icons/import.png";
 import journalIcon from "../../assets/ui-icons/journal.png";
 import moneyIcon from "../../assets/ui-icons/money.png";
 import planIcon from "../../assets/ui-icons/plan.png";
+import playbooksIcon from "../../assets/ui-icons/playbooks.png";
 import reportsIcon from "../../assets/ui-icons/reports.png";
 import tagsIcon from "../../assets/ui-icons/tags.png";
 import textIcon from "../../assets/ui-icons/text.png";
@@ -21,6 +22,7 @@ export type WorkspaceIconKey =
   | "dashboard"
   | "trades"
   | "journal"
+  | "library"
   | "reports"
   | "import"
   | "data"
@@ -34,12 +36,14 @@ export type WorkspaceIconKey =
   | "heading"
   | "checklist"
   | "callout"
-  | "plan";
+  | "plan"
+  | "playbooks";
 
 export const workspaceIcons: Record<WorkspaceIconKey, string> = {
   dashboard: dashboardIcon,
   trades: tradesIcon,
   journal: journalIcon,
+  library: playbooksIcon,
   reports: reportsIcon,
   import: importIcon,
   data: dataIcon,
@@ -53,7 +57,8 @@ export const workspaceIcons: Record<WorkspaceIconKey, string> = {
   heading: headingIcon,
   checklist: checklistIcon,
   callout: calloutIcon,
-  plan: planIcon
+  plan: planIcon,
+  playbooks: playbooksIcon
 };
 
 export const journalBlockTypeIcons: Partial<Record<JournalBlockType, WorkspaceIconKey>> = {

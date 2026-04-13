@@ -1,20 +1,25 @@
 import { buildCsvContent, toExportRows } from "./export/csvExporter";
 import { groupExecutions } from "./grouping/groupingEngine";
-import { parseTradeDetailCsv } from "./parser/csvParser";
+import { parseTradeDetailCsvWithOptions } from "./parser/csvParser";
 import { applyTradeTags } from "./tags/tagEngine";
-import type { GroupedTrade } from "../types/trade";
+import type { GroupedTrade, Settings } from "../types/trade";
 
 export interface ProcessedTradeFile {
   trades: GroupedTrade[];
   exportCsvContent: string;
+  warnings: string[];
 }
 
 export const processTradeFile = async (
   file: File,
-  allowedSymbols: string[]
+  allowedSymbols: string[],
+  settings: Settings
 ): Promise<ProcessedTradeFile> => {
-  const parsed = await parseTradeDetailCsv(file);
-  if (parsed.warnings.length > 0 && parsed.rows.length === 0) {
+  const parsed = await parseTradeDetailCsvWithOptions(file, {
+    brlToUsdRate: settings.brlToUsdRate,
+    brlSymbols: settings.brlTickerList.split(/[\s,;]+/)
+  });
+  if (parsed.warnings.length > 0 && (parsed.rows.length === 0 || parsed.warnings.some((warning) => warning.includes("BRL to USD Rate is blank")))) {
     throw new Error(parsed.warnings[0]);
   }
 
@@ -24,6 +29,7 @@ export const processTradeFile = async (
 
   return {
     trades: tagged,
-    exportCsvContent: buildCsvContent(exportRows)
+    exportCsvContent: buildCsvContent(exportRows),
+    warnings: parsed.warnings
   };
 };

@@ -8,10 +8,17 @@ import {
   LineSeries,
   type MouseEventParams,
   type IChartApi,
+  type IPriceLine,
   type ISeriesApi,
   type Time,
   type UTCTimestamp
 } from "lightweight-charts";
+import {
+  calculateRsiSeries,
+  calculateBollingerBands,
+  calculateMACD,
+  calculateStochastic
+} from "../lib/chartIndicators";
 import type { ChartInterval, HistoricalBar } from "../types/chart";
 import type { TradeChartDrawing } from "../types/review";
 import type { GroupedTrade } from "../types/trade";
@@ -28,6 +35,10 @@ export interface TradeChartLayerVisibility {
   lod: boolean;
   vwap: boolean;
   volume: boolean;
+  rsi: boolean;
+  bollingerBands: boolean;
+  macd: boolean;
+  stochastic: boolean;
 }
 
 interface TradeChartProps {
@@ -48,7 +59,72 @@ interface TradeChartProps {
   onChangeInterval?: (interval: ChartInterval) => void;
 }
 
-type DrawingTool = "cursor" | "trendline" | "horizontal" | "vertical";
+type DrawingTool = "cursor" | "trendline" | "horizontal" | "vertical" | "fibonacci" | "pitchfork" | "channel";
+
+const drawingToolOptions: Array<{
+  key: DrawingTool;
+  label: string;
+  railLabel: string;
+  description: string;
+  requiresBars?: boolean;
+  category?: "basic" | "advanced";
+}> = [
+  {
+    key: "cursor",
+    label: "Cursor",
+    railLabel: "Move",
+    description: "Select or move around the chart",
+    category: "basic"
+  },
+  {
+    key: "trendline",
+    label: "Trend line",
+    railLabel: "/",
+    description: "Click two points to draw a trend line",
+    requiresBars: true,
+    category: "basic"
+  },
+  {
+    key: "horizontal",
+    label: "Horizontal line",
+    railLabel: "-",
+    description: "Click one price level",
+    requiresBars: true,
+    category: "basic"
+  },
+  {
+    key: "vertical",
+    label: "Vertical line",
+    railLabel: "|",
+    description: "Click one time level",
+    requiresBars: true,
+    category: "basic"
+  },
+  {
+    key: "fibonacci",
+    label: "Fibonacci Retracement",
+    railLabel: "Fib",
+    description: "Click low, then high to draw Fibonacci levels",
+    requiresBars: true,
+    category: "advanced"
+  },
+  {
+    key: "pitchfork",
+    label: "Andrews Pitchfork",
+    railLabel: "Fork",
+    description: "Click 3 points: pivot, left, right",
+    requiresBars: true,
+    category: "advanced"
+  },
+  {
+    key: "channel",
+    label: "Parallel Channel",
+    railLabel: "Chan",
+    description: "Click 3 points to define parallel channel",
+    requiresBars: true,
+    category: "advanced"
+  }
+];
 
 interface DrawingPoint {
   x: number;
@@ -62,6 +138,25 @@ interface ExecutionMarkerPoint {
   time: number;
   price: number;
   kind: "entry" | "addToWinner" | "averageDown" | "exit";
+}
+
+type DrawingDragTarget =
+  | { id: string; type: "trendline-start" }
+  | { id: string; type: "trendline-end" }
+  | { id: string; type: "horizontal" }
+  | { id: string; type: "vertical" };
+
+interface IndicatorItem {
+  key: keyof TradeChartLayerVisibility;
+  label: string;
+  colorClass: string;
+  value?: string;
+}
+
+interface DrawingContextMenu {
+  drawingId: string;
+  x: number;
+  y: number;
 }
 
 const FAST_EMA_PERIOD = 9;
@@ -86,7 +181,11 @@ const defaultLayerVisibility: TradeChartLayerVisibility = {
   hod: true,
   lod: true,
   vwap: true,
-  volume: true
+  volume: true,
+  rsi: false,
+  bollingerBands: false,
+  macd: false,
+  stochastic: false
 };
 
 const toTradeTimestamp = (tradeDate: string, time: string): number => {
@@ -157,6 +256,48 @@ const buildVolumeSeries = (bars: HistoricalBar[]) =>
       value: bar.volume ?? 0,
       color: bar.close >= bar.open ? "rgba(46, 230, 214, 0.72)" : "rgba(180, 46, 255, 0.72)"
     }));
+
+const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+
+const normalizeBars = (bars: HistoricalBar[]): HistoricalBar[] => {
+  const sortedBars = bars
+    .filter(
+      (bar) =>
+        isFiniteNumber(bar.time) &&
+        bar.time > 0 &&
+        isFiniteNumber(bar.open) &&
+        isFiniteNumber(bar.high) &&
+        isFiniteNumber(bar.low) &&
+        isFiniteNumber(bar.close)
+    )
+    .map((bar) => ({
+      time: bar.time,
+      open: bar.open,
+      high: Math.max(bar.high, bar.open, bar.close, bar.low),
+      low: Math.min(bar.low, bar.open, bar.close, bar.high),
+      close: bar.close,
+      volume: isFiniteNumber(bar.volume) ? Math.max(0, bar.volume) : undefined
+    }))
+    .sort((left, right) => left.time - right.time);
+
+  const normalizedBars: HistoricalBar[] = [];
+
+  for (const bar of sortedBars) {
+    const previous = normalizedBars[normalizedBars.length - 1];
+
+    if (previous?.time === bar.time) {
+      previous.high = Math.max(previous.high, bar.high);
+      previous.low = Math.min(previous.low, bar.low);
+      previous.close = bar.close;
+      previous.volume = (previous.volume ?? 0) + (bar.volume ?? 0);
+      continue;
+    }
+
+    normalizedBars.push({ ...bar });
+  }
+
+  return normalizedBars;
+};
 
 const buildFlatPriceSeries = (bars: HistoricalBar[], value: number) =>
   bars.map((bar) => ({
@@ -387,24 +528,45 @@ export const TradeChart = ({
   const hodSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const lodSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const rsiSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const bollingerBandsSeriesRefs = useRef<{
+    upper: ISeriesApi<"Line"> | null;
+    middle: ISeriesApi<"Line"> | null;
+    lower: ISeriesApi<"Line"> | null;
+  }>({ upper: null, middle: null, lower: null });
+  const macdLineSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const macdSignalSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const macdHistogramSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const stochasticKSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const stochasticDSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const rsiPriceLineRefs = useRef<IPriceLine[]>([]);
+  const rsiPaneIndexRef = useRef<number | null>(null);
   const displayBarsRef = useRef<HistoricalBar[]>([]);
   const [hoveredBar, setHoveredBar] = useState<HistoricalBar | null>(null);
   const [drawingTool, setDrawingTool] = useState<DrawingTool>("cursor");
   const [draftPoint, setDraftPoint] = useState<DrawingPoint | null>(null);
   const [hoverPoint, setHoverPoint] = useState<DrawingPoint | null>(null);
   const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
+  const [drawingDragTarget, setDrawingDragTarget] = useState<DrawingDragTarget | null>(null);
+  const [drawingContextMenu, setDrawingContextMenu] = useState<DrawingContextMenu | null>(null);
   const [showIndicatorStrip, setShowIndicatorStrip] = useState(true);
+  const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
+  const [showDrawingMenu, setShowDrawingMenu] = useState(false);
   const [overlayVersion, setOverlayVersion] = useState(0);
   const [overlaySize, setOverlaySize] = useState({ width: 0, height: 0 });
 
-  const sourceBars = useMemo(
-    () => (regularSessionOnly ? bars.filter(isRegularSessionBar) : bars),
-    [bars, regularSessionOnly]
-  );
+  const sourceBars = useMemo(() => {
+    const normalizedBars = normalizeBars(bars);
+    return regularSessionOnly ? normalizedBars.filter(isRegularSessionBar) : normalizedBars;
+  }, [bars, regularSessionOnly]);
   const displayBars = useMemo(() => aggregateBars(sourceBars, interval), [interval, sourceBars]);
   const vwapData = useMemo(() => buildVwapSeries(displayBars), [displayBars]);
   const fastEmaData = useMemo(() => buildEmaSeries(displayBars, FAST_EMA_PERIOD), [displayBars]);
   const slowEmaData = useMemo(() => buildEmaSeries(displayBars, SLOW_EMA_PERIOD), [displayBars]);
+  const rsiData = useMemo(() => calculateRsiSeries(displayBars, 14), [displayBars]);
+  const bollingerBandsData = useMemo(() => calculateBollingerBands(displayBars, 20, 2), [displayBars]);
+  const macdData = useMemo(() => calculateMACD(displayBars, 12, 26, 9), [displayBars]);
+  const stochasticData = useMemo(() => calculateStochastic(displayBars, 14, 3, 3), [displayBars]);
   const canDraw = showDrawingTools && Boolean(onDrawingsChange) && displayBars.length > 0;
 
   const refreshOverlay = useCallback(() => {
@@ -440,6 +602,85 @@ export const TradeChart = ({
     requestAnimationFrame(refreshOverlay);
   }, [refreshOverlay]);
 
+  const removeRsiPane = useCallback(() => {
+    const chart = chartRef.current;
+    const rsiSeries = rsiSeriesRef.current;
+
+    if (!chart) {
+      rsiSeriesRef.current = null;
+      rsiPriceLineRefs.current = [];
+      rsiPaneIndexRef.current = null;
+      return;
+    }
+
+    if (rsiSeries) {
+      rsiPriceLineRefs.current.forEach((priceLine) => rsiSeries.removePriceLine(priceLine));
+      chart.removeSeries(rsiSeries);
+    }
+
+    const rsiPaneIndex = rsiPaneIndexRef.current;
+    rsiSeriesRef.current = null;
+    rsiPriceLineRefs.current = [];
+    rsiPaneIndexRef.current = null;
+
+    if (typeof rsiPaneIndex === "number" && chart.panes().some((pane) => pane.paneIndex() === rsiPaneIndex)) {
+      chart.removePane(rsiPaneIndex);
+    }
+
+    requestAnimationFrame(refreshOverlay);
+  }, [refreshOverlay]);
+
+  const ensureRsiPane = useCallback(() => {
+    if (rsiSeriesRef.current || !chartRef.current) {
+      return rsiSeriesRef.current;
+    }
+
+    const rsiPane = chartRef.current.addPane(true);
+    rsiPane.setStretchFactor(1);
+    rsiPane.priceScale("right").applyOptions({
+      borderColor: "rgba(255,255,255,0.12)",
+      scaleMargins: {
+        top: 0.12,
+        bottom: 0.12
+      }
+    });
+    rsiPane.priceScale("left").applyOptions({
+      visible: false
+    });
+
+    const rsiSeries = rsiPane.addSeries(LineSeries, {
+      color: "#ff8bd4",
+      lineWidth: 2,
+      crosshairMarkerVisible: false,
+      priceLineVisible: false,
+      lastValueVisible: true
+    });
+
+    rsiPriceLineRefs.current = [
+      rsiSeries.createPriceLine({
+        price: 70,
+        color: "rgba(255, 123, 123, 0.62)",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: "RSI 70"
+      }),
+      rsiSeries.createPriceLine({
+        price: 30,
+        color: "rgba(46, 230, 214, 0.62)",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: "RSI 30"
+      })
+    ];
+
+    rsiSeriesRef.current = rsiSeries;
+    rsiPaneIndexRef.current = rsiPane.paneIndex();
+    requestAnimationFrame(refreshOverlay);
+    return rsiSeries;
+  }, [refreshOverlay]);
+
   const resetDrawingDraft = useCallback(() => {
     setDraftPoint(null);
     setHoverPoint(null);
@@ -449,6 +690,7 @@ export const TradeChart = ({
     (tool: DrawingTool) => {
       setDrawingTool((current) => (current === tool ? "cursor" : tool));
       setSelectedDrawingId(null);
+      setDrawingDragTarget(null);
       resetDrawingDraft();
     },
     [resetDrawingDraft]
@@ -457,28 +699,44 @@ export const TradeChart = ({
   useEffect(() => {
     resetDrawingDraft();
     setSelectedDrawingId(null);
+    setDrawingContextMenu(null);
   }, [interval, resetDrawingDraft, trade?.id]);
 
   useEffect(() => {
     if (!selectedDrawingId) {
+      setDrawingDragTarget(null);
       return;
     }
 
     if (!drawings.some((drawing) => drawing.id === selectedDrawingId)) {
       setSelectedDrawingId(null);
+      setDrawingDragTarget(null);
     }
   }, [drawings, selectedDrawingId]);
 
+  const handleDeleteDrawing = useCallback(
+    (drawingId: string) => {
+      if (!onDrawingsChange) {
+        return;
+      }
+
+      onDrawingsChange(drawings.filter((drawing) => drawing.id !== drawingId));
+      setSelectedDrawingId((current) => (current === drawingId ? null : current));
+      setDrawingDragTarget((current) => (current?.id === drawingId ? null : current));
+      setDrawingContextMenu(null);
+      setDrawingTool("cursor");
+      resetDrawingDraft();
+    },
+    [drawings, onDrawingsChange, resetDrawingDraft]
+  );
+
   const handleDeleteSelectedDrawing = useCallback(() => {
-    if (!onDrawingsChange || !selectedDrawingId) {
+    if (!selectedDrawingId) {
       return;
     }
 
-    onDrawingsChange(drawings.filter((drawing) => drawing.id !== selectedDrawingId));
-    setSelectedDrawingId(null);
-    setDrawingTool("cursor");
-    resetDrawingDraft();
-  }, [drawings, onDrawingsChange, resetDrawingDraft, selectedDrawingId]);
+    handleDeleteDrawing(selectedDrawingId);
+  }, [handleDeleteDrawing, selectedDrawingId]);
 
   useEffect(() => {
     if (!canDraw) {
@@ -507,17 +765,28 @@ export const TradeChart = ({
         return;
       }
 
-      if (draftPoint || hoverPoint || drawingTool !== "cursor" || selectedDrawingId) {
+      if (draftPoint || hoverPoint || drawingTool !== "cursor" || selectedDrawingId || drawingContextMenu) {
         event.preventDefault();
         setDrawingTool("cursor");
         setSelectedDrawingId(null);
+        setDrawingDragTarget(null);
+        setDrawingContextMenu(null);
         resetDrawingDraft();
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [canDraw, draftPoint, drawingTool, handleDeleteSelectedDrawing, hoverPoint, resetDrawingDraft, selectedDrawingId]);
+  }, [
+    canDraw,
+    draftPoint,
+    drawingContextMenu,
+    drawingTool,
+    handleDeleteSelectedDrawing,
+    hoverPoint,
+    resetDrawingDraft,
+    selectedDrawingId
+  ]);
 
   useEffect(() => {
     if (!overlayRef.current) {
@@ -550,6 +819,12 @@ export const TradeChart = ({
       const rect = overlayRef.current.getBoundingClientRect();
       const x = clientX - rect.left;
       const y = clientY - rect.top;
+      const pricePaneHeight = chartRef.current.paneSize(0).height;
+
+      if (x < 0 || x > rect.width || y < 0 || y > pricePaneHeight) {
+        return null;
+      }
+
       const rawTime = chartRef.current.timeScale().coordinateToTime(x) ?? undefined;
       const time = toUtcTimestamp(rawTime);
       const price = seriesRef.current.coordinateToPrice(y);
@@ -570,17 +845,75 @@ export const TradeChart = ({
 
   const handleOverlayPointerMove = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
-      if (!canDraw || drawingTool === "cursor") {
+      if (!canDraw) {
         return;
       }
 
-      setHoverPoint(resolveDrawingPoint(event.clientX, event.clientY));
+      const point = resolveDrawingPoint(event.clientX, event.clientY);
+
+      if (drawingDragTarget && point && onDrawingsChange) {
+        event.preventDefault();
+        onDrawingsChange(
+          drawings.map((drawing) => {
+            if (drawing.id !== drawingDragTarget.id) {
+              return drawing;
+            }
+
+            switch (drawingDragTarget.type) {
+              case "trendline-start":
+                return drawing.type === "trendline"
+                  ? {
+                      ...drawing,
+                      startTime: point.time,
+                      startPrice: point.price
+                    }
+                  : drawing;
+              case "trendline-end":
+                return drawing.type === "trendline"
+                  ? {
+                      ...drawing,
+                      endTime: point.time,
+                      endPrice: point.price
+                    }
+                  : drawing;
+              case "horizontal":
+                return drawing.type === "horizontal"
+                  ? {
+                      ...drawing,
+                      price: point.price
+                    }
+                  : drawing;
+              case "vertical":
+                return drawing.type === "vertical"
+                  ? {
+                      ...drawing,
+                      time: point.time
+                    }
+                  : drawing;
+              default:
+                return drawing;
+            }
+          })
+        );
+        return;
+      }
+
+      if (drawingTool === "cursor") {
+        return;
+      }
+
+      setHoverPoint(point);
     },
-    [canDraw, drawingTool, resolveDrawingPoint]
+    [canDraw, drawingDragTarget, drawingTool, drawings, onDrawingsChange, resolveDrawingPoint]
   );
 
   const handleOverlayPointerLeave = useCallback(() => {
+    setDrawingDragTarget(null);
     setHoverPoint(null);
+  }, []);
+
+  const handleOverlayPointerUp = useCallback(() => {
+    setDrawingDragTarget(null);
   }, []);
 
   const handleOverlayPointerDown = useCallback(
@@ -591,6 +924,7 @@ export const TradeChart = ({
 
       event.preventDefault();
       event.stopPropagation();
+      setDrawingContextMenu(null);
 
       const point = resolveDrawingPoint(event.clientX, event.clientY);
       if (!point) {
@@ -598,31 +932,125 @@ export const TradeChart = ({
       }
 
       if (drawingTool === "horizontal") {
+        const id = createDrawingId();
         onDrawingsChange([
           ...drawings,
           {
-            id: createDrawingId(),
+            id,
             type: "horizontal",
             price: point.price
           }
         ]);
+        setSelectedDrawingId(id);
         setDrawingTool("cursor");
         resetDrawingDraft();
         return;
       }
 
       if (drawingTool === "vertical") {
+        const id = createDrawingId();
         onDrawingsChange([
           ...drawings,
           {
-            id: createDrawingId(),
+            id,
             type: "vertical",
             time: point.time
           }
         ]);
+        setSelectedDrawingId(id);
         setDrawingTool("cursor");
         resetDrawingDraft();
         return;
+      }
+
+      if (drawingTool === "fibonacci") {
+        if (!draftPoint) {
+          setDraftPoint(point);
+          return;
+        }
+
+        const id = createDrawingId();
+        onDrawingsChange([
+          ...drawings,
+          {
+            id,
+            type: "fibonacci",
+            startTime: draftPoint.time,
+            startPrice: draftPoint.price,
+            endTime: point.time,
+            endPrice: point.price
+          }
+        ]);
+        setSelectedDrawingId(id);
+        setDrawingTool("cursor");
+        resetDrawingDraft();
+        return;
+      }
+
+      if (drawingTool === "pitchfork") {
+        if (!draftPoint) {
+          setDraftPoint(point);
+          return;
+        }
+
+        if (draftPoint && !hoverPoint?.x) {
+          setHoverPoint(point);
+          return;
+        }
+
+        if (draftPoint && hoverPoint) {
+          const id = createDrawingId();
+          onDrawingsChange([
+            ...drawings,
+            {
+              id,
+              type: "pitchfork",
+              pivotTime: draftPoint.time,
+              pivotPrice: draftPoint.price,
+              leftTime: hoverPoint.time,
+              leftPrice: hoverPoint.price,
+              rightTime: point.time,
+              rightPrice: point.price
+            }
+          ]);
+          setSelectedDrawingId(id);
+          setDrawingTool("cursor");
+          resetDrawingDraft();
+          return;
+        }
+      }
+
+      if (drawingTool === "channel") {
+        if (!draftPoint) {
+          setDraftPoint(point);
+          return;
+        }
+
+        if (draftPoint && !hoverPoint?.x) {
+          setHoverPoint(point);
+          return;
+        }
+
+        if (draftPoint && hoverPoint) {
+          const id = createDrawingId();
+          onDrawingsChange([
+            ...drawings,
+            {
+              id,
+              type: "channel",
+              startTime: draftPoint.time,
+              startPrice: draftPoint.price,
+              endTime: hoverPoint.time,
+              endPrice: hoverPoint.price,
+              parallelTime: point.time,
+              parallelPrice: point.price
+            }
+          ]);
+          setSelectedDrawingId(id);
+          setDrawingTool("cursor");
+          resetDrawingDraft();
+          return;
+        }
       }
 
       if (!draftPoint) {
@@ -630,10 +1058,11 @@ export const TradeChart = ({
         return;
       }
 
+      const id = createDrawingId();
       onDrawingsChange([
         ...drawings,
         {
-          id: createDrawingId(),
+          id,
           type: "trendline",
           startTime: draftPoint.time,
           startPrice: draftPoint.price,
@@ -641,10 +1070,11 @@ export const TradeChart = ({
           endPrice: point.price
         }
       ]);
+      setSelectedDrawingId(id);
       setDrawingTool("cursor");
       resetDrawingDraft();
     },
-    [canDraw, draftPoint, drawingTool, drawings, onDrawingsChange, resetDrawingDraft, resolveDrawingPoint]
+    [canDraw, draftPoint, drawingTool, drawings, onDrawingsChange, resetDrawingDraft, resolveDrawingPoint, hoverPoint]
   );
 
   const handleUndoDrawing = useCallback(() => {
@@ -654,6 +1084,7 @@ export const TradeChart = ({
 
     onDrawingsChange(drawings.slice(0, -1));
     setSelectedDrawingId(null);
+    setDrawingContextMenu(null);
     setDrawingTool("cursor");
     resetDrawingDraft();
   }, [drawings, onDrawingsChange, resetDrawingDraft]);
@@ -665,6 +1096,7 @@ export const TradeChart = ({
 
     onDrawingsChange([]);
     setSelectedDrawingId(null);
+    setDrawingContextMenu(null);
     setDrawingTool("cursor");
     resetDrawingDraft();
   }, [drawings.length, onDrawingsChange, resetDrawingDraft]);
@@ -679,6 +1111,47 @@ export const TradeChart = ({
       event.stopPropagation();
       setDrawingTool("cursor");
       setSelectedDrawingId(drawingId);
+      setDrawingContextMenu(null);
+      resetDrawingDraft();
+    },
+    [canDraw, resetDrawingDraft]
+  );
+
+  const handleOpenDrawingContextMenu = useCallback(
+    (event: React.MouseEvent<SVGElement>, drawingId: string) => {
+      if (!canDraw || !overlayRef.current) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = overlayRef.current.getBoundingClientRect();
+      setDrawingTool("cursor");
+      setDrawingDragTarget(null);
+      setSelectedDrawingId(drawingId);
+      resetDrawingDraft();
+      setDrawingContextMenu({
+        drawingId,
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top
+      });
+    },
+    [canDraw, resetDrawingDraft]
+  );
+
+  const handleStartDrawingDrag = useCallback(
+    (event: React.PointerEvent<SVGElement>, target: DrawingDragTarget) => {
+      if (!canDraw) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      setDrawingTool("cursor");
+      setSelectedDrawingId(target.id);
+      setDrawingDragTarget(target);
+      setDrawingContextMenu(null);
       resetDrawingDraft();
     },
     [canDraw, resetDrawingDraft]
@@ -695,7 +1168,12 @@ export const TradeChart = ({
       layout: {
         background: { type: ColorType.Solid, color: "#05070b" },
         textColor: "#a1a8b8",
-        attributionLogo: false
+        attributionLogo: false,
+        panes: {
+          enableResize: true,
+          separatorColor: "rgba(255,255,255,0.16)",
+          separatorHoverColor: "rgba(93, 168, 255, 0.18)"
+        }
       },
       grid: {
         vertLines: { color: "rgba(255,255,255,0.05)", style: 2 },
@@ -716,6 +1194,11 @@ export const TradeChart = ({
         horzLine: { color: "rgba(255, 255, 255, 0.18)", style: 2, labelBackgroundColor: "#3c63ff" }
       }
     });
+
+    const [pricePane] = chart.panes();
+    const volumePane = chart.addPane();
+    pricePane?.setStretchFactor(3);
+    volumePane.setStretchFactor(1);
 
     const series = chart.addSeries(CandlestickSeries, {
       upColor: "#2ee6d6",
@@ -778,29 +1261,135 @@ export const TradeChart = ({
       lastValueVisible: false
     });
 
-    const volumeSeries = chart.addSeries(
-      HistogramSeries,
-      {
-        priceFormat: {
-          type: "volume"
-        },
-        priceLineVisible: false,
-        lastValueVisible: false,
-        base: 0
+    const volumeSeries = volumePane.addSeries(HistogramSeries, {
+      priceFormat: {
+        type: "volume"
       },
-      1
-    );
-    volumeSeries.priceScale().applyOptions({
+      priceLineVisible: false,
+      lastValueVisible: false,
+      base: 0
+    });
+    volumePane.priceScale("right").applyOptions({
       scaleMargins: {
-        top: 0.12,
+        top: 0.08,
         bottom: 0
+      },
+      borderColor: "rgba(255,255,255,0.12)"
+    });
+    volumePane.priceScale("left").applyOptions({
+      visible: false
+    });
+    pricePane?.priceScale("right").applyOptions({
+      borderColor: "rgba(255,255,255,0.12)",
+      scaleMargins: {
+        top: 0.08,
+        bottom: 0.05
       }
     });
     series.priceScale().applyOptions({
       scaleMargins: {
         top: 0.08,
-        bottom: 0.22
+        bottom: 0.05
       }
+    });
+
+    // Bollinger Bands
+    const bbUpperSeries = chart.addSeries(LineSeries, {
+      color: "rgba(100, 200, 255, 0.5)",
+      lineWidth: 1,
+      lineStyle: LineStyle.Dashed,
+      crosshairMarkerVisible: false,
+      priceLineVisible: false,
+      lastValueVisible: false
+    });
+
+    const bbMiddleSeries = chart.addSeries(LineSeries, {
+      color: "rgba(200, 200, 200, 0.6)",
+      lineWidth: 1,
+      lineStyle: LineStyle.Dashed,
+      crosshairMarkerVisible: false,
+      priceLineVisible: false,
+      lastValueVisible: false
+    });
+
+    const bbLowerSeries = chart.addSeries(LineSeries, {
+      color: "rgba(100, 200, 255, 0.5)",
+      lineWidth: 1,
+      lineStyle: LineStyle.Dashed,
+      crosshairMarkerVisible: false,
+      priceLineVisible: false,
+      lastValueVisible: false
+    });
+
+    // MACD - create separate pane
+    const macdPane = chart.addPane(true);
+    macdPane.setStretchFactor(1);
+
+    const macdLineSeries = macdPane.addSeries(LineSeries, {
+      color: "#2962FF",
+      lineWidth: 2,
+      crosshairMarkerVisible: false,
+      priceLineVisible: false,
+      lastValueVisible: false
+    });
+
+    const macdSignalSeries = macdPane.addSeries(LineSeries, {
+      color: "#FF6A00",
+      lineWidth: 2,
+      crosshairMarkerVisible: false,
+      priceLineVisible: false,
+      lastValueVisible: false
+    });
+
+    const macdHistogramSeries = macdPane.addSeries(HistogramSeries, {
+      priceFormat: {
+        type: "volume"
+      },
+      priceLineVisible: false,
+      lastValueVisible: false,
+      base: 0
+    });
+    macdPane.priceScale("right").applyOptions({
+      scaleMargins: {
+        top: 0.1,
+        bottom: 0.1
+      },
+      borderColor: "rgba(255,255,255,0.12)"
+    });
+    macdPane.priceScale("left").applyOptions({
+      visible: false
+    });
+
+    // Stochastic - create separate pane
+    const stochPane = chart.addPane(true);
+    stochPane.setStretchFactor(1);
+
+    const stochKSeries = stochPane.addSeries(LineSeries, {
+      color: "#2962FF",
+      lineWidth: 2,
+      crosshairMarkerVisible: false,
+      priceLineVisible: false,
+      lastValueVisible: false
+    });
+
+    const stochDSeries = stochPane.addSeries(LineSeries, {
+      color: "#FF6A00",
+      lineWidth: 2,
+      crosshairMarkerVisible: false,
+      priceLineVisible: false,
+      lastValueVisible: false
+    });
+
+    // Add reference lines to stochastic pane (20, 50, 80)
+    stochPane.priceScale("right").applyOptions({
+      scaleMargins: {
+        top: 0.1,
+        bottom: 0.1
+      },
+      borderColor: "rgba(255,255,255,0.12)"
+    });
+    stochPane.priceScale("left").applyOptions({
+      visible: false
     });
 
     chartRef.current = chart;
@@ -812,6 +1401,12 @@ export const TradeChart = ({
     hodSeriesRef.current = hodSeries;
     lodSeriesRef.current = lodSeries;
     volumeSeriesRef.current = volumeSeries;
+    bollingerBandsSeriesRefs.current = { upper: bbUpperSeries, middle: bbMiddleSeries, lower: bbLowerSeries };
+    macdLineSeriesRef.current = macdLineSeries;
+    macdSignalSeriesRef.current = macdSignalSeries;
+    macdHistogramSeriesRef.current = macdHistogramSeries;
+    stochasticKSeriesRef.current = stochKSeries;
+    stochasticDSeriesRef.current = stochDSeries;
     const handleCrosshairMove = (param: MouseEventParams<Time>) => {
       setHoveredBar(findBarByTime(displayBarsRef.current, toUtcTimestamp(param.time)));
     };
@@ -833,8 +1428,22 @@ export const TradeChart = ({
       hodSeriesRef.current = null;
       lodSeriesRef.current = null;
       volumeSeriesRef.current = null;
+      rsiSeriesRef.current = null;
+      bollingerBandsSeriesRefs.current = { upper: null, middle: null, lower: null };
+      macdLineSeriesRef.current = null;
+      macdSignalSeriesRef.current = null;
+      macdHistogramSeriesRef.current = null;
+      stochasticKSeriesRef.current = null;
+      stochasticDSeriesRef.current = null;
+      rsiPriceLineRefs.current = [];
+      rsiPaneIndexRef.current = null;
     };
   }, [refreshOverlay]);
+
+  useEffect(() => {
+    chartRef.current?.applyOptions({ height });
+    requestAnimationFrame(refreshOverlay);
+  }, [height, refreshOverlay]);
 
   useEffect(() => {
     if (
@@ -867,6 +1476,21 @@ export const TradeChart = ({
     slowEmaSeriesRef.current.setData(showEma && layerVisibility.ema12 ? slowEmaData : []);
     vwapSeriesRef.current.setData(layerVisibility.vwap ? vwapData : []);
     volumeSeriesRef.current.setData(layerVisibility.volume ? buildVolumeSeries(displayBars) : []);
+    
+    // Bollinger Bands
+    if (layerVisibility.bollingerBands && bollingerBandsSeriesRefs.current.upper && bollingerBandsSeriesRefs.current.middle && bollingerBandsSeriesRefs.current.lower) {
+      const bbUpper = bollingerBandsData.map(d => ({ time: d.time, value: d.upper ?? 0 }));
+      const bbMiddle = bollingerBandsData.map(d => ({ time: d.time, value: d.middle ?? 0 }));
+      const bbLower = bollingerBandsData.map(d => ({ time: d.time, value: d.lower ?? 0 }));
+      bollingerBandsSeriesRefs.current.upper.setData(bbUpper);
+      bollingerBandsSeriesRefs.current.middle.setData(bbMiddle);
+      bollingerBandsSeriesRefs.current.lower.setData(bbLower);
+    } else if (bollingerBandsSeriesRefs.current.upper && bollingerBandsSeriesRefs.current.middle && bollingerBandsSeriesRefs.current.lower) {
+      bollingerBandsSeriesRefs.current.upper.setData([]);
+      bollingerBandsSeriesRefs.current.middle.setData([]);
+      bollingerBandsSeriesRefs.current.lower.setData([]);
+    }
+    
     const dayOpen = displayBars[0]?.open;
     const dayHigh = displayBars.length > 0 ? Math.max(...displayBars.map((bar) => bar.high)) : undefined;
     const dayLow = displayBars.length > 0 ? Math.min(...displayBars.map((bar) => bar.low)) : undefined;
@@ -880,7 +1504,63 @@ export const TradeChart = ({
       layerVisibility.lod && typeof dayLow === "number" ? buildFlatPriceSeries(displayBars, dayLow) : []
     );
 
-    if (displayBars.length === 0) {
+  }, [displayBars, fastEmaData, layerVisibility, showEma, slowEmaData, vwapData, bollingerBandsData]);
+
+  useEffect(() => {
+    if (!macdLineSeriesRef.current || !macdSignalSeriesRef.current || !macdHistogramSeriesRef.current) {
+      return;
+    }
+
+    if (layerVisibility.macd && macdData.length > 0) {
+      const macdLine = macdData.map(d => ({ time: d.time, value: d.value }));
+      const macdSignal = macdData
+        .filter(d => d.signal !== undefined)
+        .map(d => ({ time: d.time, value: d.signal ?? 0 }));
+      const macdHistogram = macdData
+        .filter(d => d.histogram !== undefined)
+        .map(d => ({ time: d.time, value: d.histogram ?? 0 }));
+
+      macdLineSeriesRef.current.setData(macdLine);
+      macdSignalSeriesRef.current.setData(macdSignal);
+      macdHistogramSeriesRef.current.setData(macdHistogram);
+    } else {
+      macdLineSeriesRef.current.setData([]);
+      macdSignalSeriesRef.current.setData([]);
+      macdHistogramSeriesRef.current.setData([]);
+    }
+  }, [layerVisibility.macd, macdData]);
+
+  useEffect(() => {
+    if (!stochasticKSeriesRef.current || !stochasticDSeriesRef.current) {
+      return;
+    }
+
+    if (layerVisibility.stochastic && stochasticData.length > 0) {
+      const stochK = stochasticData.map(d => ({ time: d.time, value: d.k ?? d.value }));
+      const stochD = stochasticData
+        .filter(d => d.d !== undefined)
+        .map(d => ({ time: d.time, value: d.d ?? 0 }));
+
+      stochasticKSeriesRef.current.setData(stochK);
+      stochasticDSeriesRef.current.setData(stochD);
+    } else {
+      stochasticKSeriesRef.current.setData([]);
+      stochasticDSeriesRef.current.setData([]);
+    }
+  }, [layerVisibility.stochastic, stochasticData]);
+
+  useEffect(() => {
+    if (!chartRef.current || !layerVisibility.rsi || rsiData.length === 0) {
+      removeRsiPane();
+      return;
+    }
+
+    const rsiSeries = ensureRsiPane();
+    rsiSeries?.setData(rsiData);
+  }, [ensureRsiPane, layerVisibility.rsi, removeRsiPane, rsiData]);
+
+  useEffect(() => {
+    if (!chartRef.current || displayBars.length === 0) {
       return;
     }
 
@@ -890,7 +1570,7 @@ export const TradeChart = ({
     }
 
     fitTradeRange();
-  }, [displayBars, fastEmaData, fitDayRange, fitTradeRange, height, layerVisibility, showEma, showMarkers, slowEmaData, trade, vwapData]);
+  }, [displayBars, fitDayRange, fitTradeRange, focusMode, interval, trade?.id]);
 
   const headerBar = hoveredBar ?? (displayBars.length > 0 ? displayBars[displayBars.length - 1] : null);
   const previousBar = useMemo(() => {
@@ -917,6 +1597,10 @@ export const TradeChart = ({
   const latestFastEma = fastEmaData.length > 0 ? fastEmaData[fastEmaData.length - 1]?.value ?? null : null;
   const latestSlowEma = slowEmaData.length > 0 ? slowEmaData[slowEmaData.length - 1]?.value ?? null : null;
   const latestVwap = vwapData.length > 0 ? vwapData[vwapData.length - 1]?.value ?? null : null;
+  const latestRsi = rsiData.length > 0 ? rsiData[rsiData.length - 1]?.value ?? null : null;
+  const latestBollingerBands = bollingerBandsData.length > 0 ? bollingerBandsData[bollingerBandsData.length - 1] : null;
+  const latestMACD = macdData.length > 0 ? macdData[macdData.length - 1] : null;
+  const latestStochastic = stochasticData.length > 0 ? stochasticData[stochasticData.length - 1] : null;
 
   const change = headerBar && previousBar ? headerBar.close - previousBar.close : 0;
   const changePct = headerBar && previousBar && previousBar.close !== 0 ? (change / previousBar.close) * 100 : 0;
@@ -925,12 +1609,7 @@ export const TradeChart = ({
       return [];
     }
 
-    const items: Array<{
-      key: keyof TradeChartLayerVisibility;
-      label: string;
-      colorClass: string;
-      value?: string;
-    }> = [];
+    const items: IndicatorItem[] = [];
 
     if (showMarkers) {
       items.push({ key: "entry", label: "Entry", colorClass: "legend-entry" });
@@ -954,6 +1633,25 @@ export const TradeChart = ({
       colorClass: "legend-volume",
       value: headerBar?.volume ? formatVolume(headerBar.volume) : undefined
     });
+    items.push({ key: "rsi", label: "RSI 14", colorClass: "legend-rsi", value: latestRsi?.toFixed(2) });
+    items.push({
+      key: "bollingerBands",
+      label: "Bollinger Bands",
+      colorClass: "legend-bollinger",
+      value: latestBollingerBands?.middle ? `${latestBollingerBands.middle.toFixed(2)}` : undefined
+    });
+    items.push({
+      key: "macd",
+      label: "MACD",
+      colorClass: "legend-macd",
+      value: latestMACD?.value ? `${latestMACD.value.toFixed(4)}` : undefined
+    });
+    items.push({
+      key: "stochastic",
+      label: "Stochastic",
+      colorClass: "legend-stochastic",
+      value: latestStochastic?.k ? `${latestStochastic.k.toFixed(2)}` : undefined
+    });
 
     return items;
   }, [
@@ -962,12 +1660,71 @@ export const TradeChart = ({
     dayOpen,
     headerBar?.volume,
     latestFastEma,
+    latestRsi,
     latestSlowEma,
     latestVwap,
+    latestBollingerBands,
+    latestMACD,
+    latestStochastic,
     onToggleLayerVisibility,
     showEma,
     showMarkers
   ]);
+
+  const handleSetAllLayers = useCallback(
+    (visible: boolean) => {
+      if (!onToggleLayerVisibility) {
+        return;
+      }
+
+      indicatorItems.forEach((item) => {
+        if (layerVisibility[item.key] !== visible) {
+          onToggleLayerVisibility(item.key);
+        }
+      });
+    },
+    [indicatorItems, layerVisibility, onToggleLayerVisibility]
+  );
+
+  const indicatorSections = useMemo(() => {
+    const findItems = (keys: Array<keyof TradeChartLayerVisibility>) =>
+      keys
+        .map((key) => indicatorItems.find((item) => item.key === key))
+        .filter((item): item is IndicatorItem => Boolean(item));
+
+    return [
+      {
+        title: "Trade Executions",
+        note: "Entry, add, average, and exit markers",
+        items: findItems(["entry", "addToWinner", "averageDown", "exit"])
+      },
+      {
+        title: "Moving Averages",
+        note: "Trend and mean reference overlays",
+        items: findItems(["ema9", "ema12", "vwap"])
+      },
+      {
+        title: "Levels",
+        note: "Session reference lines",
+        items: findItems(["open", "hod", "lod"])
+      },
+      {
+        title: "Panes",
+        note: "Volume and lower indicators",
+        items: findItems(["volume", "rsi", "macd", "stochastic"])
+      },
+      {
+        title: "Overlays",
+        note: "Price chart overlays",
+        items: findItems(["bollingerBands"])
+      }
+    ].filter((section) => section.items.length > 0);
+  }, [indicatorItems]);
+
+  const activeIndicatorItems = useMemo(
+    () => indicatorItems.filter((item) => layerVisibility[item.key]),
+    [indicatorItems, layerVisibility]
+  );
 
   const projectedDrawings = useMemo(() => {
     if (!chartRef.current || !seriesRef.current || overlaySize.width === 0 || overlaySize.height === 0) {
@@ -976,7 +1733,7 @@ export const TradeChart = ({
 
     return drawings
       .map((drawing) => {
-        if (drawing.type === "trendline") {
+        if (drawing.type === "trendline" || drawing.type === "fibonacci") {
           const x1 = chartRef.current?.timeScale().timeToCoordinate(drawing.startTime as UTCTimestamp);
           const y1 = seriesRef.current?.priceToCoordinate(drawing.startPrice);
           const x2 = chartRef.current?.timeScale().timeToCoordinate(drawing.endTime as UTCTimestamp);
@@ -1014,16 +1771,82 @@ export const TradeChart = ({
           };
         }
 
-        const x = chartRef.current?.timeScale().timeToCoordinate(drawing.time as UTCTimestamp);
-        if (typeof x !== "number") {
-          return null;
+        if (drawing.type === "vertical") {
+          const x = chartRef.current?.timeScale().timeToCoordinate(drawing.time as UTCTimestamp);
+          if (typeof x !== "number") {
+            return null;
+          }
+
+          return {
+            id: drawing.id,
+            type: drawing.type,
+            x
+          };
         }
 
-        return {
-          id: drawing.id,
-          type: drawing.type,
-          x
-        };
+        if (drawing.type === "pitchfork") {
+          const pivotX = chartRef.current?.timeScale().timeToCoordinate(drawing.pivotTime as UTCTimestamp);
+          const pivotY = seriesRef.current?.priceToCoordinate(drawing.pivotPrice);
+          const leftX = chartRef.current?.timeScale().timeToCoordinate(drawing.leftTime as UTCTimestamp);
+          const leftY = seriesRef.current?.priceToCoordinate(drawing.leftPrice);
+          const rightX = chartRef.current?.timeScale().timeToCoordinate(drawing.rightTime as UTCTimestamp);
+          const rightY = seriesRef.current?.priceToCoordinate(drawing.rightPrice);
+
+          if (
+            typeof pivotX !== "number" ||
+            typeof pivotY !== "number" ||
+            typeof leftX !== "number" ||
+            typeof leftY !== "number" ||
+            typeof rightX !== "number" ||
+            typeof rightY !== "number"
+          ) {
+            return null;
+          }
+
+          return {
+            id: drawing.id,
+            type: drawing.type,
+            pivotX,
+            pivotY,
+            leftX,
+            leftY,
+            rightX,
+            rightY
+          };
+        }
+
+        if (drawing.type === "channel") {
+          const x1 = chartRef.current?.timeScale().timeToCoordinate(drawing.startTime as UTCTimestamp);
+          const y1 = seriesRef.current?.priceToCoordinate(drawing.startPrice);
+          const x2 = chartRef.current?.timeScale().timeToCoordinate(drawing.endTime as UTCTimestamp);
+          const y2 = seriesRef.current?.priceToCoordinate(drawing.endPrice);
+          const x3 = chartRef.current?.timeScale().timeToCoordinate(drawing.parallelTime as UTCTimestamp);
+          const y3 = seriesRef.current?.priceToCoordinate(drawing.parallelPrice);
+
+          if (
+            typeof x1 !== "number" ||
+            typeof y1 !== "number" ||
+            typeof x2 !== "number" ||
+            typeof y2 !== "number" ||
+            typeof x3 !== "number" ||
+            typeof y3 !== "number"
+          ) {
+            return null;
+          }
+
+          return {
+            id: drawing.id,
+            type: drawing.type,
+            x1,
+            y1,
+            x2,
+            y2,
+            x3,
+            y3
+          };
+        }
+
+        return null;
       })
       .filter((drawing): drawing is NonNullable<typeof drawing> => drawing !== null);
   }, [drawings, overlaySize.height, overlaySize.width, overlayVersion]);
@@ -1110,13 +1933,61 @@ export const TradeChart = ({
         }
       : null;
 
+  const draftFibonacci =
+    draftPoint && hoverPoint && drawingTool === "fibonacci"
+      ? {
+          x1: draftPoint.x,
+          y1: draftPoint.y,
+          x2: hoverPoint.x,
+          y2: hoverPoint.y
+        }
+      : null;
+
+  const activeDrawingTool = drawingToolOptions.find((option) => option.key === drawingTool) ?? drawingToolOptions[0];
+  const drawingInstruction =
+    !canDraw && drawingTool !== "cursor"
+      ? "Load bars before drawing"
+      : drawingTool === "trendline"
+        ? draftPoint
+          ? "Click the second anchor point"
+          : "Click the first anchor point"
+        : drawingTool === "horizontal"
+          ? "Click the price level to place a horizontal line"
+          : drawingTool === "vertical"
+            ? "Click the time level to place a vertical line"
+            : drawingTool === "fibonacci"
+              ? draftPoint
+                ? "Click high or low to complete Fibonacci retracement"
+                : "Click the low point (start)"
+              : drawingTool === "pitchfork"
+                ? draftPoint && hoverPoint
+                  ? "Click the right pivot point"
+                  : draftPoint
+                    ? "Click the left pivot point"
+                    : "Click the center pivot point"
+                : drawingTool === "channel"
+                  ? draftPoint && hoverPoint
+                    ? "Click a point for the parallel line"
+                    : draftPoint
+                      ? "Click the end of the base line"
+                      : "Click the start point"
+                  : selectedDrawingId
+                    ? "Drag a handle or line to adjust. Press Delete to remove."
+                    : "Choose a drawing tool or click a line to select it";
+  const overlayModeClass =
+    drawingTool !== "cursor" && canDraw
+      ? " trade-chart-overlay-active"
+      : canDraw && drawings.length > 0
+        ? " trade-chart-overlay-editing"
+        : "";
+
   const intervalToolbar = availableIntervals && onChangeInterval ? (
     <div className="trade-chart-command-group trade-chart-command-group-intervals" aria-label="Chart timeframe">
       {availableIntervals.map((intervalOption) => (
         <button
           key={intervalOption}
           type="button"
-          className={`trade-chart-command-chip${interval === intervalOption ? " is-active" : ""}`}
+          className={`trade-chart-command-chip trade-chart-timeframe-chip${interval === intervalOption ? " is-active" : ""}`}
           onClick={() => onChangeInterval(intervalOption)}
         >
           {intervalOption}
@@ -1127,41 +1998,152 @@ export const TradeChart = ({
 
   return (
     <div className="trade-chart-shell">
-      <div className="trade-chart-command-bar">
-        <div className="trade-chart-command-group">
+      <div className="trade-chart-command-bar" role="toolbar" aria-label="Chart controls">
+        <div className="trade-chart-command-group trade-chart-command-group-main">
           <button type="button" className="trade-chart-symbol-pill">
-            {trade?.symbol ?? "Chart"}
+            <span className="trade-chart-symbol-avatar">{(trade?.symbol ?? "C").slice(0, 1)}</span>
+            <strong>{trade?.symbol ?? "Chart"}</strong>
           </button>
+          <button type="button" className="trade-chart-command-chip trade-chart-command-chip-icon" title="Add comparison" disabled>
+            +
+          </button>
+          <span className="trade-chart-command-separator" />
           {intervalToolbar}
-        </div>
-        <div className="trade-chart-command-group trade-chart-command-group-actions">
+          <span className="trade-chart-command-separator" />
           {onToggleLayerVisibility ? (
             <button
               type="button"
-              className={`trade-chart-command-chip trade-chart-command-chip-menu${showIndicatorStrip ? " is-active" : ""}`}
-              onClick={() => setShowIndicatorStrip((current) => !current)}
+              className={`trade-chart-command-chip trade-chart-command-chip-menu${showIndicatorMenu ? " is-active" : ""}`}
+              onClick={() => {
+                setShowIndicatorMenu((current) => !current);
+                setShowDrawingMenu(false);
+              }}
             >
-              Indicators
+              <span className="trade-chart-command-icon trade-chart-command-icon-indicators" />
+              <span>Indicators</span>
+              <span className="trade-chart-command-caret">v</span>
             </button>
           ) : null}
           {showDrawingTools ? (
             <button
               type="button"
-              className={`trade-chart-command-chip trade-chart-command-chip-menu${drawingTool !== "cursor" ? " is-active" : ""}`}
-              onClick={() => handleSelectDrawingTool(drawingTool === "cursor" ? "trendline" : "cursor")}
+              className={`trade-chart-command-chip trade-chart-command-chip-menu${showDrawingMenu || drawingTool !== "cursor" ? " is-active" : ""}`}
+              onClick={() => {
+                setShowDrawingMenu((current) => !current);
+                setShowIndicatorMenu(false);
+              }}
             >
-              Draw
+              <span className="trade-chart-command-icon trade-chart-command-icon-draw" />
+              <span>Draw{drawingTool !== "cursor" ? `: ${activeDrawingTool.label}` : ""}</span>
+              <span className="trade-chart-command-caret">v</span>
             </button>
           ) : null}
+        </div>
+        <div className="trade-chart-command-group trade-chart-command-group-actions">
+          <button type="button" className="trade-chart-command-chip trade-chart-command-chip-muted" disabled>
+            Alert
+          </button>
+          <button type="button" className="trade-chart-command-chip trade-chart-command-chip-muted" disabled>
+            Replay
+          </button>
           <button type="button" className="trade-chart-command-chip trade-chart-command-chip-menu" onClick={resetChartView}>
             Reset
           </button>
         </div>
       </div>
+      {showIndicatorMenu || showDrawingMenu ? (
+        <div className="trade-chart-menu-tray">
+          {showIndicatorMenu && onToggleLayerVisibility ? (
+            <div className="trade-chart-popover trade-chart-popover-indicators" aria-label="Indicator menu">
+              <div className="trade-chart-popover-header">
+                <strong>Indicators and layers</strong>
+                <span>Toggle what stays on the chart</span>
+              </div>
+              <div className="trade-chart-popover-actions trade-chart-popover-actions-compact">
+                <button type="button" onClick={() => handleSetAllLayers(true)}>
+                  Show all
+                </button>
+                <button type="button" onClick={() => handleSetAllLayers(false)}>
+                  Hide all
+                </button>
+                <button type="button" onClick={() => setShowIndicatorStrip((current) => !current)}>
+                  {showIndicatorStrip ? "Hide strip" : "Show strip"}
+                </button>
+              </div>
+              <div className="trade-chart-indicator-menu-sections">
+                {indicatorSections.map((section) => (
+                  <section key={section.title} className="trade-chart-indicator-menu-section">
+                    <div className="trade-chart-indicator-menu-section-header">
+                      <strong>{section.title}</strong>
+                      <span>{section.note}</span>
+                    </div>
+                    <div className="trade-chart-menu-grid">
+                      {section.items.map((item) => (
+                        <button
+                          key={item.key}
+                          type="button"
+                          className={`trade-chart-menu-option trade-chart-menu-option-indicator${layerVisibility[item.key] ? " is-active" : ""}`}
+                          onClick={() => onToggleLayerVisibility(item.key)}
+                        >
+                          <i className={`trade-chart-indicator-swatch ${item.colorClass}`} />
+                          <span>{item.label}</span>
+                          {item.value ? <strong>{item.value}</strong> : null}
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {showDrawingMenu ? (
+            <div className="trade-chart-popover trade-chart-popover-draw" aria-label="Drawing menu">
+              <div className="trade-chart-popover-header">
+                <strong>Drawing tools</strong>
+                <span>{drawingInstruction}</span>
+              </div>
+              <div className="trade-chart-menu-grid">
+                {drawingToolOptions.map((option) => (
+                  <button
+                    key={option.key}
+                    type="button"
+                    className={`trade-chart-menu-option trade-chart-menu-option-tool${drawingTool === option.key ? " is-active" : ""}`}
+                    onClick={() => handleSelectDrawingTool(option.key)}
+                    disabled={Boolean(option.requiresBars && !canDraw)}
+                  >
+                    <span className="trade-chart-menu-tool-mark">{option.railLabel}</span>
+                    <span>
+                      <strong>{option.label}</strong>
+                      <small>{option.description}</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <div className="trade-chart-popover-actions">
+                <button type="button" onClick={handleUndoDrawing} disabled={drawings.length === 0}>
+                  Undo
+                </button>
+                <button type="button" onClick={handleDeleteSelectedDrawing} disabled={!selectedDrawingId}>
+                  Delete selected
+                </button>
+                <button type="button" onClick={handleClearDrawings} disabled={drawings.length === 0}>
+                  Clear drawings
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {showDrawingTools ? (
+        <div className={`trade-chart-tool-status${drawingTool !== "cursor" ? " is-active" : ""}`} role="status">
+          <strong>{activeDrawingTool.label}</strong>
+          <span>{drawingInstruction}</span>
+        </div>
+      ) : null}
       <div className="trade-chart-header">
         <div className="trade-chart-title-group">
           <strong>{trade?.symbol ?? "Chart"}</strong>
-          <span>{trade ? `${trade.tradeDate} · ${intervalLabels[interval]}` : intervalLabels[interval]}</span>
+          <span>{trade ? `${trade.tradeDate} - ${intervalLabels[interval]}` : intervalLabels[interval]}</span>
         </div>
         <div className="trade-chart-readout">
           {headerBar ? (
@@ -1198,16 +2180,17 @@ export const TradeChart = ({
           </button>
         </div>
       </div>
-      {showIndicatorStrip && indicatorItems.length > 0 ? (
+      {showIndicatorStrip && activeIndicatorItems.length > 0 ? (
         <div className="trade-chart-indicator-strip">
-          {indicatorItems.map((item) => (
+          <span className="trade-chart-indicator-strip-label">Active</span>
+          {activeIndicatorItems.map((item) => (
             <button
               key={item.key}
               type="button"
-              className={`trade-chart-indicator-chip${layerVisibility[item.key] ? "" : " is-disabled"}`}
+              className="trade-chart-indicator-chip"
               onClick={() => onToggleLayerVisibility?.(item.key)}
               aria-pressed={layerVisibility[item.key]}
-              title={`${layerVisibility[item.key] ? "Hide" : "Show"} ${item.label}`}
+              title={`Hide ${item.label}`}
             >
               <i className={`trade-chart-indicator-swatch ${item.colorClass}`} />
               <span>{item.label}</span>
@@ -1219,41 +2202,22 @@ export const TradeChart = ({
       <div className="trade-chart-stage">
         {showDrawingTools ? (
           <div className="trade-chart-tool-rail" aria-label="Drawing tools">
-            <button
-              type="button"
-              className={`trade-chart-tool-button${drawingTool === "cursor" ? " is-active" : ""}`}
-              onClick={() => handleSelectDrawingTool("cursor")}
-              title="Cursor"
-            >
-              <span className="trade-chart-tool-glyph">+</span>
-            </button>
-            <button
-              type="button"
-              className={`trade-chart-tool-button${drawingTool === "trendline" ? " is-active" : ""}`}
-              onClick={() => handleSelectDrawingTool("trendline")}
-              disabled={!canDraw}
-              title="Trend line"
-            >
-              <span className="trade-chart-tool-glyph">?</span>
-            </button>
-            <button
-              type="button"
-              className={`trade-chart-tool-button${drawingTool === "horizontal" ? " is-active" : ""}`}
-              onClick={() => handleSelectDrawingTool("horizontal")}
-              disabled={!canDraw}
-              title="Horizontal line"
-            >
-              <span className="trade-chart-tool-glyph">—</span>
-            </button>
-            <button
-              type="button"
-              className={`trade-chart-tool-button${drawingTool === "vertical" ? " is-active" : ""}`}
-              onClick={() => handleSelectDrawingTool("vertical")}
-              disabled={!canDraw}
-              title="Vertical line"
-            >
-              <span className="trade-chart-tool-glyph">¦</span>
-            </button>
+            {drawingToolOptions.map((option) => (
+              <button
+                key={option.key}
+                type="button"
+                className={`trade-chart-tool-button${drawingTool === option.key ? " is-active" : ""}`}
+                onClick={() => handleSelectDrawingTool(option.key)}
+                disabled={Boolean(option.requiresBars && !canDraw)}
+                title={`${option.label}: ${option.description}`}
+                aria-label={option.label}
+              >
+                <span className={`trade-chart-tool-glyph${option.railLabel.length > 2 ? " trade-chart-tool-glyph-text" : ""}`}>
+                  {option.railLabel}
+                </span>
+              </button>
+            ))}
+            <span className="trade-chart-tool-divider" />
             <button
               type="button"
               className="trade-chart-tool-button trade-chart-tool-button-muted"
@@ -1261,7 +2225,7 @@ export const TradeChart = ({
               disabled={drawings.length === 0}
               title="Undo"
             >
-              <span className="trade-chart-tool-glyph">?</span>
+              <span className="trade-chart-tool-glyph trade-chart-tool-glyph-text">Undo</span>
             </button>
             <button
               type="button"
@@ -1279,18 +2243,26 @@ export const TradeChart = ({
               disabled={drawings.length === 0}
               title="Clear"
             >
-              <span className="trade-chart-tool-glyph">?</span>
+              <span className="trade-chart-tool-glyph">X</span>
             </button>
           </div>
         ) : null}
-        <div className="trade-chart-canvas-wrap">
-          <div ref={containerRef} className="trade-chart-canvas" />
+        <div className="trade-chart-canvas-wrap" style={{ minHeight: height }}>
+          <div ref={containerRef} className="trade-chart-canvas" style={{ height }} />
+          {showDrawingTools && drawingTool !== "cursor" ? (
+            <div className="trade-chart-drawing-help">
+              <strong>{activeDrawingTool.label}</strong>
+              <span>{drawingInstruction}</span>
+            </div>
+          ) : null}
           <div
             ref={overlayRef}
-            className={`trade-chart-overlay${drawingTool !== "cursor" && canDraw ? " trade-chart-overlay-active" : ""}`}
+            className={`trade-chart-overlay${overlayModeClass}${drawingDragTarget ? " is-dragging" : ""}`}
             onPointerMove={handleOverlayPointerMove}
             onPointerLeave={handleOverlayPointerLeave}
             onPointerDown={handleOverlayPointerDown}
+            onPointerUp={handleOverlayPointerUp}
+            onPointerCancel={handleOverlayPointerUp}
           >
             <svg className="trade-chart-drawings" width="100%" height="100%">
             {projectedExecutionMarkers.map((marker) => (
@@ -1314,6 +2286,7 @@ export const TradeChart = ({
                       y2={drawing.y2}
                       className="trade-chart-drawing-hit-area"
                       onPointerDown={(event) => handleSelectDrawing(event, drawing.id)}
+                      onContextMenu={(event) => handleOpenDrawingContextMenu(event, drawing.id)}
                     />
                     <line
                       x1={drawing.x1}
@@ -1324,8 +2297,24 @@ export const TradeChart = ({
                     />
                     {isSelected ? (
                       <>
-                        <circle cx={drawing.x1} cy={drawing.y1} r={4} className="trade-chart-drawing-handle" />
-                        <circle cx={drawing.x2} cy={drawing.y2} r={4} className="trade-chart-drawing-handle" />
+                        <circle
+                          cx={drawing.x1}
+                          cy={drawing.y1}
+                          r={4}
+                          className="trade-chart-drawing-handle"
+                          onPointerDown={(event) =>
+                            handleStartDrawingDrag(event, { id: drawing.id, type: "trendline-start" })
+                          }
+                        />
+                        <circle
+                          cx={drawing.x2}
+                          cy={drawing.y2}
+                          r={4}
+                          className="trade-chart-drawing-handle"
+                          onPointerDown={(event) =>
+                            handleStartDrawingDrag(event, { id: drawing.id, type: "trendline-end" })
+                          }
+                        />
                       </>
                     ) : null}
                   </g>
@@ -1341,7 +2330,8 @@ export const TradeChart = ({
                       x2={overlaySize.width}
                       y2={drawing.y}
                       className="trade-chart-drawing-hit-area"
-                      onPointerDown={(event) => handleSelectDrawing(event, drawing.id)}
+                      onPointerDown={(event) => handleStartDrawingDrag(event, { id: drawing.id, type: "horizontal" })}
+                      onContextMenu={(event) => handleOpenDrawingContextMenu(event, drawing.id)}
                     />
                     <line
                       x1={0}
@@ -1362,7 +2352,8 @@ export const TradeChart = ({
                     x2={drawing.x}
                     y2={overlaySize.height}
                     className="trade-chart-drawing-hit-area"
-                    onPointerDown={(event) => handleSelectDrawing(event, drawing.id)}
+                    onPointerDown={(event) => handleStartDrawingDrag(event, { id: drawing.id, type: "vertical" })}
+                    onContextMenu={(event) => handleOpenDrawingContextMenu(event, drawing.id)}
                   />
                   <line
                     x1={drawing.x}
@@ -1402,6 +2393,21 @@ export const TradeChart = ({
                 />
               ) : null}
             </svg>
+            {drawingContextMenu ? (
+              <div
+                className="trade-chart-context-menu"
+                style={{
+                  left: Math.min(drawingContextMenu.x, Math.max(0, overlaySize.width - 190)),
+                  top: Math.min(drawingContextMenu.y, Math.max(0, overlaySize.height - 64))
+                }}
+                onPointerDown={(event) => event.stopPropagation()}
+                onContextMenu={(event) => event.preventDefault()}
+              >
+                <button type="button" onClick={() => handleDeleteDrawing(drawingContextMenu.drawingId)}>
+                  Delete drawing
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
       </div>

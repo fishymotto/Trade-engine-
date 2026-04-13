@@ -7,6 +7,12 @@ import {
 import Placeholder from "@tiptap/extension-placeholder";
 import TaskItem from "@tiptap/extension-task-item";
 import TaskList from "@tiptap/extension-task-list";
+import Underline from "@tiptap/extension-underline";
+import Link from "@tiptap/extension-link";
+import Highlight from "@tiptap/extension-highlight";
+import Subscript from "@tiptap/extension-subscript";
+import Superscript from "@tiptap/extension-superscript";
+import Image from "@tiptap/extension-image";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -20,6 +26,8 @@ interface JournalRichTextEditorProps {
   onChange: (content: JSONContent) => void;
   placeholder?: string;
   readOnly?: boolean;
+  compact?: boolean;
+  onImageInsert?: (file: File) => Promise<string>;
 }
 
 const getCurrentSlashQueryFromState = (state: Editor["state"]): string | null => {
@@ -267,7 +275,9 @@ export const JournalRichTextEditor = ({
   content,
   onChange,
   placeholder = "Type '/' for commands",
-  readOnly = false
+  readOnly = false,
+  compact = false,
+  onImageInsert
 }: JournalRichTextEditorProps) => {
   const [pendingContent, setPendingContent] = useState<JSONContent>(content);
   const [saveState, setSaveState] = useState<JournalSaveState>("saved");
@@ -295,6 +305,23 @@ export const JournalRichTextEditor = ({
       TaskList,
       TaskItem.configure({
         nested: true
+      }),
+      Underline,
+      Link.configure({
+        openOnClick: false,
+        autolink: true,
+        linkOnPaste: true
+      }),
+      Highlight.configure({
+        multicolor: true
+      }),
+      Subscript,
+      Superscript,
+      Image.configure({
+        allowBase64: true,
+        HTMLAttributes: {
+          class: "journal-image"
+        }
       }),
       Details.configure({
         persist: true,
@@ -466,12 +493,14 @@ export const JournalRichTextEditor = ({
   }
 
   return (
-    <div className="journal-rich-editor-shell">
-      {!readOnly ? <JournalBubbleMenu editor={editor} /> : null}
-      <div className="journal-rich-editor-status">
-        <span>{saveState === "saving" ? "Saving..." : "Saved"}</span>
-      </div>
-      <div className="journal-rich-editor-surface">
+    <div className={`journal-rich-editor-shell${compact ? " journal-rich-editor-shell-compact" : ""}`}>
+      {!readOnly ? <JournalBubbleMenu editor={editor} onImageInsert={onImageInsert} /> : null}
+      {!readOnly ? (
+        <div className="journal-rich-editor-status">
+          <span>{saveState === "saving" ? "Saving..." : "Saved"}</span>
+        </div>
+      ) : null}
+      <div className={`journal-rich-editor-surface${compact ? " journal-rich-editor-surface-compact" : ""}`}>
         <EditorContent editor={editor} className="journal-rich-editor" />
         {!readOnly && slashQuery !== null && slashQuery !== undefined && getCurrentSlashQuery(editor) !== null ? (
           <JournalSlashMenu

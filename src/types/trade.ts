@@ -2,11 +2,23 @@ export type TradeDirection = "Long" | "Short";
 export type TradeStatus = "Win" | "Loss";
 export type GameTag = "A Game" | "B+ Game" | "B Game" | "B- Game" | "C Game" | "";
 
+export interface TradeTagVisibilitySettings {
+  status: boolean;
+  mistake: boolean;
+  playbook: boolean;
+  game: boolean;
+  outTag: boolean;
+  execution: boolean;
+}
+
 export interface Settings {
   notionToken: string;
   notionDatabaseUrl: string;
   exportFolder: string;
   twelveDataApiKey: string;
+  brlToUsdRate: number;
+  brlTickerList: string;
+  tradeTagVisibility: TradeTagVisibilitySettings;
 }
 
 export interface RawExecutionRow {

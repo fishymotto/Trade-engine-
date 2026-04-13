@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnalyticsTable } from "../components/AnalyticsTable";
 import { DateFilterPopover } from "../components/DateFilterPopover";
+import { FilterSelect } from "../components/FilterSelect";
 import { PageHero } from "../components/PageHero";
 import { WorkspaceIcon } from "../components/WorkspaceIcon";
 import {
@@ -14,6 +15,7 @@ import {
   getTradeSummary,
   getVisibleMonthNavigation
 } from "../lib/analytics/tradeAnalytics";
+import { getTickerIcon, getTickerSector } from "../lib/tickers/tickerIcons";
 import type { GroupedTrade } from "../types/trade";
 
 interface DashboardPageProps {
@@ -60,6 +62,16 @@ const formatDateKey = (value: Date): string =>
   `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(
     value.getDate()
   ).padStart(2, "0")}`;
+
+const getMonthRangeFromKey = (monthKey: string): { startKey: string; endKey: string } => {
+  const [year, month] = monthKey.split("-");
+  const start = new Date(Number(year), Number(month) - 1, 1);
+  const end = new Date(Number(year), Number(month), 0);
+  return {
+    startKey: formatDateKey(start),
+    endKey: formatDateKey(end)
+  };
+};
 
 const buildMonthGrid = (
   visibleMonth: Date,
@@ -493,13 +505,8 @@ export const DashboardPage = ({
   useEffect(() => {
     if (availableMonthKeys.length === 0) {
       setVisibleMonthKey(getTodayMonthKey());
-      return;
     }
-
-    if (!availableMonthKeys.includes(visibleMonthKey)) {
-      setVisibleMonthKey(latestMonthKey);
-    }
-  }, [availableMonthKeys, latestMonthKey, visibleMonthKey]);
+  }, [availableMonthKeys]);
 
   const visibleMonth = useMemo(() => {
     const [year, month] = visibleMonthKey.split("-");
@@ -565,6 +572,14 @@ export const DashboardPage = ({
     setSelectedTradeDate(tradeDate);
   };
 
+  const focusMonthRange = (monthKey: string) => {
+    const { startKey, endKey } = getMonthRangeFromKey(monthKey);
+    setVisibleMonthKey(monthKey);
+    setSelectedTradeDateFilterStart(startKey);
+    setSelectedTradeDateFilterEnd(endKey);
+    setSelectedTradeDate(endKey);
+  };
+
   const activeFilters = [
     selectedTradeDateFilterStart || selectedTradeDateFilterEnd
       ? {
@@ -595,7 +610,10 @@ export const DashboardPage = ({
       <PageHero
         eyebrow="Dashboard"
         title="Trading Workspace Overview"
-        description="End-of-day review across saved sessions."
+        description={`End-of-day review for ${getDashboardRangeLabel(
+          selectedTradeDateFilterStart,
+          selectedTradeDateFilterEnd
+        ).toLowerCase()}.`}
       >
         <div className="page-hero-stat-grid">
           <div className="page-hero-stat-card">
@@ -620,9 +638,11 @@ export const DashboardPage = ({
         <div className="trade-view-filter-header">
           <div className="panel-header">
             <WorkspaceIcon icon="filter" alt="Dashboard filters icon" className="panel-header-icon" />
-            <h2>Dashboard Filters</h2>
+            <h2>Review Slice</h2>
           </div>
-          <span>Only matching trades are included in the widgets, calendar, and review tables below.</span>
+          <button type="button" className="mini-action" onClick={clearFilters}>
+            Clear All
+          </button>
         </div>
         <div className="trade-view-filter-grid trade-view-filter-grid-reports">
           <label className="trade-filter-field">
@@ -641,105 +661,81 @@ export const DashboardPage = ({
           </label>
           <label className="trade-filter-field">
             <span>Playbook</span>
-            <select
-              className="calendar-date-select"
+            <FilterSelect
+              ariaLabel="Dashboard playbook filter"
               value={selectedPlaybookFilter}
-              onChange={(event) => setSelectedPlaybookFilter(event.target.value)}
-            >
-              <option value="all">All Playbooks</option>
-              {playbookOptions.map((playbook) => (
-                <option key={playbook} value={playbook}>
-                  {playbook}
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedPlaybookFilter}
+              options={[
+                { label: "All Playbooks", value: "all" },
+                ...playbookOptions.map((playbook) => ({ label: playbook, value: playbook }))
+              ]}
+            />
           </label>
           <label className="trade-filter-field">
             <span>Symbol</span>
-            <select
-              className="calendar-date-select"
+            <FilterSelect
+              ariaLabel="Dashboard symbol filter"
               value={selectedSymbolFilter}
-              onChange={(event) => setSelectedSymbolFilter(event.target.value)}
-            >
-              <option value="all">All Symbols</option>
-              {symbolOptions.map((symbol) => (
-                <option key={symbol} value={symbol}>
-                  {symbol}
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedSymbolFilter}
+              options={[
+                { label: "All Symbols", value: "all" },
+                ...symbolOptions.map((symbol) => ({ label: symbol, value: symbol }))
+              ]}
+            />
           </label>
-          <button type="button" className="mini-action trade-filter-reset" onClick={clearFilters}>
-            Clear Filters
-          </button>
           <label className="trade-filter-field">
             <span>Status</span>
-            <select
-              className="calendar-date-select"
+            <FilterSelect
+              ariaLabel="Dashboard status filter"
               value={selectedStatusFilter}
-              onChange={(event) => setSelectedStatusFilter(event.target.value)}
-            >
-              <option value="all">All Status</option>
-              {statusOptions.map((status) => (
-                <option key={status} value={status}>
-                  {status}
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedStatusFilter}
+              options={[
+                { label: "All Status", value: "all" },
+                ...statusOptions.map((status) => ({ label: status, value: status }))
+              ]}
+            />
           </label>
           <label className="trade-filter-field">
             <span>Game</span>
-            <select
-              className="calendar-date-select"
+            <FilterSelect
+              ariaLabel="Dashboard game filter"
               value={selectedGameFilter}
-              onChange={(event) => setSelectedGameFilter(event.target.value)}
-            >
-              <option value="all">All Games</option>
-              {gameOptions.map((game) => (
-                <option key={game} value={game}>
-                  {game}
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedGameFilter}
+              options={[
+                { label: "All Games", value: "all" },
+                ...gameOptions.map((game) => ({ label: game, value: game }))
+              ]}
+            />
           </label>
           <label className="trade-filter-field">
             <span>Execution</span>
-            <select
-              className="calendar-date-select"
+            <FilterSelect
+              ariaLabel="Dashboard execution filter"
               value={selectedExecutionFilter}
-              onChange={(event) => setSelectedExecutionFilter(event.target.value)}
-            >
-              <option value="all">All Execution</option>
-              {executionOptions.map((execution) => (
-                <option key={execution} value={execution}>
-                  {execution}
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedExecutionFilter}
+              options={[
+                { label: "All Execution", value: "all" },
+                ...executionOptions.map((execution) => ({ label: execution, value: execution }))
+              ]}
+            />
           </label>
         </div>
+        <div className="active-filter-chip-row dashboard-review-chip-row" aria-label="Active review slice">
+          {activeFilters.length > 0 ? (
+            activeFilters.map((filter) => (
+            <span key={filter.key} className="active-filter-chip">
+              <strong>{filter.label}</strong>
+              <span>{filter.value}</span>
+            </span>
+            ))
+          ) : (
+            <span className="active-filter-chip active-filter-chip-muted">
+              <strong>Slice</strong>
+              <span>All saved trades</span>
+            </span>
+          )}
+        </div>
       </section>
-      {activeFilters.length > 0 ? (
-        <section className="placeholder-panel active-filter-strip">
-          <div className="active-filter-strip-header">
-            <div className="panel-header">
-              <WorkspaceIcon icon="filter" alt="Active filters icon" className="panel-header-icon" />
-              <h2>Active Review Slice</h2>
-            </div>
-            <button type="button" className="mini-action" onClick={clearFilters}>
-              Clear All
-            </button>
-          </div>
-          <div className="active-filter-chip-row">
-            {activeFilters.map((filter) => (
-              <span key={filter.key} className="active-filter-chip">
-                <strong>{filter.label}</strong>
-                <span>{filter.value}</span>
-              </span>
-            ))}
-          </div>
-        </section>
-      ) : null}
       <section className="dashboard-summary-grid">
         <DashboardSummaryCard
           title="Recent Session"
@@ -820,8 +816,10 @@ export const DashboardPage = ({
             </div>
             <div className="dashboard-line-stat-list">
               <div><span>Net P&L</span><strong>${overallSummary.totalNetPnl.toFixed(2)}</strong></div>
+              <div><span>Gross P&L</span><strong>${overallSummary.totalGrossPnl.toFixed(2)}</strong></div>
               <div><span>Win Rate</span><strong>{overallSummary.winRate.toFixed(1)}%</strong></div>
               <div><span>Trades</span><strong>{overallSummary.totalTrades}</strong></div>
+              <div><span>Fees</span><strong>${overallSummary.totalFees.toFixed(2)}</strong></div>
               <div><span>Avg Trade</span><strong>${overallSummary.avgTrade.toFixed(2)}</strong></div>
               <div><span>Profit Factor</span><strong>{overallSummary.profitFactor.toFixed(2)}</strong></div>
             </div>
@@ -834,6 +832,8 @@ export const DashboardPage = ({
               <div><span>Total Trades</span><strong>{databaseStats.totalTrades}</strong></div>
               <div><span>Executions</span><strong>{databaseStats.totalExecutions}</strong></div>
               <div><span>Shares Traded</span><strong>{databaseStats.totalSharesTraded.toLocaleString()}</strong></div>
+              <div><span>Gross P&L</span><strong>${databaseStats.totalGrossPnl.toFixed(2)}</strong></div>
+              <div><span>Fees</span><strong>${databaseStats.totalFees.toFixed(2)}</strong></div>
               <div><span>Sessions</span><strong>{databaseStats.sessions}</strong></div>
               <div><span>Symbols</span><strong>{databaseStats.symbols}</strong></div>
             </div>
@@ -867,21 +867,21 @@ export const DashboardPage = ({
               <button
                 type="button"
                 className="mini-action"
-                onClick={() => setVisibleMonthKey((current) => shiftMonthKey(current, -1))}
+                onClick={() => focusMonthRange(shiftMonthKey(visibleMonthKey, -1))}
               >
                 Prev
               </button>
               <button
                 type="button"
                 className="mini-action"
-                onClick={() => setVisibleMonthKey(getTodayMonthKey())}
+                onClick={() => focusMonthRange(getTodayMonthKey())}
               >
                 Today
               </button>
               <button
                 type="button"
                 className="mini-action"
-                onClick={() => setVisibleMonthKey((current) => shiftMonthKey(current, 1))}
+                onClick={() => focusMonthRange(shiftMonthKey(visibleMonthKey, 1))}
               >
                 Next
               </button>
@@ -926,7 +926,11 @@ export const DashboardPage = ({
           {selectedDaySummary ? (
             <>
               <div className="selected-session-list">
-                {selectedDayTrades.map((trade) => (
+                {selectedDayTrades.map((trade) => {
+                  const tickerIcon = getTickerIcon(trade.symbol);
+                  const tickerSector = getTickerSector(trade.symbol);
+
+                  return (
                   <button
                     key={trade.id}
                     type="button"
@@ -938,7 +942,20 @@ export const DashboardPage = ({
                     onClick={() => onSelectTrade?.(trade.id, trade.tradeDate)}
                   >
                     <strong>{trade.name}</strong>
-                    <span>{trade.symbol} · {trade.openTime} to {trade.closeTime}</span>
+                    <span className="selected-session-symbol-line">
+                      {tickerIcon ? (
+                        <img
+                          className={`ticker-icon ticker-icon-${trade.symbol.toLowerCase()}`}
+                          src={tickerIcon}
+                          alt={tickerSector ? `${tickerSector} sector icon` : `${trade.symbol} icon`}
+                        />
+                      ) : null}
+                      <span>{trade.symbol}</span>
+                      <span className="selected-session-symbol-divider">·</span>
+                      <span>
+                        {trade.openTime} to {trade.closeTime}
+                      </span>
+                    </span>
                     <span
                       className={`selected-session-pnl ${
                         trade.status === "Win" ? "selected-session-pnl-positive" : "selected-session-pnl-negative"
@@ -947,7 +964,8 @@ export const DashboardPage = ({
                       {trade.netPnlUsd >= 0 ? "+" : ""}${trade.netPnlUsd.toFixed(2)}
                     </span>
                   </button>
-                ))}
+                  );
+                })}
               </div>
             </>
           ) : (
@@ -1030,8 +1048,15 @@ export const DashboardPage = ({
             columns={[
               { key: "label", label: "Symbol", render: (row) => row.label },
               { key: "trades", label: "Trades", render: (row) => row.trades, align: "right" },
+              {
+                key: "totalSharesTraded",
+                label: "Shares",
+                render: (row) => (row.totalSharesTraded ?? 0).toLocaleString(),
+                align: "right"
+              },
               { key: "winRate", label: "Win Rate", render: (row) => `${row.winRate.toFixed(1)}%`, align: "right" },
-              { key: "netPnl", label: "Net P&L", render: (row) => `$${row.netPnl.toFixed(2)}`, align: "right" }
+              { key: "netPnl", label: "Net P&L", render: (row) => `$${row.netPnl.toFixed(2)}`, align: "right" },
+              { key: "totalFees", label: "Fees", render: (row) => `$${(row.totalFees ?? 0).toFixed(2)}`, align: "right" }
             ]}
           />
         </article>

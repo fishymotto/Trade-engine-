@@ -3,6 +3,7 @@ import type { GroupedTrade } from "../../types/trade";
 export interface TradeSummary {
   totalTrades: number;
   totalSharesTraded: number;
+  totalGrossPnl: number;
   totalNetPnl: number;
   totalFees: number;
   winCount: number;
@@ -17,6 +18,8 @@ export interface DatabaseStats {
   totalTrades: number;
   totalExecutions: number;
   totalSharesTraded: number;
+  totalGrossPnl: number;
+  totalFees: number;
   sessions: number;
   symbols: number;
 }
@@ -36,6 +39,7 @@ export interface IntradayMetrics {
 export interface PerformanceRow {
   label: string;
   trades: number;
+  totalSharesTraded?: number;
   winRate: number;
   netPnl: number;
   avgPnl: number;
@@ -95,6 +99,7 @@ const getTotalSharesTraded = (trades: GroupedTrade[]): number =>
 
 const summarizeGroup = (label: string, trades: GroupedTrade[]): PerformanceRow => {
   const tradeCount = trades.length;
+  const totalSharesTraded = getTotalSharesTraded(trades);
   const winCount = trades.filter((trade) => trade.status === "Win").length;
   const netPnl = trades.reduce((sum, trade) => sum + trade.netPnlUsd, 0);
   const totalFees = trades.reduce((sum, trade) => sum + trade.feesUsd, 0);
@@ -102,6 +107,7 @@ const summarizeGroup = (label: string, trades: GroupedTrade[]): PerformanceRow =
   return {
     label,
     trades: tradeCount,
+    totalSharesTraded,
     winRate: tradeCount > 0 ? (winCount / tradeCount) * 100 : 0,
     netPnl: round(netPnl),
     avgPnl: tradeCount > 0 ? round(netPnl / tradeCount) : 0,
@@ -112,6 +118,7 @@ const summarizeGroup = (label: string, trades: GroupedTrade[]): PerformanceRow =
 export const getTradeSummary = (trades: GroupedTrade[]): TradeSummary => {
   const totalTrades = trades.length;
   const totalSharesTraded = getTotalSharesTraded(trades);
+  const totalGrossPnl = trades.reduce((sum, trade) => sum + trade.grossPnlUsd, 0);
   const totalNetPnl = trades.reduce((sum, trade) => sum + trade.netPnlUsd, 0);
   const totalFees = trades.reduce((sum, trade) => sum + trade.feesUsd, 0);
   const winCount = trades.filter((trade) => trade.status === "Win").length;
@@ -128,6 +135,7 @@ export const getTradeSummary = (trades: GroupedTrade[]): TradeSummary => {
   return {
     totalTrades,
     totalSharesTraded,
+    totalGrossPnl: round(totalGrossPnl),
     totalNetPnl: round(totalNetPnl),
     totalFees: round(totalFees),
     winCount,
@@ -168,6 +176,8 @@ export const getDatabaseStats = (trades: GroupedTrade[]): DatabaseStats => ({
     0
   ),
   totalSharesTraded: getTotalSharesTraded(trades),
+  totalGrossPnl: round(trades.reduce((sum, trade) => sum + trade.grossPnlUsd, 0)),
+  totalFees: round(trades.reduce((sum, trade) => sum + trade.feesUsd, 0)),
   sessions: new Set(trades.map((trade) => trade.tradeDate)).size,
   symbols: new Set(trades.map((trade) => trade.symbol)).size
 });
@@ -285,6 +295,23 @@ export const getPerformanceByGame = (trades: GroupedTrade[]): PerformanceRow[] =
     .sort((left, right) => right.netPnl - left.netPnl || right.trades - left.trades);
 };
 
+export const getPerformanceByExecution = (trades: GroupedTrade[]): PerformanceRow[] => {
+  const grouped = new Map<string, GroupedTrade[]>();
+
+  for (const trade of trades) {
+    const keys = trade.execution.length > 0 ? trade.execution : ["No Execution"];
+    for (const execution of keys) {
+      const current = grouped.get(execution) ?? [];
+      current.push(trade);
+      grouped.set(execution, current);
+    }
+  }
+
+  return Array.from(grouped.entries())
+    .map(([label, group]) => summarizeGroup(label, group))
+    .sort((left, right) => right.netPnl - left.netPnl || right.trades - left.trades);
+};
+
 export const getCumulativeNetPnlByDate = (trades: GroupedTrade[]): TimeSeriesPoint[] => {
   const dailyTotals = new Map<string, number>();
 
@@ -305,6 +332,51 @@ export const getCumulativeNetPnlByDate = (trades: GroupedTrade[]): TimeSeriesPoi
     });
 };
 
+export const getNetPnlByDate = (trades: GroupedTrade[]): TimeSeriesPoint[] => {
+  const dailyTotals = new Map<string, number>();
+
+  for (const trade of trades) {
+    dailyTotals.set(trade.tradeDate, (dailyTotals.get(trade.tradeDate) ?? 0) + trade.netPnlUsd);
+  }
+
+  return Array.from(dailyTotals.entries())
+    .sort((left, right) => left[0].localeCompare(right[0]))
+    .map(([label, value]) => ({
+      label,
+      value: round(value)
+    }));
+};
+
+export const getFeesByDate = (trades: GroupedTrade[]): TimeSeriesPoint[] => {
+  const dailyTotals = new Map<string, number>();
+
+  for (const trade of trades) {
+    dailyTotals.set(trade.tradeDate, (dailyTotals.get(trade.tradeDate) ?? 0) + trade.feesUsd);
+  }
+
+  return Array.from(dailyTotals.entries())
+    .sort((left, right) => left[0].localeCompare(right[0]))
+    .map(([label, value]) => ({
+      label,
+      value: round(value)
+    }));
+};
+
+export const getSharesTradedByDate = (trades: GroupedTrade[]): TimeSeriesPoint[] => {
+  const dailyTotals = new Map<string, number>();
+
+  for (const trade of trades) {
+    dailyTotals.set(trade.tradeDate, (dailyTotals.get(trade.tradeDate) ?? 0) + getTotalSharesTraded([trade]));
+  }
+
+  return Array.from(dailyTotals.entries())
+    .sort((left, right) => left[0].localeCompare(right[0]))
+    .map(([label, value]) => ({
+      label,
+      value: round(value)
+    }));
+};
+
 export const getSizeByDate = (trades: GroupedTrade[]): TimeSeriesPoint[] => {
   const dailyTotals = new Map<string, number>();
 
@@ -318,6 +390,26 @@ export const getSizeByDate = (trades: GroupedTrade[]): TimeSeriesPoint[] => {
       label,
       value: round(value)
     }));
+};
+
+export const getCumulativeSizeByDate = (trades: GroupedTrade[]): TimeSeriesPoint[] => {
+  const dailyTotals = new Map<string, number>();
+
+  for (const trade of trades) {
+    dailyTotals.set(trade.tradeDate, (dailyTotals.get(trade.tradeDate) ?? 0) + trade.size);
+  }
+
+  let runningTotal = 0;
+
+  return Array.from(dailyTotals.entries())
+    .sort((left, right) => left[0].localeCompare(right[0]))
+    .map(([label, value]) => {
+      runningTotal += value;
+      return {
+        label,
+        value: round(runningTotal)
+      };
+    });
 };
 
 export const getRecentSessionBreakdown = (trades: GroupedTrade[]): PerformanceRow[] => {

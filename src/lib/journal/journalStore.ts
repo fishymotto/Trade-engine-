@@ -7,8 +7,7 @@ import {
   hasJournalDocContent,
   journalBlocksToDoc
 } from "./journalContent";
-
-const STORAGE_KEY = "trade-engine-journal-pages";
+import { syncStores } from "../sync/syncStore";
 
 const normalizeTradeDate = (tradeDate: string) => {
   if (!tradeDate) {
@@ -128,6 +127,12 @@ const normalizeJournalPage = (
     closingContent?: JSONContent;
     mppPlanContent?: JSONContent;
     notesContent?: JSONContent;
+    sleepHours?: string;
+    sleepScore?: string;
+    morningMood?: string;
+    openMood?: string;
+    afternoonMood?: string;
+    closeMood?: string;
   }
 ): JournalPageRecord => {
   const morningBlocks = ensureBlocks(page.morningBlocks, page.morningJournal ?? "");
@@ -141,6 +146,12 @@ const normalizeJournalPage = (
     tradeDate: normalizeTradeDate(page.tradeDate),
     dayGrade: page.dayGrade ?? "",
     mpp: page.mpp ?? "",
+    sleepHours: page.sleepHours ?? "7.5",
+    sleepScore: page.sleepScore ?? "",
+    morningMood: page.morningMood ?? "",
+    openMood: page.openMood ?? "",
+    afternoonMood: page.afternoonMood ?? "",
+    closeMood: page.closeMood ?? "",
     screenshotUrls: Array.isArray((page as { screenshotUrls?: unknown }).screenshotUrls)
       ? ((page as { screenshotUrls?: unknown[] }).screenshotUrls ?? []).filter(
           (value): value is string => typeof value === "string" && value.trim().length > 0
@@ -186,23 +197,9 @@ export const dedupeJournalPages = (pages: JournalPageRecord[]): JournalPageRecor
 };
 
 export const loadJournalPages = (): JournalPageRecord[] => {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Array<JournalPageRecord & { content?: string }>;
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-
-    return dedupeJournalPages(parsed.map(normalizeJournalPage));
-  } catch {
-    return [];
-  }
+  return syncStores.journalPages.load<JournalPageRecord[]>([]);
 };
 
 export const saveJournalPages = (pages: JournalPageRecord[]): void => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(dedupeJournalPages(pages)));
+  void syncStores.journalPages.save(dedupeJournalPages(pages));
 };

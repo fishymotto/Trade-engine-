@@ -3,8 +3,7 @@ import { Button } from "../components/Button";
 import { DropZone } from "../components/DropZone";
 import { PageHero } from "../components/PageHero";
 import { PreviewTable } from "../components/PreviewTable";
-import { tradeTagOptionsByField } from "../lib/trades/tradeTagCatalog";
-import type { EditableTradeRow } from "../types/tradeTags";
+import type { EditableTradeRow, EditableTradeTagField } from "../types/tradeTags";
 import type { GroupedTrade } from "../types/trade";
 
 interface ImportPageProps {
@@ -18,6 +17,7 @@ interface ImportPageProps {
   onImport: () => Promise<void>;
   onClear: () => void;
   onSettings: () => void;
+  tagOptionsByField: Record<EditableTradeTagField, string[]>;
 }
 
 export const ImportPage = ({
@@ -30,7 +30,8 @@ export const ImportPage = ({
   onExport,
   onImport,
   onClear,
-  onSettings
+  onSettings,
+  tagOptionsByField
 }: ImportPageProps) => {
   const previewRows: EditableTradeRow[] = trades.map((trade) => ({
     ...trade,
@@ -80,7 +81,7 @@ export const ImportPage = ({
       </div>
       <PreviewTable
         trades={previewRows}
-        tagOptionsByField={tradeTagOptionsByField}
+        tagOptionsByField={tagOptionsByField}
         selectedTradeIds={[]}
         onToggleTradeSelection={() => undefined}
         onToggleSelectAll={() => undefined}

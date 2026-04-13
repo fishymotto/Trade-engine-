@@ -1,38 +1,98 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { JournalRichTextEditor } from "../components/journal/JournalRichTextEditor";
 import { PageHero } from "../components/PageHero";
+import { PreviewTable } from "../components/PreviewTable";
 import { WorkspaceIcon } from "../components/WorkspaceIcon";
 import { getDatabaseStats, getTradeSummary } from "../lib/analytics/tradeAnalytics";
 import type { JournalChecklistTemplates, NamedChecklistTemplate } from "../lib/journal/journalTemplateStore";
+import { getTickerIcon as getTickerIconSrc, getTickerSector } from "../lib/tickers/tickerIcons";
 import type { JournalContentField, JournalPageRecord } from "../types/journal";
-import type { GroupedTrade } from "../types/trade";
+import type { EditableTradeRow, EditableTradeTagField } from "../types/tradeTags";
 
 interface JournalPageProps {
   pages: JournalPageRecord[];
   selectedPageId: string;
-  trades: GroupedTrade[];
+  trades: EditableTradeRow[];
+  tagOptionsByField: Record<EditableTradeTagField, string[]>;
   checklistTemplates: JournalChecklistTemplates;
   externalSelectedTradeDate: string;
   onSelectPage: (pageId: string) => void;
+  onSelectTrade: (tradeId: string, tradeDate: string) => void;
   onCreatePage: (tradeDate: string) => void;
   onUpdatePage: (
     pageId: string,
     updates: Partial<
-      Pick<JournalPageRecord, "tradeDate" | "dayGrade" | "mpp" | "screenshotUrls">
+      Pick<
+        JournalPageRecord,
+        | "tradeDate"
+        | "dayGrade"
+        | "mpp"
+        | "sleepHours"
+        | "sleepScore"
+        | "morningMood"
+        | "openMood"
+        | "afternoonMood"
+        | "closeMood"
+        | "screenshotUrls"
+      >
     >
   ) => void;
   onUpdateContent: (pageId: string, field: JournalContentField, content: JournalPageRecord[JournalContentField]) => void;
   onSaveChecklistTemplateAs: (
-    type: "morning" | "closing",
+    type: "morning" | "closing" | "mpp",
     name: string,
     content: NamedChecklistTemplate["content"]
   ) => void;
-  onDeleteChecklistTemplate: (type: "morning" | "closing", templateId: string) => void;
+  onDeleteChecklistTemplate: (type: "morning" | "closing" | "mpp", templateId: string) => void;
+  onUpdateTradeTag: (trade: EditableTradeRow, field: EditableTradeTagField, value: string | null) => void;
+  onCreateTradeTagOption: (field: EditableTradeTagField, value: string) => void;
 }
 
 const dayGradeOptions = ["", "A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-"];
+const sleepHourOptions = Array.from({ length: 11 }, (_, index) => (4 + index * 0.5).toString());
+const sleepScoreOptions = ["", "1", "2", "3", "4", "5"];
+const moodOptions = [
+  "",
+  "Flow State",
+  "Locked in",
+  "Focused",
+  "Productive",
+  "Confident",
+  "Calm",
+  "Well rested",
+  "Excited",
+  "Meh",
+  "Slow Moving",
+  "Tired",
+  "Sore",
+  "Hesitant",
+  "Distracted",
+  "Feeling a little behind",
+  "Foggy",
+  "Nervous",
+  "Anxious",
+  "Bummed Out",
+  "Starting to get sick",
+  "Stressed",
+  "Frustrated",
+  "Irritable",
+  "Mentally Checked Out",
+  "Overconfident",
+  "Tilted",
+  "Sick",
+  "Panicked",
+  "Revenge Trading"
+];
+const screenshotColumnLabels = ["Open Chart", "Close Chart", "Context Chart"] as const;
 
-const getTickerIcon = (_ticker: string) => "trades" as const;
+const getScreenshotSlotMeta = (index: number) => {
+  const rowNumber = Math.floor(index / 3) + 1;
+  const columnLabel = screenshotColumnLabels[index % 3];
+  return {
+    label: columnLabel,
+    rowLabel: rowNumber === 1 ? "Primary Set" : `Set ${rowNumber}`
+  };
+};
 
 const readFileAsDataUrl = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -67,18 +127,51 @@ const formatJournalDate = (tradeDate: string) => {
   });
 };
 
+const getSortableTimestamp = (value: string) => {
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const formatSignedMoney = (value: number) => `${value >= 0 ? "+" : ""}$${value.toFixed(2)}`;
+
+const getMonthKey = (tradeDate: string) => tradeDate.slice(0, 7); // "2026-04"
+
+const formatMonthHeader = (monthKey: string) => {
+  const [year, month] = monthKey.split("-");
+  const date = new Date(`${monthKey}-01T00:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return monthKey;
+  }
+  return date.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+};
+
+const groupPagesByMonth = (pages: JournalPageRecord[]): Map<string, JournalPageRecord[]> => {
+  const grouped = new Map<string, JournalPageRecord[]>();
+  for (const page of pages) {
+    const monthKey = getMonthKey(page.tradeDate);
+    const existing = grouped.get(monthKey) ?? [];
+    existing.push(page);
+    grouped.set(monthKey, existing);
+  }
+  return grouped;
+};
+
 export const JournalPage = ({
   pages,
   selectedPageId,
   trades,
+  tagOptionsByField,
   checklistTemplates,
   externalSelectedTradeDate,
   onSelectPage,
+  onSelectTrade,
   onCreatePage,
   onUpdatePage,
   onUpdateContent,
   onSaveChecklistTemplateAs,
-  onDeleteChecklistTemplate
+  onDeleteChecklistTemplate,
+  onUpdateTradeTag,
+  onCreateTradeTagOption
 }: JournalPageProps) => {
   const [draftTradeDate, setDraftTradeDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [visibleScreenshotRows, setVisibleScreenshotRows] = useState(1);
@@ -86,8 +179,19 @@ export const JournalPage = ({
   const [pendingScreenshotSlotIndex, setPendingScreenshotSlotIndex] = useState<number | null>(null);
   const [selectedMorningTemplateId, setSelectedMorningTemplateId] = useState("");
   const [selectedClosingTemplateId, setSelectedClosingTemplateId] = useState("");
+  const [selectedMppTemplateId, setSelectedMppTemplateId] = useState("");
+  const [selectedJournalTradeId, setSelectedJournalTradeId] = useState("");
+  const [selectedJournalTradeIds, setSelectedJournalTradeIds] = useState<string[]>([]);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [tempDate, setTempDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [expandedMonths, setExpandedMonths] = useState<Set<string>>(() => new Set());
   const lastExternalSyncRef = useRef("");
+  const expandedMonthsInitializedRef = useRef(false);
   const screenshotInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleImageInsert = async (file: File): Promise<string> => {
+    return readFileAsDataUrl(file);
+  };
 
   const selectedPage = useMemo(
     () => pages.find((page) => page.id === selectedPageId) ?? pages[0] ?? null,
@@ -95,9 +199,40 @@ export const JournalPage = ({
   );
 
   const sortedPages = useMemo(
-    () => [...pages].sort((left, right) => right.tradeDate.localeCompare(left.tradeDate)),
+    () =>
+      [...pages].sort((left, right) => {
+        const tradeDateCompare = right.tradeDate.localeCompare(left.tradeDate);
+        if (tradeDateCompare !== 0) {
+          return tradeDateCompare;
+        }
+
+        const updatedAtCompare = getSortableTimestamp(right.updatedAt) - getSortableTimestamp(left.updatedAt);
+        if (updatedAtCompare !== 0) {
+          return updatedAtCompare;
+        }
+
+        const createdAtCompare = getSortableTimestamp(right.createdAt) - getSortableTimestamp(left.createdAt);
+        if (createdAtCompare !== 0) {
+          return createdAtCompare;
+        }
+
+        return right.id.localeCompare(left.id);
+      }),
     [pages]
   );
+  const sortedPagesRef = useRef(sortedPages);
+
+  useEffect(() => {
+    sortedPagesRef.current = sortedPages;
+  }, [sortedPages]);
+
+  useEffect(() => {
+    if (!expandedMonthsInitializedRef.current && sortedPages.length > 0) {
+      const firstMonth = getMonthKey(sortedPages[0].tradeDate);
+      setExpandedMonths(new Set([firstMonth]));
+      expandedMonthsInitializedRef.current = true;
+    }
+  }, [sortedPages.length]);
 
   const linkedTrades = useMemo(
     () =>
@@ -113,9 +248,55 @@ export const JournalPage = ({
     () => Array.from(new Set(linkedTrades.map((trade) => trade.symbol))).sort(),
     [linkedTrades]
   );
+  const journalPageSummaries = useMemo(
+    () =>
+      new Map(
+        pages.map((page) => {
+          const pageTrades = trades.filter((trade) => trade.tradeDate === page.tradeDate);
+          const summary = getTradeSummary(pageTrades);
+          return [
+            page.id,
+            {
+              netPnl: summary.totalNetPnl,
+              tradeCount: summary.totalTrades,
+              tickers: Array.from(new Set(pageTrades.map((trade) => trade.symbol))).sort()
+            }
+          ];
+        })
+      ),
+    [pages, trades]
+  );
 
   const linkedTradeSummary = useMemo(() => getTradeSummary(linkedTrades), [linkedTrades]);
   const linkedDatabaseStats = useMemo(() => getDatabaseStats(linkedTrades), [linkedTrades]);
+  const linkedPlaybookStats = useMemo(() => {
+    const grouped = new Map<string, EditableTradeRow[]>();
+
+    for (const trade of linkedTrades) {
+      for (const setup of trade.setups) {
+        const playbook = setup.trim();
+        if (!playbook || playbook === "No Setup") {
+          continue;
+        }
+
+        const current = grouped.get(playbook) ?? [];
+        current.push(trade);
+        grouped.set(playbook, current);
+      }
+    }
+
+    return Array.from(grouped.entries())
+      .map(([playbook, playbookTrades]) => ({
+        playbook,
+        summary: getTradeSummary(playbookTrades)
+      }))
+      .sort(
+        (left, right) =>
+          right.summary.totalNetPnl - left.summary.totalNetPnl ||
+          right.summary.totalTrades - left.summary.totalTrades ||
+          left.playbook.localeCompare(right.playbook)
+      );
+  }, [linkedTrades]);
   const visibleScreenshotSlots = useMemo(() => {
     const requiredSlots = Math.max(3, selectedPage?.screenshotUrls.length ?? 0);
     return Math.max(requiredSlots, visibleScreenshotRows * 3);
@@ -134,10 +315,16 @@ export const JournalPage = ({
       null,
     [checklistTemplates.closingTemplates, selectedClosingTemplateId]
   );
+  const selectedMppTemplate = useMemo(
+    () =>
+      checklistTemplates.mppTemplates.find((template) => template.id === selectedMppTemplateId) ??
+      checklistTemplates.mppTemplates[0] ??
+      null,
+    [checklistTemplates.mppTemplates, selectedMppTemplateId]
+  );
 
   useEffect(() => {
     if (!externalSelectedTradeDate) {
-      lastExternalSyncRef.current = "";
       return;
     }
 
@@ -147,11 +334,11 @@ export const JournalPage = ({
 
     lastExternalSyncRef.current = externalSelectedTradeDate;
     setDraftTradeDate(externalSelectedTradeDate);
-    const matchingPage = sortedPages.find((page) => page.tradeDate === externalSelectedTradeDate);
+    const matchingPage = sortedPagesRef.current.find((page) => page.tradeDate === externalSelectedTradeDate);
     if (matchingPage) {
       onSelectPage(matchingPage.id);
     }
-  }, [externalSelectedTradeDate, onSelectPage, sortedPages]);
+  }, [externalSelectedTradeDate, onSelectPage]);
 
   useEffect(() => {
     const imageCount = selectedPage?.screenshotUrls.length ?? 0;
@@ -159,6 +346,13 @@ export const JournalPage = ({
     setExpandedScreenshotUrl("");
     setPendingScreenshotSlotIndex(null);
   }, [selectedPage?.id, selectedPage?.screenshotUrls.length]);
+
+  useEffect(() => {
+    setSelectedJournalTradeIds([]);
+    setSelectedJournalTradeId((current) =>
+      linkedTrades.some((trade) => trade.id === current) ? current : linkedTrades[0]?.id ?? ""
+    );
+  }, [linkedTrades]);
 
   useEffect(() => {
     if (!selectedMorningTemplateId && checklistTemplates.morningTemplates[0]) {
@@ -188,26 +382,44 @@ export const JournalPage = ({
     }
   }, [checklistTemplates.closingTemplates, selectedClosingTemplateId]);
 
-  const promptForTemplateName = (type: "morning" | "closing") => {
-    const suggestion = `${type === "morning" ? "Morning" : "Closing"} Template`;
+  useEffect(() => {
+    if (!selectedMppTemplateId && checklistTemplates.mppTemplates[0]) {
+      setSelectedMppTemplateId(checklistTemplates.mppTemplates[0].id);
+      return;
+    }
+
+    if (
+      selectedMppTemplateId &&
+      !checklistTemplates.mppTemplates.some((template) => template.id === selectedMppTemplateId)
+    ) {
+      setSelectedMppTemplateId(checklistTemplates.mppTemplates[0]?.id ?? "");
+    }
+  }, [checklistTemplates.mppTemplates, selectedMppTemplateId]);
+
+  const promptForTemplateName = (type: "morning" | "closing" | "mpp") => {
+    const suggestion = `${type === "morning" ? "Morning" : type === "closing" ? "Closing" : "MPP"} Template`;
     const response = window.prompt("Template name", suggestion);
     const trimmed = response?.trim();
     return trimmed || "";
   };
 
-  const confirmDeleteTemplate = (type: "morning" | "closing", template: NamedChecklistTemplate | null) => {
+  const confirmDeleteTemplate = (type: "morning" | "closing" | "mpp", template: NamedChecklistTemplate | null) => {
     if (!template) {
       return;
     }
 
     const templateCount =
-      type === "morning" ? checklistTemplates.morningTemplates.length : checklistTemplates.closingTemplates.length;
+      type === "morning"
+        ? checklistTemplates.morningTemplates.length
+        : type === "closing"
+          ? checklistTemplates.closingTemplates.length
+          : checklistTemplates.mppTemplates.length;
 
     if (templateCount <= 1) {
       return;
     }
 
-    const confirmed = window.confirm(`Delete the ${type} checklist template "${template.name}"?`);
+    const confirmed = window.confirm(`Delete the ${type} template "${template.name}"?`);
     if (!confirmed) {
       return;
     }
@@ -231,42 +443,70 @@ export const JournalPage = ({
             </div>
           </div>
           <div className="journal-create-panel">
-            <label className="journal-date-label">
-              <span>Journal Date</span>
-              <input
-                type="date"
-                value={draftTradeDate}
-                onChange={(event) => setDraftTradeDate(event.target.value)}
-                className="journal-date-input"
-              />
-            </label>
-            <button type="button" className="mini-action" onClick={() => onCreatePage(draftTradeDate)}>
-              <WorkspaceIcon icon="journal" alt="Create journal icon" className="mini-action-icon" />
-              New Daily Journal
-            </button>
+            <div className="journal-create-row">
+              <label className="journal-date-label">
+                <span>Journal Date</span>
+                <input
+                  type="date"
+                  value={draftTradeDate}
+                  onChange={(event) => setDraftTradeDate(event.target.value)}
+                  className="journal-date-input"
+                />
+              </label>
+              <button type="button" className="mini-action journal-create-button" onClick={() => onCreatePage(draftTradeDate)}>
+                <WorkspaceIcon icon="journal" alt="Create journal icon" className="mini-action-icon" />
+                New Journal
+              </button>
+            </div>
           </div>
           <div className="journal-page-section">
             <div className="journal-section-heading">Entries</div>
             <div className="journal-page-list">
-              {sortedPages.length === 0 ? (
-                <span className="empty-inline-state">Create your first daily journal page.</span>
-              ) : (
-                sortedPages.map((page) => (
-                <button
-                  key={page.id}
-                  type="button"
-                  className={`journal-page-item ${page.id === selectedPage?.id ? "journal-page-item-active" : ""}`}
-                  onClick={() => onSelectPage(page.id)}
-                >
-                  <div className="journal-page-title">
-                    <WorkspaceIcon icon="journal" alt="Journal page icon" className="journal-page-icon" />
-                    <strong>{formatJournalDate(page.tradeDate)}</strong>
-                  </div>
-                  <span>Daily Journal</span>
-                </button>
-                ))
-              )}
-            </div>
+                {sortedPages.length === 0 ? (
+                  <span className="empty-inline-state">Create your first daily journal page.</span>
+                ) : (
+                  sortedPages.map((page) => {
+                    const pageSummary = journalPageSummaries.get(page.id);
+                    const gradeLabel = page.dayGrade || "No Grade";
+                    const netPnl = pageSummary?.netPnl ?? 0;
+                    const tickers = pageSummary?.tickers ?? [];
+                    return (
+                      <button
+                        key={page.id}
+                        type="button"
+                        className={`journal-page-item ${page.id === selectedPage?.id ? "journal-page-item-active" : ""}`}
+                        onClick={() => onSelectPage(page.id)}
+                      >
+                        <div className="journal-page-row">
+                          <div className="journal-page-title">
+                            <WorkspaceIcon icon="journal" alt="Journal page icon" className="journal-page-icon" />
+                            <strong>{formatJournalDate(page.tradeDate)}</strong>
+                          </div>
+                          <span className={`journal-grade-pill${page.dayGrade ? "" : " journal-grade-pill-empty"}`}>
+                            {gradeLabel}
+                          </span>
+                        </div>
+                        <div className="journal-page-meta">
+                          <span className={`journal-page-pnl ${netPnl >= 0 ? "journal-page-pnl-positive" : "journal-page-pnl-negative"}`}>
+                            {netPnl >= 0 ? "+" : ""}${netPnl.toFixed(2)}
+                          </span>
+                          <span>{pageSummary?.tradeCount ?? 0} trades</span>
+                        </div>
+                        {tickers.length > 0 ? (
+                          <div className="journal-page-tickers">
+                            {tickers.slice(0, 4).map((ticker) => (
+                              <span key={`${page.id}-${ticker}`} className="journal-page-ticker-pill">
+                                {ticker}
+                              </span>
+                            ))}
+                            {tickers.length > 4 ? <span className="journal-page-ticker-pill">+{tickers.length - 4}</span> : null}
+                          </div>
+                        ) : null}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
           </div>
         </aside>
         <section className="journal-editor">
@@ -282,6 +522,34 @@ export const JournalPage = ({
                     </div>
                   </div>
                   <div className="journal-header-stat-group">
+                    <label className="journal-header-stat-card">
+                      <span>Hours Slept</span>
+                      <select
+                        className="journal-header-select"
+                        value={selectedPage.sleepHours}
+                        onChange={(event) => onUpdatePage(selectedPage.id, { sleepHours: event.target.value })}
+                      >
+                        {sleepHourOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="journal-header-stat-card">
+                      <span>Sleep Score</span>
+                      <select
+                        className="journal-header-select"
+                        value={selectedPage.sleepScore}
+                        onChange={(event) => onUpdatePage(selectedPage.id, { sleepScore: event.target.value })}
+                      >
+                        {sleepScoreOptions.map((option) => (
+                          <option key={option || "empty"} value={option}>
+                            {option || "Select Score"}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                     <label className="journal-header-stat-card">
                       <span>Day Grade</span>
                       <select
@@ -306,6 +574,62 @@ export const JournalPage = ({
                         onChange={(event) => onUpdatePage(selectedPage.id, { mpp: event.target.value })}
                         placeholder="0"
                       />
+                    </label>
+                    <label className="journal-header-stat-card">
+                      <span>Morning</span>
+                      <select
+                        className="journal-header-select"
+                        value={selectedPage.morningMood}
+                        onChange={(event) => onUpdatePage(selectedPage.id, { morningMood: event.target.value })}
+                      >
+                        {moodOptions.map((option) => (
+                          <option key={option || "empty"} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="journal-header-stat-card">
+                      <span>Open</span>
+                      <select
+                        className="journal-header-select"
+                        value={selectedPage.openMood}
+                        onChange={(event) => onUpdatePage(selectedPage.id, { openMood: event.target.value })}
+                      >
+                        {moodOptions.map((option) => (
+                          <option key={option || "empty"} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="journal-header-stat-card">
+                      <span>Afternoon</span>
+                      <select
+                        className="journal-header-select"
+                        value={selectedPage.afternoonMood}
+                        onChange={(event) => onUpdatePage(selectedPage.id, { afternoonMood: event.target.value })}
+                      >
+                        {moodOptions.map((option) => (
+                          <option key={option || "empty"} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="journal-header-stat-card">
+                      <span>Close</span>
+                      <select
+                        className="journal-header-select"
+                        value={selectedPage.closeMood}
+                        onChange={(event) => onUpdatePage(selectedPage.id, { closeMood: event.target.value })}
+                      >
+                        {moodOptions.map((option) => (
+                          <option key={option || "empty"} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
                     </label>
                   </div>
                 </div>
@@ -333,16 +657,29 @@ export const JournalPage = ({
                     {linkedTickers.length === 0 ? (
                       <span className="empty-inline-state">No linked tickers for this date yet.</span>
                     ) : (
-                      linkedTickers.map((ticker) => (
+                      linkedTickers.map((ticker) => {
+                        const tickerIcon = getTickerIconSrc(ticker);
+                        const tickerSector = getTickerSector(ticker);
+
+                        return (
                         <span key={ticker} className="symbol-pill">
-                          <WorkspaceIcon
-                            icon={getTickerIcon(ticker)}
-                            alt={`${ticker} ticker icon`}
-                            className="symbol-pill-icon"
-                          />
+                          {tickerIcon ? (
+                            <img
+                              src={tickerIcon}
+                              alt={tickerSector ? `${tickerSector} sector icon` : `${ticker} ticker icon`}
+                              className="symbol-pill-icon"
+                            />
+                          ) : (
+                            <WorkspaceIcon
+                              icon="trades"
+                              alt={`${ticker} ticker icon`}
+                              className="symbol-pill-icon"
+                            />
+                          )}
                           {ticker}
                         </span>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 </div>
@@ -356,7 +693,11 @@ export const JournalPage = ({
                       <div className="journal-metric-list">
                         <div>
                           <span>Net P&amp;L</span>
-                          <strong>{linkedTradeSummary.totalNetPnl >= 0 ? "+" : ""}${linkedTradeSummary.totalNetPnl.toFixed(2)}</strong>
+                          <strong>{formatSignedMoney(linkedTradeSummary.totalNetPnl)}</strong>
+                        </div>
+                        <div>
+                          <span>Gross P&amp;L</span>
+                          <strong>{formatSignedMoney(linkedTradeSummary.totalGrossPnl)}</strong>
                         </div>
                         <div>
                           <span>Win Rate</span>
@@ -367,8 +708,12 @@ export const JournalPage = ({
                           <strong>{linkedTradeSummary.totalTrades}</strong>
                         </div>
                         <div>
+                          <span>Fees</span>
+                          <strong>${linkedTradeSummary.totalFees.toFixed(2)}</strong>
+                        </div>
+                        <div>
                           <span>Avg Trade</span>
-                          <strong>{linkedTradeSummary.avgTrade >= 0 ? "+" : ""}${linkedTradeSummary.avgTrade.toFixed(2)}</strong>
+                          <strong>{formatSignedMoney(linkedTradeSummary.avgTrade)}</strong>
                         </div>
                         <div>
                           <span>Profit Factor</span>
@@ -395,6 +740,14 @@ export const JournalPage = ({
                           <strong>{linkedDatabaseStats.totalSharesTraded.toLocaleString()}</strong>
                         </div>
                         <div>
+                          <span>Gross P&amp;L</span>
+                          <strong>{formatSignedMoney(linkedDatabaseStats.totalGrossPnl)}</strong>
+                        </div>
+                        <div>
+                          <span>Fees</span>
+                          <strong>${linkedDatabaseStats.totalFees.toFixed(2)}</strong>
+                        </div>
+                        <div>
                           <span>Sessions</span>
                           <strong>{linkedDatabaseStats.sessions}</strong>
                         </div>
@@ -404,12 +757,51 @@ export const JournalPage = ({
                         </div>
                       </div>
                     </section>
+
+                    <section className="journal-metric-card">
+                      <div className="journal-metric-card-header">
+                        <strong>Playbook Stats</strong>
+                        <span>{linkedPlaybookStats.length} tagged</span>
+                      </div>
+                      {linkedPlaybookStats.length === 0 ? (
+                        <span className="empty-inline-state">No playbooks tagged for this day yet.</span>
+                      ) : (
+                        <div className="journal-playbook-stat-list">
+                          {linkedPlaybookStats.slice(0, 6).map(({ playbook, summary }) => (
+                            <div key={playbook} className="journal-playbook-stat-row">
+                              <div>
+                                <strong>{playbook}</strong>
+                                <span>
+                                  {summary.totalTrades} trade{summary.totalTrades === 1 ? "" : "s"} ·{" "}
+                                  {summary.winRate.toFixed(1)}% WR · ${summary.totalFees.toFixed(2)} fees
+                                </span>
+                              </div>
+                              <strong
+                                className={
+                                  summary.totalNetPnl >= 0
+                                    ? "journal-page-pnl-positive"
+                                    : "journal-page-pnl-negative"
+                                }
+                              >
+                                {formatSignedMoney(summary.totalNetPnl)}
+                              </strong>
+                            </div>
+                          ))}
+                          {linkedPlaybookStats.length > 6 ? (
+                            <span className="empty-inline-state">
+                              +{linkedPlaybookStats.length - 6} more tagged playbook
+                              {linkedPlaybookStats.length - 6 === 1 ? "" : "s"}
+                            </span>
+                          ) : null}
+                        </div>
+                      )}
+                    </section>
                   </div>
                 </div>
               </section>
 
-              <section className="journal-writing-split-grid">
-                <section className="journal-writing-section">
+                <section className="journal-writing-split-grid">
+                  <section className="journal-writing-section">
                   <div className="journal-writing-header">
                     <div className="journal-writing-header-title">
                       <WorkspaceIcon icon="checklist" alt="Morning checklist icon" className="mini-action-icon" />
@@ -472,30 +864,36 @@ export const JournalPage = ({
                       </button>
                     </div>
                   </div>
-                  <JournalRichTextEditor
-                    key={`${selectedPage.id}-morning-checklist`}
-                    content={selectedPage.morningChecklistContent}
-                    onChange={(content) => onUpdateContent(selectedPage.id, "morningChecklistContent", content)}
-                    placeholder="Type '/' for commands"
-                  />
-                </section>
+                    <JournalRichTextEditor
+                      key={`${selectedPage.id}-morning-checklist`}
+                      content={selectedPage.morningChecklistContent}
+                      onChange={(content) => onUpdateContent(selectedPage.id, "morningChecklistContent", content)}
+                      onImageInsert={handleImageInsert}
+                      placeholder="Type '/' for commands"
+                      compact
+                    />
+                  </section>
 
-                <section className="journal-writing-section">
-                  <div className="journal-writing-header">
-                    <WorkspaceIcon icon="text" alt="Morning journal icon" className="mini-action-icon" />
-                    <strong>Morning Journal</strong>
-                  </div>
-                  <JournalRichTextEditor
-                    key={`${selectedPage.id}-morning`}
-                    content={selectedPage.morningContent}
-                    onChange={(content) => onUpdateContent(selectedPage.id, "morningContent", content)}
-                    placeholder="Type '/' for commands"
-                  />
+                  <section className="journal-writing-section">
+                    <div className="journal-writing-header">
+                      <div className="journal-writing-header-title">
+                        <WorkspaceIcon icon="text" alt="Morning journal icon" className="mini-action-icon" />
+                        <strong>Morning Journal</strong>
+                      </div>
+                    </div>
+                    <JournalRichTextEditor
+                      key={`${selectedPage.id}-morning`}
+                      content={selectedPage.morningContent}
+                      onChange={(content) => onUpdateContent(selectedPage.id, "morningContent", content)}
+                      onImageInsert={handleImageInsert}
+                      placeholder="Type '/' for commands"
+                      compact
+                    />
                 </section>
               </section>
 
-              <section className="journal-writing-split-grid">
-                <section className="journal-writing-section">
+                <section className="journal-writing-split-grid">
+                  <section className="journal-writing-section">
                   <div className="journal-writing-header">
                     <div className="journal-writing-header-title">
                       <WorkspaceIcon icon="checklist" alt="Closing checklist icon" className="mini-action-icon" />
@@ -558,32 +956,88 @@ export const JournalPage = ({
                       </button>
                     </div>
                   </div>
-                  <JournalRichTextEditor
-                    key={`${selectedPage.id}-closing-checklist`}
-                    content={selectedPage.closingChecklistContent}
-                    onChange={(content) => onUpdateContent(selectedPage.id, "closingChecklistContent", content)}
-                    placeholder="Type '/' for commands"
-                  />
-                </section>
+                    <JournalRichTextEditor
+                      key={`${selectedPage.id}-closing-checklist`}
+                      content={selectedPage.closingChecklistContent}
+                      onChange={(content) => onUpdateContent(selectedPage.id, "closingChecklistContent", content)}
+                      onImageInsert={handleImageInsert}
+                      placeholder="Type '/' for commands"
+                      compact
+                    />
+                  </section>
 
-                <section className="journal-writing-section">
-                  <div className="journal-writing-header">
-                    <WorkspaceIcon icon="text" alt="Closing journal icon" className="mini-action-icon" />
-                    <strong>Closing Journal</strong>
-                  </div>
-                  <JournalRichTextEditor
-                    key={`${selectedPage.id}-closing`}
-                    content={selectedPage.closingContent}
-                    onChange={(content) => onUpdateContent(selectedPage.id, "closingContent", content)}
-                    placeholder="Type '/' for commands"
-                  />
+                  <section className="journal-writing-section">
+                    <div className="journal-writing-header">
+                      <div className="journal-writing-header-title">
+                        <WorkspaceIcon icon="text" alt="Closing journal icon" className="mini-action-icon" />
+                        <strong>Closing Journal</strong>
+                      </div>
+                    </div>
+                    <JournalRichTextEditor
+                      key={`${selectedPage.id}-closing`}
+                      content={selectedPage.closingContent}
+                      onChange={(content) => onUpdateContent(selectedPage.id, "closingContent", content)}
+                      onImageInsert={handleImageInsert}
+                      placeholder="Type '/' for commands"
+                      compact
+                    />
                 </section>
               </section>
 
               <section className="journal-writing-section">
                 <div className="journal-writing-header">
-                  <WorkspaceIcon icon="plan" alt="MPP plan icon" className="mini-action-icon" />
-                  <strong>MPP Plan</strong>
+                  <div className="journal-writing-header-title">
+                    <WorkspaceIcon icon="plan" alt="MPP plan icon" className="mini-action-icon" />
+                    <strong>MPP Plan</strong>
+                  </div>
+                  <div className="journal-writing-header-actions">
+                    <select
+                      className="calendar-date-select"
+                      value={selectedMppTemplate?.id ?? ""}
+                      onChange={(event) => setSelectedMppTemplateId(event.target.value)}
+                    >
+                      {checklistTemplates.mppTemplates.map((template) => (
+                        <option key={template.id} value={template.id}>
+                          {template.name}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="mini-action mini-action-soft"
+                      onClick={() => {
+                        if (!selectedMppTemplate) {
+                          return;
+                        }
+
+                        onUpdateContent(selectedPage.id, "mppPlanContent", selectedMppTemplate.content);
+                      }}
+                    >
+                      Load Template
+                    </button>
+                    <button
+                      type="button"
+                      className="mini-action"
+                      onClick={() => {
+                        const templateName = promptForTemplateName("mpp");
+                        if (!templateName) {
+                          return;
+                        }
+
+                        onSaveChecklistTemplateAs("mpp", templateName, selectedPage.mppPlanContent);
+                      }}
+                    >
+                      Save As
+                    </button>
+                    <button
+                      type="button"
+                      className="mini-action mini-action-danger"
+                      disabled={checklistTemplates.mppTemplates.length <= 1 || !selectedMppTemplate}
+                      onClick={() => confirmDeleteTemplate("mpp", selectedMppTemplate)}
+                    >
+                      Delete Template
+                    </button>
+                  </div>
                 </div>
                 <JournalRichTextEditor
                   key={`${selectedPage.id}-mpp`}
@@ -593,13 +1047,18 @@ export const JournalPage = ({
                 />
               </section>
 
-              <section className="journal-writing-section">
-                <div className="journal-writing-header">
-                  <WorkspaceIcon icon="journal" alt="Additional notes icon" className="mini-action-icon" />
-                  <strong>Additional Notes</strong>
-                  <div className="journal-writing-header-actions">
-                    <input
-                      ref={screenshotInputRef}
+                <section className="journal-writing-section">
+                  <div className="journal-writing-header">
+                    <div className="journal-writing-header-title">
+                      <WorkspaceIcon icon="journal" alt="Chart screenshots icon" className="mini-action-icon" />
+                      <div className="journal-screenshot-section-title">
+                        <strong>Chart Screenshots</strong>
+                        <span>Open, close, and context charts for this trading day.</span>
+                      </div>
+                    </div>
+                    <div className="journal-writing-header-actions">
+                      <input
+                        ref={screenshotInputRef}
                       type="file"
                       accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
                       multiple
@@ -666,42 +1125,41 @@ export const JournalPage = ({
                     >
                       <WorkspaceIcon icon="data" alt="Clear screenshots icon" className="mini-action-icon" />
                       Clear All
-                    </button>
+                      </button>
+                    </div>
                   </div>
-                </div>
-                <JournalRichTextEditor
-                  key={`${selectedPage.id}-notes`}
-                  content={selectedPage.notesContent}
-                  onChange={(content) => onUpdateContent(selectedPage.id, "notesContent", content)}
-                  placeholder="Type '/' for commands"
-                />
-                <div className="journal-screenshot-gallery">
-                  {Array.from({ length: visibleScreenshotSlots }).map((_, index) => {
-                    const screenshotUrl = selectedPage.screenshotUrls[index];
+                  <div className="journal-screenshot-gallery">
+                    {Array.from({ length: visibleScreenshotSlots }).map((_, index) => {
+                      const screenshotUrl = selectedPage.screenshotUrls[index];
+                      const slotMeta = getScreenshotSlotMeta(index);
 
-                    if (!screenshotUrl) {
-                      return (
-                        <button
-                          key={`${selectedPage.id}-slot-${index}`}
+                      if (!screenshotUrl) {
+                        return (
+                          <button
+                            key={`${selectedPage.id}-slot-${index}`}
                           type="button"
                           className="journal-screenshot-slot"
                           onClick={() => {
                             setPendingScreenshotSlotIndex(index);
                             screenshotInputRef.current?.click();
                           }}
-                        >
-                          <WorkspaceIcon icon="camera" alt="Empty screenshot slot icon" className="journal-screenshot-slot-icon" />
-                          <strong>Add Screenshot</strong>
-                          <span>Slot {index + 1}</span>
-                        </button>
-                      );
-                    }
+                          >
+                            <WorkspaceIcon icon="camera" alt="Empty screenshot slot icon" className="journal-screenshot-slot-icon" />
+                            <strong>{slotMeta.label}</strong>
+                            <span>{slotMeta.rowLabel}</span>
+                            <em>Add Screenshot</em>
+                          </button>
+                        );
+                      }
 
-                    return (
-                      <div key={`${selectedPage.id}-shot-${index}`} className="journal-screenshot-card">
-                        <div className="journal-screenshot-card-header">
-                          <strong>Screenshot {index + 1}</strong>
-                        </div>
+                      return (
+                        <div key={`${selectedPage.id}-shot-${index}`} className="journal-screenshot-card">
+                          <div className="journal-screenshot-card-header">
+                            <div className="journal-screenshot-card-title">
+                              <strong>{slotMeta.label}</strong>
+                              <span>{slotMeta.rowLabel}</span>
+                            </div>
+                          </div>
                           <button
                             type="button"
                             className="journal-screenshot-preview-button"
@@ -749,6 +1207,36 @@ export const JournalPage = ({
                   })}
                 </div>
               </section>
+
+              <section className="placeholder-panel journal-trade-database-panel">
+                <div className="journal-sidebar-header">
+                  <div>
+                    <strong>Trade Database</strong>
+                    <span>{linkedTrades.length} trades for {formatJournalDate(selectedPage.tradeDate)}</span>
+                  </div>
+                </div>
+                <PreviewTable
+                  trades={linkedTrades}
+                  tagOptionsByField={tagOptionsByField}
+                  selectedTradeId={selectedJournalTradeId}
+                  selectedTradeIds={selectedJournalTradeIds}
+                  onSelectTrade={(trade) => setSelectedJournalTradeId(trade.id)}
+                  onToggleTradeSelection={(tradeId) =>
+                    setSelectedJournalTradeIds((current) =>
+                      current.includes(tradeId)
+                        ? current.filter((currentTradeId) => currentTradeId !== tradeId)
+                        : [...current, tradeId]
+                    )
+                  }
+                  onToggleSelectAll={(tradeIds) =>
+                    setSelectedJournalTradeIds((current) =>
+                      tradeIds.every((tradeId) => current.includes(tradeId)) ? [] : tradeIds
+                    )
+                  }
+                  onUpdateTradeTag={onUpdateTradeTag}
+                  onCreateTradeTagOption={onCreateTradeTagOption}
+                />
+              </section>
             </>
           ) : (
             <div className="journal-empty-state">
@@ -769,7 +1257,12 @@ export const JournalPage = ({
               <span className="empty-inline-state">No trades linked to this date yet.</span>
             ) : (
               linkedTrades.map((trade) => (
-                <div key={trade.id} className="linked-trade-card">
+                <button
+                  key={trade.id}
+                  type="button"
+                  className="linked-trade-card linked-trade-card-button"
+                  onClick={() => onSelectTrade(trade.id, trade.tradeDate)}
+                >
                   <div className="linked-trade-title">
                     <WorkspaceIcon icon="trades" alt="Linked trade icon" className="linked-trade-icon" />
                     <strong>{trade.name}</strong>
@@ -779,7 +1272,7 @@ export const JournalPage = ({
                   </span>
                   <span>{trade.openTime} to {trade.closeTime}</span>
                   <span>{trade.netPnlUsd >= 0 ? "+" : ""}{trade.netPnlUsd.toFixed(2)} net</span>
-                </div>
+                </button>
               ))
             )}
           </div>

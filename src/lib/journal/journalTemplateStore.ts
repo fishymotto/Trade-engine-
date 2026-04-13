@@ -1,6 +1,7 @@
 import type { JSONContent } from "@tiptap/core";
 import {
   createClosingChecklistDoc,
+  createMppPlanDoc,
   createMorningChecklistDoc,
   hasJournalDocContent
 } from "./journalContent";
@@ -16,6 +17,7 @@ export interface NamedChecklistTemplate {
 export interface JournalChecklistTemplates {
   morningTemplates: NamedChecklistTemplate[];
   closingTemplates: NamedChecklistTemplate[];
+  mppTemplates: NamedChecklistTemplate[];
 }
 
 const createTemplate = (name: string, content: JSONContent): NamedChecklistTemplate => ({
@@ -60,15 +62,28 @@ const ensureTemplateArray = (
 
 export const defaultJournalChecklistTemplates = (): JournalChecklistTemplates => ({
   morningTemplates: [createTemplate("Default Morning", createMorningChecklistDoc())],
-  closingTemplates: [createTemplate("Default Closing", createClosingChecklistDoc())]
+  closingTemplates: [createTemplate("Default Closing", createClosingChecklistDoc())],
+  mppTemplates: [createTemplate("Default MPP", createMppPlanDoc())]
 });
 
 export const getDefaultChecklistContent = (
   templates: JournalChecklistTemplates,
-  type: "morning" | "closing"
+  type: "morning" | "closing" | "mpp"
 ): JSONContent =>
-  (type === "morning" ? templates.morningTemplates[0] : templates.closingTemplates[0])?.content ??
-  (type === "morning" ? createMorningChecklistDoc() : createClosingChecklistDoc());
+  (
+    type === "morning"
+      ? templates.morningTemplates[0]
+      : type === "closing"
+        ? templates.closingTemplates[0]
+        : templates.mppTemplates[0]
+  )?.content ??
+  (
+    type === "morning"
+      ? createMorningChecklistDoc()
+      : type === "closing"
+        ? createClosingChecklistDoc()
+        : createMppPlanDoc()
+  );
 
 export const loadJournalChecklistTemplates = (): JournalChecklistTemplates => {
   const raw = localStorage.getItem(STORAGE_KEY);
@@ -82,9 +97,10 @@ export const loadJournalChecklistTemplates = (): JournalChecklistTemplates => {
       | {
           morningChecklistContent?: JSONContent;
           closingChecklistContent?: JSONContent;
+          mppPlanContent?: JSONContent;
         };
 
-    if ("morningChecklistContent" in parsed || "closingChecklistContent" in parsed) {
+    if ("morningChecklistContent" in parsed || "closingChecklistContent" in parsed || "mppPlanContent" in parsed) {
       return {
         morningTemplates: [
           createTemplate(
@@ -100,6 +116,14 @@ export const loadJournalChecklistTemplates = (): JournalChecklistTemplates => {
             hasJournalDocContent(parsed.closingChecklistContent)
               ? (parsed.closingChecklistContent as JSONContent)
               : createClosingChecklistDoc()
+          )
+        ],
+        mppTemplates: [
+          createTemplate(
+            "Default MPP",
+            hasJournalDocContent(parsed.mppPlanContent)
+              ? (parsed.mppPlanContent as JSONContent)
+              : createMppPlanDoc()
           )
         ]
       };
@@ -117,6 +141,11 @@ export const loadJournalChecklistTemplates = (): JournalChecklistTemplates => {
         templateParsed.closingTemplates,
         "Default Closing",
         createClosingChecklistDoc
+      ),
+      mppTemplates: ensureTemplateArray(
+        templateParsed.mppTemplates,
+        "Default MPP",
+        createMppPlanDoc
       )
     };
   } catch {

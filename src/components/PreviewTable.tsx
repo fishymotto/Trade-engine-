@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
-import { tickerIcons } from "../lib/tickers/tickerIcons";
+import { getTickerIcon, getTickerSector } from "../lib/tickers/tickerIcons";
 import { tradeTagFieldLabels } from "../lib/trades/tradeTagCatalog";
 import type { EditableTradeRow, EditableTradeTagField } from "../types/tradeTags";
-import { SearchableTagPopover } from "./SearchableTagPopover";
+import { TagDrawer } from "./TagDrawer";
 
 interface PreviewTableProps {
   trades: EditableTradeRow[];
@@ -19,8 +19,67 @@ interface PreviewTableProps {
 type CellEditorState = {
   tradeId: string;
   field: EditableTradeTagField;
-  anchorRect: DOMRect;
 };
+
+type PreviewSortKey =
+  | "name"
+  | "tradeDate"
+  | "symbol"
+  | "side"
+  | "openTime"
+  | "closeTime"
+  | "holdTime"
+  | "size"
+  | "entryPrice"
+  | "exitPrice"
+  | "netPnlUsd"
+  | "returnPerShare"
+  | EditableTradeTagField;
+
+type PreviewSortConfig = {
+  key: PreviewSortKey;
+  direction: "asc" | "desc";
+};
+
+type PreviewColumn = {
+  key: PreviewSortKey;
+  label: string;
+  getSortValue: (trade: EditableTradeRow) => string | number | null | undefined;
+};
+
+const parseHoldTimeSeconds = (value: string): number => {
+  const hours = Number(value.match(/(\d+)\s*h/)?.[1] ?? 0);
+  const minutes = Number(value.match(/(\d+)\s*m/)?.[1] ?? 0);
+  const seconds = Number(value.match(/(\d+)\s*s/)?.[1] ?? 0);
+
+  return hours * 3600 + minutes * 60 + seconds;
+};
+
+const previewColumns: PreviewColumn[] = [
+  { key: "name", label: "Name", getSortValue: (trade) => trade.name },
+  { key: "tradeDate", label: "Trade Date", getSortValue: (trade) => trade.tradeDate },
+  { key: "symbol", label: "Symbol", getSortValue: (trade) => trade.symbol },
+  { key: "side", label: "Side", getSortValue: (trade) => trade.side },
+  { key: "openTime", label: "Open Time", getSortValue: (trade) => trade.openTime },
+  { key: "closeTime", label: "Close Time", getSortValue: (trade) => trade.closeTime },
+  { key: "holdTime", label: "Hold Time", getSortValue: (trade) => parseHoldTimeSeconds(trade.holdTime) },
+  { key: "size", label: "Size", getSortValue: (trade) => trade.size },
+  { key: "entryPrice", label: "Entry Price", getSortValue: (trade) => trade.entryPrice },
+  { key: "exitPrice", label: "Exit Price", getSortValue: (trade) => trade.exitPrice },
+  { key: "netPnlUsd", label: "Net PnL USD", getSortValue: (trade) => trade.netPnlUsd },
+  { key: "returnPerShare", label: "Return / Share", getSortValue: (trade) => trade.returnPerShare },
+  { key: "status", label: "Status", getSortValue: (trade) => getFieldDisplayValue(trade, "status") },
+  { key: "mistake", label: "Mistakes", getSortValue: (trade) => getFieldDisplayValue(trade, "mistake") },
+  { key: "playbook", label: "Playbook", getSortValue: (trade) => getFieldDisplayValue(trade, "playbook") },
+  { key: "game", label: "Game", getSortValue: (trade) => getFieldDisplayValue(trade, "game") },
+  { key: "outTag", label: "Out Tag", getSortValue: (trade) => getFieldDisplayValue(trade, "outTag") },
+  { key: "execution", label: "Execution", getSortValue: (trade) => getFieldDisplayValue(trade, "execution") }
+];
+
+const tagColumnKeys: EditableTradeTagField[] = ["status", "mistake", "playbook", "game", "outTag", "execution"];
+
+const isTagColumnKey = (key: PreviewSortKey): key is EditableTradeTagField =>
+  tagColumnKeys.includes(key as EditableTradeTagField);
 
 const getFieldDisplayValue = (trade: EditableTradeRow, field: EditableTradeTagField): string => {
   switch (field) {
@@ -71,7 +130,7 @@ const getTagToneClass = (field: EditableTradeTagField, value: string): string =>
 const renderEditableCell = (
   trade: EditableTradeRow,
   field: EditableTradeTagField,
-  onOpenEditor: (tradeId: string, field: EditableTradeTagField, rect: DOMRect) => void
+  onOpenEditor: (tradeId: string, field: EditableTradeTagField) => void
 ) => {
   const value = getFieldDisplayValue(trade, field);
   const isManual = trade.manualTags[field];
@@ -84,7 +143,7 @@ const renderEditableCell = (
       }`}
       onClick={(event) => {
         event.stopPropagation();
-        onOpenEditor(trade.id, field, event.currentTarget.getBoundingClientRect());
+        onOpenEditor(trade.id, field);
       }}
     >
       {value || `Add ${tradeTagFieldLabels[field]}`}
@@ -104,9 +163,51 @@ export const PreviewTable = ({
   onCreateTradeTagOption
 }: PreviewTableProps) => {
   const [cellEditor, setCellEditor] = useState<CellEditorState | null>(null);
+  const [cellEditorSearchQuery, setCellEditorSearchQuery] = useState("");
+  const [sortConfig, setSortConfig] = useState<PreviewSortConfig>({ key: "tradeDate", direction: "desc" });
+  const isTagFieldEnabled = (field: EditableTradeTagField) => tagOptionsByField[field].length > 0;
+  const visibleColumns = useMemo(
+    () => previewColumns.filter((column) => !isTagColumnKey(column.key) || isTagFieldEnabled(column.key)),
+    [tagOptionsByField]
+  );
 
   const selectedCount = selectedTradeIds.length;
-  const selectableTradeIds = useMemo(() => trades.map((trade) => trade.id), [trades]);
+  const sortedTrades = useMemo(() => {
+    const activeColumn = previewColumns.find((column) => column.key === sortConfig.key);
+
+    if (!activeColumn) {
+      return trades;
+    }
+
+    return [...trades].sort((left, right) => {
+      const leftValue = activeColumn.getSortValue(left);
+      const rightValue = activeColumn.getSortValue(right);
+
+      if (leftValue == null && rightValue == null) {
+        return 0;
+      }
+
+      if (leftValue == null) {
+        return sortConfig.direction === "asc" ? 1 : -1;
+      }
+
+      if (rightValue == null) {
+        return sortConfig.direction === "asc" ? -1 : 1;
+      }
+
+      const comparison =
+        typeof leftValue === "number" && typeof rightValue === "number"
+          ? leftValue - rightValue
+          : String(leftValue).localeCompare(String(rightValue), undefined, {
+              numeric: true,
+              sensitivity: "base"
+            });
+
+      return sortConfig.direction === "asc" ? comparison : -comparison;
+    });
+  }, [trades, sortConfig]);
+
+  const selectableTradeIds = useMemo(() => sortedTrades.map((trade) => trade.id), [sortedTrades]);
   const allVisibleSelected =
     selectableTradeIds.length > 0 &&
     selectableTradeIds.every((tradeId) => selectedTradeIds.includes(tradeId));
@@ -114,6 +215,69 @@ export const PreviewTable = ({
   const activeTrade = cellEditor
     ? trades.find((trade) => trade.id === cellEditor.tradeId) ?? null
     : null;
+
+  const toggleSort = (key: PreviewSortKey) => {
+    setSortConfig((current) => {
+      if (current.key === key) {
+        return { key, direction: current.direction === "asc" ? "desc" : "asc" };
+      }
+
+      return { key, direction: "asc" };
+    });
+  };
+
+  const renderCell = (trade: EditableTradeRow, column: PreviewColumn) => {
+    if (isTagColumnKey(column.key)) {
+      return renderEditableCell(trade, column.key, (tradeId, field) => {
+        setCellEditor({ tradeId, field });
+        setCellEditorSearchQuery("");
+      });
+    }
+
+    switch (column.key) {
+      case "name":
+        return trade.name;
+      case "tradeDate":
+        return trade.tradeDate;
+      case "symbol": {
+        const tickerIcon = getTickerIcon(trade.symbol);
+        const tickerSector = getTickerSector(trade.symbol);
+
+        return (
+          <div className="symbol-cell">
+            {tickerIcon ? (
+              <img
+                className={`ticker-icon ticker-icon-${trade.symbol.toLowerCase()}`}
+                src={tickerIcon}
+                alt={tickerSector ? `${tickerSector} sector icon` : `${trade.symbol} icon`}
+              />
+            ) : null}
+            <span>{trade.symbol}</span>
+          </div>
+        );
+      }
+      case "side":
+        return trade.side;
+      case "openTime":
+        return trade.openTime;
+      case "closeTime":
+        return trade.closeTime;
+      case "holdTime":
+        return trade.holdTime;
+      case "size":
+        return trade.size;
+      case "entryPrice":
+        return trade.entryPrice.toFixed(4);
+      case "exitPrice":
+        return trade.exitPrice.toFixed(4);
+      case "netPnlUsd":
+        return trade.netPnlUsd.toFixed(4);
+      case "returnPerShare":
+        return trade.returnPerShare.toFixed(4);
+      default:
+        return "";
+    }
+  };
 
   return (
     <div className="table-shell">
@@ -128,35 +292,28 @@ export const PreviewTable = ({
                 onChange={() => onToggleSelectAll(selectableTradeIds)}
               />
             </th>
-            <th>Name</th>
-            <th>Trade Date</th>
-            <th>Symbol</th>
-            <th>Side</th>
-            <th>Open Time</th>
-            <th>Close Time</th>
-            <th>Hold Time</th>
-            <th>Size</th>
-            <th>Entry Price</th>
-            <th>Exit Price</th>
-            <th>Net PnL USD</th>
-            <th>Return / Share</th>
-            <th>Status</th>
-            <th>Mistakes</th>
-            <th>Playbook</th>
-            <th>Game</th>
-            <th>Out Tag</th>
-            <th>Execution</th>
+            {visibleColumns.map((column) => (
+              <th key={column.key}>
+                <button type="button" className="sortable-header-button" onClick={() => toggleSort(column.key)}>
+                  <span>{column.label}</span>
+                  <span className={`sort-indicator ${sortConfig.key === column.key ? "sort-indicator-active" : ""}`}>
+                    {sortConfig.key === column.key ? sortConfig.direction : "sort"}
+                  </span>
+                </button>
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
           {trades.length === 0 ? (
             <tr>
-              <td colSpan={19} className="empty-state">
+              <td colSpan={visibleColumns.length + 1} className="empty-state">
                 No trades match the current filters.
               </td>
             </tr>
           ) : (
-            trades.map((trade) => (
+            sortedTrades.map((trade) => {
+              return (
               <tr
                 key={trade.id}
                 className={trade.id === selectedTradeId ? "preview-row-selected" : ""}
@@ -171,43 +328,18 @@ export const PreviewTable = ({
                     onChange={() => onToggleTradeSelection(trade.id)}
                   />
                 </td>
-                <td>{trade.name}</td>
-                <td>{trade.tradeDate}</td>
-                <td>
-                  <div className="symbol-cell">
-                    {tickerIcons[trade.symbol] ? (
-                      <img
-                        className={`ticker-icon ticker-icon-${trade.symbol.toLowerCase()}`}
-                        src={tickerIcons[trade.symbol]}
-                        alt={`${trade.symbol} icon`}
-                      />
-                    ) : null}
-                    <span>{trade.symbol}</span>
-                  </div>
-                </td>
-                <td>{trade.side}</td>
-                <td>{trade.openTime}</td>
-                <td>{trade.closeTime}</td>
-                <td>{trade.holdTime}</td>
-                <td>{trade.size}</td>
-                <td>{trade.entryPrice.toFixed(4)}</td>
-                <td>{trade.exitPrice.toFixed(4)}</td>
-                <td>{trade.netPnlUsd.toFixed(4)}</td>
-                <td>{trade.returnPerShare.toFixed(4)}</td>
-                <td>{renderEditableCell(trade, "status", (tradeId, field, anchorRect) => setCellEditor({ tradeId, field, anchorRect }))}</td>
-                <td>{renderEditableCell(trade, "mistake", (tradeId, field, anchorRect) => setCellEditor({ tradeId, field, anchorRect }))}</td>
-                <td>{renderEditableCell(trade, "playbook", (tradeId, field, anchorRect) => setCellEditor({ tradeId, field, anchorRect }))}</td>
-                <td>{renderEditableCell(trade, "game", (tradeId, field, anchorRect) => setCellEditor({ tradeId, field, anchorRect }))}</td>
-                <td>{renderEditableCell(trade, "outTag", (tradeId, field, anchorRect) => setCellEditor({ tradeId, field, anchorRect }))}</td>
-                <td>{renderEditableCell(trade, "execution", (tradeId, field, anchorRect) => setCellEditor({ tradeId, field, anchorRect }))}</td>
+                {visibleColumns.map((column) => (
+                  <td key={column.key}>{renderCell(trade, column)}</td>
+                ))}
               </tr>
-            ))
+              );
+            })
           )}
         </tbody>
       </table>
       {cellEditor && activeTrade ? (
-        <SearchableTagPopover
-          anchorRect={cellEditor.anchorRect}
+        <TagDrawer
+          isOpen={!!cellEditor}
           title={`${tradeTagFieldLabels[cellEditor.field]} · ${activeTrade.name}`}
           options={tagOptionsByField[cellEditor.field]}
           currentValue={getFieldDisplayValue(activeTrade, cellEditor.field)}
@@ -217,16 +349,23 @@ export const PreviewTable = ({
               ? "No mistakes"
               : `Clear ${tradeTagFieldLabels[cellEditor.field]}`
           }
+          searchValue={cellEditorSearchQuery}
+          onSearchChange={setCellEditorSearchQuery}
           onSelect={(value) => {
             onUpdateTradeTag(activeTrade, cellEditor.field, value);
             setCellEditor(null);
+            setCellEditorSearchQuery("");
           }}
           onCreateOption={(value) => {
             onCreateTradeTagOption(cellEditor.field, value);
             onUpdateTradeTag(activeTrade, cellEditor.field, value);
             setCellEditor(null);
+            setCellEditorSearchQuery("");
           }}
-          onClose={() => setCellEditor(null)}
+          onClose={() => {
+            setCellEditor(null);
+            setCellEditorSearchQuery("");
+          }}
         />
       ) : null}
       {selectedCount > 0 ? (

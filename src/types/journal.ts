@@ -33,6 +33,12 @@ export interface JournalPageRecord {
   tradeDate: string;
   dayGrade: string;
   mpp: string;
+  sleepHours: string;
+  sleepScore: string;
+  morningMood: string;
+  openMood: string;
+  afternoonMood: string;
+  closeMood: string;
   screenshotUrls: string[];
   closingChecklistContent: JSONContent;
   morningChecklistContent: JSONContent;

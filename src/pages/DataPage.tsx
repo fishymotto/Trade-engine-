@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AnalyticsTable } from "../components/AnalyticsTable";
 import { PageHero } from "../components/PageHero";
-import { PlaceholderPanel } from "../components/PlaceholderPanel";
 import { WorkspaceIcon } from "../components/WorkspaceIcon";
 import type { TradeSessionRecord } from "../types/session";
 import type { Settings } from "../types/trade";
@@ -36,8 +34,18 @@ const summarizeSession = (session: TradeSessionRecord): SessionLibraryRow => ({
   updatedAt: session.updatedAt
 });
 
+const formatMoney = (value: number) => `${value >= 0 ? "+" : ""}$${value.toFixed(2)}`;
+
+const formatDateTime = (value: string) => {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+};
+
 export const DataPage = ({ settings, sessions, onLoadSession, onDeleteSession }: DataPageProps) => {
-  const sessionRows = useMemo(() => sessions.map(summarizeSession), [sessions]);
+  const sessionRows = useMemo(
+    () => sessions.map(summarizeSession).sort((left, right) => right.tradeDate.localeCompare(left.tradeDate)),
+    [sessions]
+  );
   const [selectedTradeDate, setSelectedTradeDate] = useState(sessionRows[0]?.tradeDate ?? "");
 
   useEffect(() => {
@@ -54,149 +62,183 @@ export const DataPage = ({ settings, sessions, onLoadSession, onDeleteSession }:
 
   const selectedSession = sessions.find((session) => session.tradeDate === selectedTradeDate) ?? null;
   const selectedSummary = selectedSession ? summarizeSession(selectedSession) : null;
+  const selectedTrades = selectedSession
+    ? [...selectedSession.trades].sort((left, right) => left.openTime.localeCompare(right.openTime)).slice(0, 8)
+    : [];
   const totalTrades = sessionRows.reduce((sum, session) => sum + session.trades, 0);
   const totalExecutions = sessionRows.reduce((sum, session) => sum + session.executions, 0);
   const totalSymbols = new Set(sessions.flatMap((session) => session.trades.map((trade) => trade.symbol))).size;
-
-  const selectedTrades = selectedSession
-    ? [...selectedSession.trades].sort((left, right) => left.openTime.localeCompare(right.openTime))
-    : [];
+  const totalNetPnl = sessionRows.reduce((sum, session) => sum + session.netPnl, 0);
 
   return (
-    <main className="page-shell">
+    <main className="page-shell data-storage-page">
       <PageHero
         eyebrow="Data"
-        title="Connections And Storage"
-        description="This page is now the session library for your local trade database. You can inspect what is stored, check the makeup of each saved day, and load or delete sessions when you need to."
+        title="Storage Manager"
+        description="A quiet cleanup page for saved CSV imports. Use it when a day was imported wrong and you need to load or remove that stored session."
       />
-      <section className="placeholder-grid">
-        <PlaceholderPanel
-          title="Export Location"
-          description={settings.exportFolder || "No export folder selected yet"}
-          icon="data"
-        />
-        <PlaceholderPanel
-          title="Notion Database"
-          description={settings.notionDatabaseUrl || "No Notion database URL saved yet"}
-          icon="import"
-        />
-        <PlaceholderPanel
-          title="Saved Sessions"
-          description={String(sessions.length)}
-          detail={`${totalTrades} grouped trades stored locally`}
-          icon="dashboard"
-        />
-        <PlaceholderPanel
-          title="Database Footprint"
-          description={`${totalExecutions} executions`}
-          detail={`${totalSymbols} symbols across saved sessions`}
-          icon="journal"
-        />
+
+      <section className="data-storage-summary" aria-label="Storage summary">
+        <div>
+          <span>Saved Days</span>
+          <strong>{sessionRows.length}</strong>
+        </div>
+        <div>
+          <span>Trades</span>
+          <strong>{totalTrades}</strong>
+        </div>
+        <div>
+          <span>Executions</span>
+          <strong>{totalExecutions}</strong>
+        </div>
+        <div>
+          <span>Symbols</span>
+          <strong>{totalSymbols}</strong>
+        </div>
+        <div>
+          <span>Stored Net</span>
+          <strong>{formatMoney(totalNetPnl)}</strong>
+        </div>
       </section>
-      <section className="data-library-layout">
-        <article className="placeholder-panel analytics-panel">
-          <div className="panel-header">
-            <WorkspaceIcon icon="data" alt="Saved sessions icon" className="panel-header-icon" />
-            <h2>Saved Session Library</h2>
+
+      <section className="data-storage-layout">
+        <article className="placeholder-panel data-storage-panel">
+          <div className="panel-header data-storage-panel-header">
+            <div>
+              <WorkspaceIcon icon="data" alt="Saved imports icon" className="panel-header-icon" />
+              <h2>Saved Imports</h2>
+            </div>
+            <span>{sessionRows.length} saved</span>
           </div>
-          <AnalyticsTable
-            rows={sessionRows}
-            emptyMessage="Drop a CSV file and save it to the database to create your first session."
-            columns={[
-              { key: "tradeDate", label: "Date", render: (row) => row.tradeDate },
-              { key: "trades", label: "Trades", render: (row) => row.trades, align: "right" },
-              { key: "symbols", label: "Symbols", render: (row) => row.symbols, align: "right" },
-              { key: "executions", label: "Executions", render: (row) => row.executions, align: "right" },
-              {
-                key: "netPnl",
-                label: "Net P&L",
-                render: (row) => `${row.netPnl >= 0 ? "+" : ""}$${row.netPnl.toFixed(2)}`,
-                align: "right"
-              }
-            ]}
-          />
-          <div className="session-library-list">
-            {sessionRows.map((session) => (
-              <button
-                key={session.tradeDate}
-                type="button"
-                className={`session-library-item ${session.tradeDate === selectedTradeDate ? "session-library-item-selected" : ""}`}
-                onClick={() => setSelectedTradeDate(session.tradeDate)}
-              >
-                <div className="session-library-item-header">
-                  <strong>{session.tradeDate}</strong>
-                  <span>{session.netPnl >= 0 ? "+" : ""}$${session.netPnl.toFixed(2)}</span>
-                </div>
-                <span>{session.trades} trades · {session.symbols} symbols · {session.executions} executions</span>
-                <span>{session.sourceFileName}</span>
-              </button>
-            ))}
-          </div>
+
+          {sessionRows.length > 0 ? (
+            <div className="data-session-list">
+              {sessionRows.map((session) => {
+                const isSelected = session.tradeDate === selectedTradeDate;
+                return (
+                  <div key={session.tradeDate} className={`data-session-row ${isSelected ? "is-selected" : ""}`}>
+                    <button
+                      type="button"
+                      className="data-session-row-main"
+                      onClick={() => setSelectedTradeDate(session.tradeDate)}
+                    >
+                      <span className="data-session-date">{session.tradeDate}</span>
+                      <span>{session.trades} trades</span>
+                      <span>{session.symbols} symbols</span>
+                      <span>{session.executions} executions</span>
+                      <strong className={session.netPnl >= 0 ? "positive" : "negative"}>
+                        {formatMoney(session.netPnl)}
+                      </strong>
+                      <span className="data-session-file" title={session.sourceFileName}>
+                        {session.sourceFileName}
+                      </span>
+                    </button>
+                    <div className="data-session-actions">
+                      <button
+                        type="button"
+                        className="mini-action"
+                        onClick={() => {
+                          setSelectedTradeDate(session.tradeDate);
+                          onLoadSession(session.tradeDate);
+                        }}
+                      >
+                        Load
+                      </button>
+                      <button
+                        type="button"
+                        className="mini-action mini-action-danger"
+                        onClick={() => onDeleteSession(session.tradeDate)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="empty-state">No saved imports yet. Save a CSV from the Import page and it will show here.</div>
+          )}
         </article>
-        <aside className="placeholder-panel analytics-panel data-session-inspector">
-          <div className="panel-header">
-            <WorkspaceIcon icon="journal" alt="Session inspector icon" className="panel-header-icon" />
-            <h2>{selectedTradeDate || "No Session Selected"}</h2>
+
+        <aside className="placeholder-panel data-storage-panel data-storage-inspector">
+          <div className="panel-header data-storage-panel-header">
+            <div>
+              <WorkspaceIcon icon="journal" alt="Selected import icon" className="panel-header-icon" />
+              <h2>{selectedTradeDate || "Selected Import"}</h2>
+            </div>
           </div>
+
           {selectedSession && selectedSummary ? (
             <>
-              <div className="session-detail-stats">
+              <div className="data-inspector-stats">
                 <div>
-                  <strong>Net P&L</strong>
-                  <span>{selectedSummary.netPnl >= 0 ? "+" : ""}$${selectedSummary.netPnl.toFixed(2)}</span>
+                  <span>Net P&L</span>
+                  <strong className={selectedSummary.netPnl >= 0 ? "positive" : "negative"}>
+                    {formatMoney(selectedSummary.netPnl)}
+                  </strong>
                 </div>
                 <div>
-                  <strong>Trades</strong>
-                  <span>{selectedSummary.trades}</span>
+                  <span>Trades</span>
+                  <strong>{selectedSummary.trades}</strong>
                 </div>
                 <div>
-                  <strong>Symbols</strong>
-                  <span>{selectedSummary.symbols}</span>
+                  <span>Symbols</span>
+                  <strong>{selectedSummary.symbols}</strong>
                 </div>
                 <div>
-                  <strong>Executions</strong>
-                  <span>{selectedSummary.executions}</span>
+                  <span>Executions</span>
+                  <strong>{selectedSummary.executions}</strong>
                 </div>
               </div>
-              <div className="dashboard-line-stat-list">
+
+              <div className="data-inspector-meta">
                 <div>
                   <span>Source File</span>
                   <strong>{selectedSession.sourceFileName}</strong>
                 </div>
                 <div>
                   <span>Imported</span>
-                  <strong>{new Date(selectedSession.importedAt).toLocaleString()}</strong>
+                  <strong>{formatDateTime(selectedSession.importedAt)}</strong>
                 </div>
                 <div>
                   <span>Last Updated</span>
-                  <strong>{new Date(selectedSession.updatedAt).toLocaleString()}</strong>
+                  <strong>{formatDateTime(selectedSession.updatedAt)}</strong>
                 </div>
+                {settings.exportFolder ? (
+                  <div>
+                    <span>Export Folder</span>
+                    <strong>{settings.exportFolder}</strong>
+                  </div>
+                ) : null}
               </div>
-              <div className="session-action-buttons">
+
+              <div className="data-inspector-actions">
                 <button type="button" className="mini-action" onClick={() => onLoadSession(selectedSession.tradeDate)}>
-                  Load Session
+                  Load This Day
                 </button>
                 <button
                   type="button"
                   className="mini-action mini-action-danger"
                   onClick={() => onDeleteSession(selectedSession.tradeDate)}
                 >
-                  Delete Session
+                  Delete This Import
                 </button>
               </div>
-              <div className="selected-session-list">
+
+              <div className="data-inspector-preview">
+                <span>Trade Preview</span>
                 {selectedTrades.map((trade) => (
-                  <div key={trade.id} className="selected-session-item">
+                  <div key={trade.id} className="data-inspector-trade">
                     <strong>{trade.name}</strong>
                     <span>{trade.symbol} · {trade.openTime} to {trade.closeTime}</span>
-                    <span>{trade.status} · {trade.side}</span>
-                    <span>{trade.netPnlUsd >= 0 ? "+" : ""}$${trade.netPnlUsd.toFixed(2)}</span>
+                    <span className={trade.netPnlUsd >= 0 ? "positive" : "negative"}>{formatMoney(trade.netPnlUsd)}</span>
                   </div>
                 ))}
               </div>
             </>
           ) : (
-            <div className="empty-state">Choose a saved session to inspect its stored trades and metadata.</div>
+            <div className="empty-state">Pick a saved import to see its source file and delete controls.</div>
           )}
         </aside>
       </section>
