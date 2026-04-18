@@ -35,6 +35,7 @@ export const defaultSettings: Settings = {
     status: true,
     mistake: true,
     playbook: true,
+    catalyst: true,
     game: true,
     outTag: true,
     execution: true

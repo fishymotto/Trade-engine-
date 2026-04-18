@@ -5,7 +5,7 @@ import type { Settings } from '../../types/trade';
 import type { TradeTagOptionsRecord, TradeTagOverrideRecord } from '../../types/tradeTags';
 import type { TradeReviewRecord } from '../../types/review';
 import type { HistoricalBarSet } from '../../types/chart';
-import type { JournalChecklistTemplates } from '../../lib/journal/journalTemplateStore';
+import { defaultJournalChecklistTemplates, type JournalChecklistTemplates } from '../../lib/journal/journalTemplateStore';
 
 /**
  * Syncs all user data from Supabase to localStorage after login
@@ -23,7 +23,7 @@ export const syncUserDataOnLogin = async (userId: string): Promise<void> => {
       syncStores.tradeTagOverrides.syncFromSupabase<TradeTagOverrideRecord[]>(userId, []),
       syncStores.tradeReviews.syncFromSupabase<TradeReviewRecord[]>(userId, []),
       syncStores.historicalBars.syncFromSupabase<HistoricalBarSet[]>(userId, []),
-      syncStores.journalChecklistTemplates.syncFromSupabase<JournalChecklistTemplates>(userId, {}),
+      syncStores.journalChecklistTemplates.syncFromSupabase<JournalChecklistTemplates>(userId, defaultJournalChecklistTemplates()),
       syncStores.workspaceState.syncFromSupabase(userId, {}),
     ]);
 
@@ -39,6 +39,6 @@ export const syncUserDataOnLogin = async (userId: string): Promise<void> => {
  */
 export const setUserIdForSync = (userId: string): void => {
   Object.values(syncStores).forEach((store) => {
-    store.config.userId = userId;
+    store.setUserId(userId);
   });
 };

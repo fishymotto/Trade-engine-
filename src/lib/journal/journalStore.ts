@@ -133,6 +133,7 @@ const normalizeJournalPage = (
     openMood?: string;
     afternoonMood?: string;
     closeMood?: string;
+    marketRegime?: string;
   }
 ): JournalPageRecord => {
   const morningBlocks = ensureBlocks(page.morningBlocks, page.morningJournal ?? "");
@@ -145,6 +146,7 @@ const normalizeJournalPage = (
     title: page.title || "Daily Journal",
     tradeDate: normalizeTradeDate(page.tradeDate),
     dayGrade: page.dayGrade ?? "",
+    marketRegime: page.marketRegime ?? "",
     mpp: page.mpp ?? "",
     sleepHours: page.sleepHours ?? "7.5",
     sleepScore: page.sleepScore ?? "",

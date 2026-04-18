@@ -1,6 +1,6 @@
 import type { JSONContent } from "@tiptap/core";
 import { hasJournalDocContent } from "../journal/journalContent";
-import type { PlaybookRecord } from "../../types/playbook";
+import type { PlaybookExampleRating, PlaybookRecord } from "../../types/playbook";
 
 const PLAYBOOKS_STORAGE_KEY = "trade-engine-playbooks";
 const DEFAULT_PLAYBOOK_ID = "wide-spread-open-drive";
@@ -73,6 +73,9 @@ const isPlaybookRecord = (value: unknown): value is PlaybookRecord =>
       Array.isArray((value as PlaybookRecord).sections)
   );
 
+const isExampleRating = (value: unknown): value is PlaybookExampleRating =>
+  value === "A+" || value === "A" || value === "B+";
+
 const normalizeName = (value: string): string => value.trim().toLowerCase();
 const slugify = (value: string): string =>
   normalizeName(value)
@@ -138,6 +141,7 @@ const createPlaceholderPlaybook = (name: string): PlaybookRecord => {
     description: "Build this playbook out with your rules, examples, and chart notes.",
     focus: "Define the setup clearly, then connect tagged trades and examples over time.",
     screenshotUrls: [],
+    aPlusExamples: [],
     createdAt: timestamp,
     updatedAt: timestamp,
     sections: createBlankPlaybookSections()
@@ -160,6 +164,7 @@ const createDefaultWideSpreadOpenDrive = (): PlaybookRecord => {
     focus:
       "Trade the forced repricing around the open when thin liquidity meets real urgency, not a random chart pattern.",
     screenshotUrls: [],
+    aPlusExamples: [],
     createdAt: timestamp,
     updatedAt: timestamp,
     sections: [
@@ -356,6 +361,7 @@ const createDefaultImbalanceNumberScalping = (): PlaybookRecord => {
     focus:
       "Use the 3:00 locator for idea generation, then react to the 3:50 and 3:55 imbalance windows only when the notional size is still real and the market has not fully paired it away.",
     screenshotUrls: [],
+    aPlusExamples: [],
     createdAt: timestamp,
     updatedAt: timestamp,
     sections: [
@@ -510,6 +516,7 @@ const createDefault612EmaCross = (): PlaybookRecord => {
     focus:
       "Use the cross as confirmation, not the whole thesis. The setup works best when the EMAs line up with price structure, tape pressure, and a clear intraday context.",
     screenshotUrls: [],
+    aPlusExamples: [],
     createdAt: timestamp,
     updatedAt: timestamp,
     sections: [
@@ -655,7 +662,13 @@ const hydrateSeededPlaybooks = (playbooks: PlaybookRecord[]): PlaybookRecord[] =
       ...seeded,
       createdAt: playbook.createdAt,
       updatedAt: playbook.updatedAt,
-      screenshotUrls: playbook.screenshotUrls.length > 0 ? playbook.screenshotUrls : seeded.screenshotUrls
+      screenshotUrls: playbook.screenshotUrls.length > 0 ? playbook.screenshotUrls : seeded.screenshotUrls,
+      aPlusExamples: Array.isArray((playbook as { aPlusExamples?: unknown }).aPlusExamples)
+        ? ((playbook as { aPlusExamples?: unknown[] }).aPlusExamples ?? []).filter(
+            (value): value is PlaybookRecord["aPlusExamples"][number] =>
+              Boolean(value && typeof value === "object" && "id" in (value as Record<string, unknown>))
+          )
+        : []
     };
   });
 };
@@ -684,6 +697,29 @@ export const loadPlaybooks = (): PlaybookRecord[] => {
           ? ((playbook as { screenshotUrls?: unknown[] }).screenshotUrls ?? []).filter(
               (value): value is string => typeof value === "string"
             )
+          : [],
+        aPlusExamples: Array.isArray((playbook as { aPlusExamples?: unknown }).aPlusExamples)
+          ? ((playbook as { aPlusExamples?: unknown[] }).aPlusExamples ?? [])
+              .filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object"))
+              .map((entry) => {
+                const now = new Date().toISOString();
+                const rating = entry.rating;
+                const notes = entry.notes as JSONContent | null | undefined;
+
+                return {
+                  id: typeof entry.id === "string" ? entry.id : `example-${Math.random().toString(16).slice(2)}`,
+                  tradeId: typeof entry.tradeId === "string" ? entry.tradeId : "",
+                  tradeDate: typeof entry.tradeDate === "string" ? entry.tradeDate : "",
+                  rating: isExampleRating(rating) ? rating : "A+",
+                  notes: hasJournalDocContent(notes) ? (notes as JSONContent) : paragraph(""),
+                  screenshotPaths: Array.isArray(entry.screenshotPaths)
+                    ? entry.screenshotPaths.filter((value): value is string => typeof value === "string")
+                    : [],
+                  recordingPath: typeof entry.recordingPath === "string" ? entry.recordingPath : "",
+                  createdAt: typeof entry.createdAt === "string" ? entry.createdAt : now,
+                  updatedAt: typeof entry.updatedAt === "string" ? entry.updatedAt : now
+                };
+              })
           : [],
         sections: playbook.sections
           .filter((section) => !isLegacySection(section.id))
@@ -751,6 +787,66 @@ export const updatePlaybookScreenshotUrls = (
     };
   });
 
+export const addPlaybookAPlusExample = (
+  playbooks: PlaybookRecord[],
+  playbookId: string,
+  example: PlaybookRecord["aPlusExamples"][number]
+): PlaybookRecord[] =>
+  playbooks.map((playbook) => {
+    if (playbook.id !== playbookId) {
+      return playbook;
+    }
+
+    return {
+      ...playbook,
+      updatedAt: new Date().toISOString(),
+      aPlusExamples: [example, ...(playbook.aPlusExamples ?? [])]
+    };
+  });
+
+export const removePlaybookAPlusExample = (
+  playbooks: PlaybookRecord[],
+  playbookId: string,
+  exampleId: string
+): PlaybookRecord[] =>
+  playbooks.map((playbook) => {
+    if (playbook.id !== playbookId) {
+      return playbook;
+    }
+
+    return {
+      ...playbook,
+      updatedAt: new Date().toISOString(),
+      aPlusExamples: (playbook.aPlusExamples ?? []).filter((entry) => entry.id !== exampleId)
+    };
+  });
+
+export const updatePlaybookAPlusExample = (
+  playbooks: PlaybookRecord[],
+  playbookId: string,
+  exampleId: string,
+  updates: Partial<PlaybookRecord["aPlusExamples"][number]>
+): PlaybookRecord[] =>
+  playbooks.map((playbook) => {
+    if (playbook.id !== playbookId) {
+      return playbook;
+    }
+
+    return {
+      ...playbook,
+      updatedAt: new Date().toISOString(),
+      aPlusExamples: (playbook.aPlusExamples ?? []).map((entry) =>
+        entry.id === exampleId
+          ? {
+              ...entry,
+              ...updates,
+              updatedAt: new Date().toISOString()
+            }
+          : entry
+      )
+    };
+  });
+
 export const addPlaybookRecord = (
   playbooks: PlaybookRecord[],
   name: string
@@ -772,4 +868,38 @@ export const addPlaybookRecord = (
     playbooks: [newPlaybook, ...playbooks],
     playbookId: newPlaybook.id
   };
+};
+
+export const ensurePlaybooksForNames = (
+  playbooks: PlaybookRecord[],
+  names: string[]
+): { playbooks: PlaybookRecord[]; addedPlaybookIds: string[] } => {
+  const seen = new Set<string>();
+  const addedPlaybookIds: string[] = [];
+  const existingNames = new Set(playbooks.map((playbook) => normalizeName(playbook.name)));
+  const nextPlaybooks = [...playbooks];
+
+  for (const name of names) {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const normalized = normalizeName(trimmed);
+    if (seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+
+    if (existingNames.has(normalized)) {
+      continue;
+    }
+
+    const created = createPlaceholderPlaybook(trimmed);
+    nextPlaybooks.push(created);
+    existingNames.add(normalized);
+    addedPlaybookIds.push(created.id);
+  }
+
+  return { playbooks: nextPlaybooks, addedPlaybookIds };
 };

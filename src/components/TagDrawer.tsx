@@ -5,12 +5,14 @@ interface TagDrawerProps {
   isOpen: boolean;
   title: string;
   options: string[];
-  currentValue: string;
+  selectionMode?: "single" | "multi";
+  currentValue?: string;
+  currentValues?: string[];
   allowClear?: boolean;
   clearLabel?: string;
   searchValue: string;
   onSearchChange: (value: string) => void;
-  onSelect: (value: string | null) => void;
+  onSelect: (value: string | string[] | null) => void;
   onCreateOption?: (value: string) => void;
   onClose: () => void;
 }
@@ -19,7 +21,9 @@ export const TagDrawer = ({
   isOpen,
   title,
   options,
-  currentValue,
+  selectionMode = "single",
+  currentValue = "",
+  currentValues = [],
   allowClear = false,
   clearLabel = "Clear value",
   searchValue,
@@ -29,6 +33,7 @@ export const TagDrawer = ({
   onClose
 }: TagDrawerProps) => {
   const drawerRef = useRef<HTMLDivElement | null>(null);
+  const selectedValues = selectionMode === "multi" ? currentValues : currentValue ? [currentValue] : [];
 
   const getToneIndex = (value: string): number =>
     value.split("").reduce((sum, character) => sum + character.charCodeAt(0), 0) % 6;
@@ -84,13 +89,15 @@ export const TagDrawer = ({
           onChange={(event) => onSearchChange(event.target.value)}
           placeholder="Search for an option..."
         />
-        <span className="tag-drawer-subtitle">Select an option or add a new one to this list.</span>
+        <span className="tag-drawer-subtitle">
+          {selectionMode === "multi" ? "Select one or more options (you can keep adding)." : "Select an option or add a new one to this list."}
+        </span>
         <div className="tag-drawer-content">
           {allowClear ? (
             <button
               type="button"
-              className={`tag-drawer-option ${currentValue ? "tag-option-selected" : ""}`}
-              onClick={() => onSelect(null)}
+              className={`tag-drawer-option ${selectedValues.length > 0 ? "tag-option-selected" : ""}`}
+              onClick={() => onSelect(selectionMode === "multi" ? [] : null)}
             >
               {clearLabel}
             </button>
@@ -110,8 +117,18 @@ export const TagDrawer = ({
                 <button
                   key={option}
                   type="button"
-                  className={`tag-drawer-option ${option === currentValue ? "tag-option-selected" : ""}`}
-                  onClick={() => onSelect(option)}
+                  className={`tag-drawer-option ${selectedValues.includes(option) ? "tag-option-selected" : ""}`}
+                  onClick={() => {
+                    if (selectionMode === "multi") {
+                      const nextValues = selectedValues.includes(option)
+                        ? selectedValues.filter((value) => value !== option)
+                        : [...selectedValues, option];
+                      onSelect(nextValues);
+                      return;
+                    }
+
+                    onSelect(option);
+                  }}
                 >
                   <span className={`tag-option-pill tag-option-pill-${getToneIndex(option)}`}>
                     {option}

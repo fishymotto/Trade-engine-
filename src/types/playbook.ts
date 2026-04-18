@@ -7,6 +7,20 @@ export interface PlaybookSectionRecord {
   content: JSONContent;
 }
 
+export type PlaybookExampleRating = "A+" | "A" | "B+";
+
+export interface PlaybookExampleRecord {
+  id: string;
+  tradeId: string;
+  tradeDate: string;
+  rating: PlaybookExampleRating;
+  notes: JSONContent;
+  screenshotPaths: string[];
+  recordingPath: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PlaybookRecord {
   id: string;
   name: string;
@@ -15,6 +29,7 @@ export interface PlaybookRecord {
   focus: string;
   sections: PlaybookSectionRecord[];
   screenshotUrls: string[];
+  aPlusExamples: PlaybookExampleRecord[];
   createdAt: string;
   updatedAt: string;
 }

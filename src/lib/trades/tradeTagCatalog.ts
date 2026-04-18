@@ -93,10 +93,21 @@ export const executionOptions = [
   "Average Down"
 ];
 
+export const catalystOptions = [
+  "Earnings",
+  "News",
+  "Upgrade",
+  "Downgrade",
+  "Macro",
+  "Sector",
+  "Technical Level"
+];
+
 export const tradeTagOptionsByField: Record<EditableTradeTagField, string[]> = {
   status: statusOptions,
   mistake: mistakeOptions,
   playbook: playbookOptions,
+  catalyst: catalystOptions,
   game: gameOptions,
   outTag: outTagOptions,
   execution: executionOptions
@@ -106,6 +117,7 @@ export const tradeTagFields: EditableTradeTagField[] = [
   "status",
   "mistake",
   "playbook",
+  "catalyst",
   "game",
   "outTag",
   "execution"
@@ -117,6 +129,7 @@ export const buildTradeTagOptionsByField = (
   status: Array.from(new Set([...(tradeTagOptionsByField.status ?? []), ...(customOptions.status ?? [])])),
   mistake: Array.from(new Set([...(tradeTagOptionsByField.mistake ?? []), ...(customOptions.mistake ?? [])])),
   playbook: Array.from(new Set([...(tradeTagOptionsByField.playbook ?? []), ...(customOptions.playbook ?? [])])),
+  catalyst: Array.from(new Set([...(tradeTagOptionsByField.catalyst ?? []), ...(customOptions.catalyst ?? [])])),
   game: Array.from(new Set([...(tradeTagOptionsByField.game ?? []), ...(customOptions.game ?? [])])),
   outTag: Array.from(new Set([...(tradeTagOptionsByField.outTag ?? []), ...(customOptions.outTag ?? [])])),
   execution: Array.from(new Set([...(tradeTagOptionsByField.execution ?? []), ...(customOptions.execution ?? [])]))
@@ -126,6 +139,7 @@ export const tradeTagFieldLabels: Record<EditableTradeTagField, string> = {
   status: "Status",
   mistake: "Mistakes",
   playbook: "Playbook",
+  catalyst: "Catalyst",
   game: "Game",
   outTag: "Out Tag",
   execution: "Execution"

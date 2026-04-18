@@ -32,6 +32,7 @@ export interface JournalPageRecord {
   title: string;
   tradeDate: string;
   dayGrade: string;
+  marketRegime: string;
   mpp: string;
   sleepHours: string;
   sleepScore: string;

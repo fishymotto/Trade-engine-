@@ -2,6 +2,25 @@
 
 Cyberpunk-themed Tauri desktop app for importing one PPro8 Trade Detail CSV, grouping executions into trades, exporting a Notion-ready CSV, and optionally importing new rows into Notion.
 
+## Project Structure
+
+- `src/app/`: React app entry + root `App` orchestration.
+- `src/features/`: Feature folders (pages + feature-specific UI/logic).
+  - `src/features/import/`: CSV import + staging.
+  - `src/features/grouping/`: Execution grouping + trade review UI.
+  - `src/features/export/`: CSV export logic.
+  - `src/features/notion/`: Notion export/sync logic.
+- `src/components/`: Shared, reusable UI components used across features.
+- `src/lib/`: Shared utilities/wrappers (cross-feature logic).
+- `src/types/`: Shared TypeScript types.
+- `src/styles/`: Global styles.
+- `src-tauri/src/`: Rust (Tauri) backend.
+  - `src-tauri/src/main.rs`: App bootstrap + command registration (keep minimal).
+  - `src-tauri/src/commands/`: Tauri command handlers (`#[tauri::command]`).
+  - `src-tauri/src/services/`: Business logic / HTTP clients.
+  - `src-tauri/src/models/`: Rust structs/types (serde models).
+  - `src-tauri/src/utils/`: Helpers (paths, etc).
+
 ## Running On A New Windows Computer
 
 This app is a Tauri desktop project, so a fresh machine needs a few native dependencies before `npm run desktop:dev` will work.
@@ -31,6 +50,6 @@ If `npm run desktop:dev` still fails on a new machine, run `npm run desktop:doct
 
 ## TODO
 
-- Verify the exact PPro8 Trade Detail header names against a real sample export and tighten the alias list in `src/lib/parser/csvParser.ts`.
+- Verify the exact PPro8 Trade Detail header names against a real sample export and tighten the alias list in `src/features/import/lib/csvParser.ts`.
 - Add a proper duplicate review modal instead of the current confirm dialog.
 - Add automated tests for grouping, flip handling, and tag rules.

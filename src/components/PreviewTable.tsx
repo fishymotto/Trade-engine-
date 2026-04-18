@@ -12,7 +12,7 @@ interface PreviewTableProps {
   onSelectTrade?: (trade: EditableTradeRow) => void;
   onToggleTradeSelection: (tradeId: string) => void;
   onToggleSelectAll: (tradeIds: string[]) => void;
-  onUpdateTradeTag: (trade: EditableTradeRow, field: EditableTradeTagField, value: string | null) => void;
+  onUpdateTradeTag: (trade: EditableTradeRow, field: EditableTradeTagField, value: string | string[] | null) => void;
   onCreateTradeTagOption: (field: EditableTradeTagField, value: string) => void;
 }
 
@@ -71,24 +71,42 @@ const previewColumns: PreviewColumn[] = [
   { key: "status", label: "Status", getSortValue: (trade) => getFieldDisplayValue(trade, "status") },
   { key: "mistake", label: "Mistakes", getSortValue: (trade) => getFieldDisplayValue(trade, "mistake") },
   { key: "playbook", label: "Playbook", getSortValue: (trade) => getFieldDisplayValue(trade, "playbook") },
+  { key: "catalyst", label: "Catalyst", getSortValue: (trade) => getFieldDisplayValue(trade, "catalyst") },
   { key: "game", label: "Game", getSortValue: (trade) => getFieldDisplayValue(trade, "game") },
   { key: "outTag", label: "Out Tag", getSortValue: (trade) => getFieldDisplayValue(trade, "outTag") },
   { key: "execution", label: "Execution", getSortValue: (trade) => getFieldDisplayValue(trade, "execution") }
 ];
 
-const tagColumnKeys: EditableTradeTagField[] = ["status", "mistake", "playbook", "game", "outTag", "execution"];
+const tagColumnKeys: EditableTradeTagField[] = ["status", "mistake", "playbook", "catalyst", "game", "outTag", "execution"];
 
 const isTagColumnKey = (key: PreviewSortKey): key is EditableTradeTagField =>
   tagColumnKeys.includes(key as EditableTradeTagField);
+
+const summarizeTags = (values: string[]): string => {
+  if (values.length === 0) {
+    return "";
+  }
+
+  if (values.length === 1) {
+    return values[0] ?? "";
+  }
+
+  return `${values[0]} +${values.length - 1}`;
+};
+
+const getToneIndex = (value: string): number =>
+  value.split("").reduce((sum, character) => sum + character.charCodeAt(0), 0) % 6;
 
 const getFieldDisplayValue = (trade: EditableTradeRow, field: EditableTradeTagField): string => {
   switch (field) {
     case "status":
       return trade.status;
     case "mistake":
-      return trade.mistakes[0] ?? "";
+      return summarizeTags(trade.mistakes ?? []);
     case "playbook":
       return trade.setups[0] ?? "";
+    case "catalyst":
+      return summarizeTags(trade.catalyst ?? []);
     case "game":
       return trade.game;
     case "outTag":
@@ -115,7 +133,9 @@ const getTagToneClass = (field: EditableTradeTagField, value: string): string =>
     case "mistake":
       return "tag-pill-mistake";
     case "playbook":
-      return "tag-pill-playbook";
+      return `tag-pill-playbook tag-pill-tone-${getToneIndex(value)}`;
+    case "catalyst":
+      return "tag-pill-catalyst";
     case "game":
       return "tag-pill-game";
     case "outTag":
@@ -124,6 +144,19 @@ const getTagToneClass = (field: EditableTradeTagField, value: string): string =>
       return "tag-pill-execution";
     default:
       return "";
+  }
+};
+
+const isMultiSelectField = (field: EditableTradeTagField): boolean => field === "mistake" || field === "catalyst";
+
+const getFieldSelectedValues = (trade: EditableTradeRow, field: EditableTradeTagField): string[] => {
+  switch (field) {
+    case "mistake":
+      return trade.mistakes ?? [];
+    case "catalyst":
+      return trade.catalyst ?? [];
+    default:
+      return [];
   }
 };
 
@@ -340,27 +373,39 @@ export const PreviewTable = ({
       {cellEditor && activeTrade ? (
         <TagDrawer
           isOpen={!!cellEditor}
-          title={`${tradeTagFieldLabels[cellEditor.field]} · ${activeTrade.name}`}
+          selectionMode={isMultiSelectField(cellEditor.field) ? "multi" : "single"}
+          title={`${tradeTagFieldLabels[cellEditor.field]} - ${activeTrade.name}`}
           options={tagOptionsByField[cellEditor.field]}
-          currentValue={getFieldDisplayValue(activeTrade, cellEditor.field)}
+          currentValue={isMultiSelectField(cellEditor.field) ? "" : getFieldDisplayValue(activeTrade, cellEditor.field)}
+          currentValues={getFieldSelectedValues(activeTrade, cellEditor.field)}
           allowClear
           clearLabel={
             cellEditor.field === "mistake"
               ? "No mistakes"
+              : cellEditor.field === "catalyst"
+                ? "No catalyst"
               : `Clear ${tradeTagFieldLabels[cellEditor.field]}`
           }
           searchValue={cellEditorSearchQuery}
           onSearchChange={setCellEditorSearchQuery}
           onSelect={(value) => {
             onUpdateTradeTag(activeTrade, cellEditor.field, value);
-            setCellEditor(null);
-            setCellEditorSearchQuery("");
+            if (!isMultiSelectField(cellEditor.field)) {
+              setCellEditor(null);
+              setCellEditorSearchQuery("");
+            }
           }}
           onCreateOption={(value) => {
             onCreateTradeTagOption(cellEditor.field, value);
-            onUpdateTradeTag(activeTrade, cellEditor.field, value);
-            setCellEditor(null);
-            setCellEditorSearchQuery("");
+            if (isMultiSelectField(cellEditor.field)) {
+              const currentValues = getFieldSelectedValues(activeTrade, cellEditor.field);
+              const nextValues = currentValues.includes(value) ? currentValues : [...currentValues, value];
+              onUpdateTradeTag(activeTrade, cellEditor.field, nextValues);
+            } else {
+              onUpdateTradeTag(activeTrade, cellEditor.field, value);
+              setCellEditor(null);
+              setCellEditorSearchQuery("");
+            }
           }}
           onClose={() => {
             setCellEditor(null);

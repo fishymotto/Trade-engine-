@@ -855,3 +855,20 @@ export const createLibraryPage = (collectionId: LibraryCollectionId): LibraryPag
   const collection = libraryCollections.find((item) => item.id === collectionId);
   return createStarterPage(collectionId, collection ? `New ${collection.name} page` : "Untitled");
 };
+
+export const createLibraryBookRow = (): LibraryPageRecord => {
+  const page = createStarterPage("book-club", "Untitled", ["book-row"]);
+
+  return {
+    ...page,
+    status: "Active",
+    properties: {
+      Author: "",
+      "Reading Status": "To Read",
+      Rating: "",
+      Genre: [],
+      Review: "",
+      Summary: ""
+    }
+  };
+};

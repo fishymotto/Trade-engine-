@@ -24,6 +24,7 @@ export const applyTradeTagOverrides = (
     if (!override) {
       return {
         ...trade,
+        catalyst: trade.catalyst ?? [],
         overrideKey,
         manualTags: {}
       };
@@ -31,11 +32,13 @@ export const applyTradeTagOverrides = (
 
     const nextTrade: EditableTradeRow = {
       ...trade,
+      catalyst: trade.catalyst ?? [],
       overrideKey,
       manualTags: {
         status: hasOwn(override, "status"),
-        mistake: hasOwn(override, "mistake"),
+        mistake: hasOwn(override, "mistakes") || hasOwn(override, "mistake"),
         playbook: hasOwn(override, "playbook"),
+        catalyst: hasOwn(override, "catalyst"),
         game: hasOwn(override, "game"),
         outTag: hasOwn(override, "outTag"),
         execution: hasOwn(override, "execution")
@@ -46,12 +49,18 @@ export const applyTradeTagOverrides = (
       nextTrade.status = override.status ?? trade.status;
     }
 
-    if (hasOwn(override, "mistake")) {
+    if (hasOwn(override, "mistakes")) {
+      nextTrade.mistakes = override.mistakes ?? [];
+    } else if (hasOwn(override, "mistake")) {
       nextTrade.mistakes = override.mistake ? [override.mistake] : [];
     }
 
     if (hasOwn(override, "playbook")) {
       nextTrade.setups = override.playbook ? [override.playbook] : [];
+    }
+
+    if (hasOwn(override, "catalyst")) {
+      nextTrade.catalyst = override.catalyst ?? [];
     }
 
     if (hasOwn(override, "game")) {
@@ -74,7 +83,7 @@ export const upsertTradeTagOverride = (
   currentOverrides: TradeTagOverrideRecord[],
   trade: Pick<GroupedTrade, "tradeDate" | "symbol" | "openTime" | "closeTime">,
   field: EditableTradeTagField,
-  value: string | null
+  value: string | string[] | null
 ): TradeTagOverrideRecord[] => {
   const key = getTradeOverrideKey(trade);
   const existing = currentOverrides.find((override) => override.key === key);
@@ -93,19 +102,28 @@ export const upsertTradeTagOverride = (
       nextOverride.status = value as TradeTagOverrideRecord["status"];
       break;
     case "mistake":
-      nextOverride.mistake = value;
+      if (Array.isArray(value)) {
+        nextOverride.mistakes = value;
+        delete nextOverride.mistake;
+      } else {
+        nextOverride.mistake = value;
+        delete nextOverride.mistakes;
+      }
       break;
     case "playbook":
-      nextOverride.playbook = value;
+      nextOverride.playbook = Array.isArray(value) ? value[0] ?? null : value;
+      break;
+    case "catalyst":
+      nextOverride.catalyst = Array.isArray(value) ? value : value ? [value] : [];
       break;
     case "game":
       nextOverride.game = value as TradeTagOverrideRecord["game"];
       break;
     case "outTag":
-      nextOverride.outTag = value;
+      nextOverride.outTag = Array.isArray(value) ? value[0] ?? null : value;
       break;
     case "execution":
-      nextOverride.execution = value;
+      nextOverride.execution = Array.isArray(value) ? value[0] ?? null : value;
       break;
     default:
       break;

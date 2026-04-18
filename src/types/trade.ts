@@ -6,6 +6,7 @@ export interface TradeTagVisibilitySettings {
   status: boolean;
   mistake: boolean;
   playbook: boolean;
+  catalyst: boolean;
   game: boolean;
   outTag: boolean;
   execution: boolean;
@@ -81,6 +82,7 @@ export interface GroupedTrade {
   status: TradeStatus;
   mistakes: string[];
   setups: string[];
+  catalyst: string[];
   game: GameTag;
   outTag: string[];
   gateways: string[];

@@ -17,6 +17,10 @@ export class HybridSyncStore {
     this.config = config;
   }
 
+  setUserId(userId?: string): void {
+    this.config.userId = userId;
+  }
+
   /**
    * Load data from localStorage (cache)
    * Fast, works offline

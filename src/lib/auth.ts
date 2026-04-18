@@ -15,6 +15,8 @@ export type AuthUser = {
   username?: string;
 };
 
+export type User = AuthUser;
+
 export class AuthService {
   async signup(email: string, password: string, username?: string): Promise<AuthUser> {
     const { data, error } = await supabase.auth.signUp({
