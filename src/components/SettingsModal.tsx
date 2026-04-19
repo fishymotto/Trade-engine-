@@ -124,6 +124,18 @@ export const SettingsModal = ({
           />
           <small>Comma, space, or new-line separated. These symbols will convert from BRL to USD on import.</small>
         </label>
+        <label>
+          <span>Daily Shutdown Risk (USD)</span>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            value={settings.dailyShutdownRiskUsd || ""}
+            onChange={(event) => update({ dailyShutdownRiskUsd: Number(event.target.value) || 0 })}
+            placeholder="Example: 30"
+          />
+          <small>Used to count breach days in Weekly/Monthly Review entries.</small>
+        </label>
         <section className="settings-section">
           <div>
             <h3>Tagging System</h3>

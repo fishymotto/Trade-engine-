@@ -48,6 +48,21 @@ https://developer.microsoft.com/en-us/microsoft-edge/webview2/
 
 If `npm run desktop:dev` still fails on a new machine, run `npm run desktop:doctor` first. The preflight script now checks for Node, npm, Cargo, the MSVC Rust toolchain, Visual Studio Build Tools, WebView2, and whether this repo's dependencies have been installed.
 
+## Cross-Device Data Sync (Supabase)
+
+This app supports syncing your workspace (sessions, journal pages, settings, tags, reviews, charts, playbooks, library notes, etc.) across machines via Supabase.
+
+1. Create a Supabase project (or use an existing one).
+2. In Supabase, open the SQL editor and run `scripts/supabase.sql`.
+3. Create a local env file by copying `.env.example` to `.env.local` and set:
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+4. Run the app and sign in (or create an account) in the in-app auth screen.
+
+Notes:
+- Data is cached locally (offline-first) and synced to Supabase after login.
+- Attachments saved by the desktop app are currently stored on the local machine; only the attachment paths are stored in synced data.
+
 ## TODO
 
 - Verify the exact PPro8 Trade Detail header names against a real sample export and tighten the alias list in `src/features/import/lib/csvParser.ts`.

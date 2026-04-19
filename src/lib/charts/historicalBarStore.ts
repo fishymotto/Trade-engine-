@@ -1,25 +1,15 @@
 import type { HistoricalBarSet } from "../../types/chart";
-
-const STORAGE_KEY = "trade-engine-historical-bars";
+import { syncStores } from "../sync/syncStore";
 
 export const buildBarSetKey = (symbol: string, tradeDate: string): string => `${symbol}__${tradeDate}`;
 
 export const loadHistoricalBarSets = (): HistoricalBarSet[] => {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as HistoricalBarSet[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  const parsed = syncStores.historicalBars.load<HistoricalBarSet[]>([]);
+  return Array.isArray(parsed) ? parsed : [];
 };
 
 export const saveHistoricalBarSets = (barSets: HistoricalBarSet[]): void => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(barSets));
+  void syncStores.historicalBars.save(barSets);
 };
 
 export const upsertHistoricalBarSet = (

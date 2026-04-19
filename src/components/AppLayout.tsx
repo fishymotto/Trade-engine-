@@ -10,6 +10,8 @@ interface AppLayoutProps {
 }
 
 export const AppLayout = ({ activeRoute, navItems, onNavigate, children }: AppLayoutProps) => {
+  const highlightedRoute: AppRoute = activeRoute === "playbooks" ? "library" : activeRoute;
+
   return (
     <div className="workspace-shell">
       <header className="top-nav">
@@ -22,7 +24,7 @@ export const AppLayout = ({ activeRoute, navItems, onNavigate, children }: AppLa
             <button
               key={item.id}
               type="button"
-              className={`top-nav-link ${item.id === activeRoute ? "top-nav-link-active" : ""}`}
+              className={`top-nav-link ${item.id === highlightedRoute ? "top-nav-link-active" : ""}`}
               onClick={() => onNavigate(item.id)}
             >
               <WorkspaceIcon icon={item.icon} alt={`${item.label} icon`} className="top-nav-icon" />

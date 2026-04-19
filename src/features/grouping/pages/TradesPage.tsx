@@ -7,6 +7,7 @@ import { PreviewTable } from "../../../components/PreviewTable";
 import { TagDrawer } from "../../../components/TagDrawer";
 import { TradeChart, type TradeChartLayerVisibility } from "../../../components/TradeChart";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
+import { TradeExecutionsTable } from "../components/TradeExecutionsTable";
 import { tradeTagFieldLabels, tradeTagFields } from "../../../lib/trades/tradeTagCatalog";
 import type { ChartInterval, HistoricalBarSet } from "../../../types/chart";
 import type { TradeReviewRecord } from "../../../types/review";
@@ -126,6 +127,8 @@ export const TradesPage = ({
   const [bulkField, setBulkField] = useState<EditableTradeTagField>("playbook");
   const [isBulkEditorOpen, setIsBulkEditorOpen] = useState(false);
   const [bulkEditorSearchQuery, setBulkEditorSearchQuery] = useState("");
+  const [quickTagEditorField, setQuickTagEditorField] = useState<EditableTradeTagField | null>(null);
+  const [quickTagEditorSearchQuery, setQuickTagEditorSearchQuery] = useState("");
   const barsInputRef = useRef<HTMLInputElement | null>(null);
   const activeTagFields = useMemo(
     () => tradeTagFields.filter((field) => tagOptionsByField[field].length > 0),
@@ -133,6 +136,15 @@ export const TradesPage = ({
   );
   const isPlaybookTagEnabled = tagOptionsByField.playbook.length > 0;
   const isMistakeTagEnabled = tagOptionsByField.mistake.length > 0;
+  const quickTagLabels: Partial<Record<EditableTradeTagField, string>> = useMemo(
+    () => ({
+      game: "Game",
+      playbook: "Setup",
+      mistake: "Mistakes",
+      outTag: "Out Tags"
+    }),
+    []
+  );
 
   useEffect(() => {
     if (activeTagFields.length > 0 && !activeTagFields.includes(bulkField)) {
@@ -140,6 +152,21 @@ export const TradesPage = ({
     }
   }, [activeTagFields, bulkField]);
   const lastHandledExternalSelectionRef = useRef<number | null>(null);
+
+  const getQuickTagValue = (trade: EditableTradeRow, field: EditableTradeTagField): string | string[] => {
+    switch (field) {
+      case "game":
+        return trade.game;
+      case "playbook":
+        return trade.setups[0] ?? "";
+      case "mistake":
+        return trade.mistakes ?? [];
+      case "outTag":
+        return trade.outTag[0] ?? "";
+      default:
+        return "";
+    }
+  };
 
   const selectTradeAndReveal = (trade: EditableTradeRow) => {
     setSelectedTradeId(trade.id);
@@ -666,83 +693,97 @@ export const TradesPage = ({
           <span>{workspaceHint}</span>
           {selectedTrade ? (
             <>
+              <div className="trade-quick-tags" aria-label="Trade tag summary">
+                <button
+                  type="button"
+                  className={`trade-quick-tag trade-quick-tag-button ${selectedTrade.game ? "" : "trade-quick-tag-empty"}`}
+                  onClick={() => {
+                    setQuickTagEditorField("game");
+                    setQuickTagEditorSearchQuery("");
+                  }}
+                >
+                  <span className="trade-quick-tag-label">Game</span>
+                  <strong className="trade-quick-tag-value">{selectedTrade.game || "None"}</strong>
+                </button>
+                <button
+                  type="button"
+                  className={`trade-quick-tag trade-quick-tag-button ${selectedTrade.setups[0] ? "" : "trade-quick-tag-empty"}`}
+                  onClick={() => {
+                    setQuickTagEditorField("playbook");
+                    setQuickTagEditorSearchQuery("");
+                  }}
+                >
+                  <span className="trade-quick-tag-label">Setup</span>
+                  <strong className="trade-quick-tag-value">{selectedTrade.setups[0] || "None"}</strong>
+                </button>
+                <button
+                  type="button"
+                  className={`trade-quick-tag trade-quick-tag-button ${selectedTrade.mistakes.length > 0 ? "" : "trade-quick-tag-empty"}`}
+                  onClick={() => {
+                    setQuickTagEditorField("mistake");
+                    setQuickTagEditorSearchQuery("");
+                  }}
+                >
+                  <span className="trade-quick-tag-label">Mistakes</span>
+                  <strong className="trade-quick-tag-value">
+                    {selectedTrade.mistakes.length > 0
+                      ? `${selectedTrade.mistakes[0]}${selectedTrade.mistakes.length > 1 ? ` +${selectedTrade.mistakes.length - 1}` : ""}`
+                      : "None"}
+                  </strong>
+                </button>
+                <div className={`trade-quick-tag ${selectedTrade.gateways.length > 0 ? "" : "trade-quick-tag-empty"}`}>
+                  <span className="trade-quick-tag-label">Gateways</span>
+                  <strong className="trade-quick-tag-value">{selectedTrade.gateways.join(", ") || "None"}</strong>
+                </div>
+                <button
+                  type="button"
+                  className={`trade-quick-tag trade-quick-tag-button ${selectedTrade.outTag[0] ? "" : "trade-quick-tag-empty"}`}
+                  onClick={() => {
+                    setQuickTagEditorField("outTag");
+                    setQuickTagEditorSearchQuery("");
+                  }}
+                >
+                  <span className="trade-quick-tag-label">Out Tags</span>
+                  <strong className="trade-quick-tag-value">{selectedTrade.outTag[0] || "None"}</strong>
+                </button>
+                <div className={`trade-quick-tag ${selectedTrade.feesUsd ? "" : "trade-quick-tag-empty"}`}>
+                  <span className="trade-quick-tag-label">Fees</span>
+                  <strong className="trade-quick-tag-value">${selectedTrade.feesUsd.toFixed(2)}</strong>
+                </div>
+              </div>
               <div className="trade-mini-stats">
                 <div>
-                  <strong>{selectedTrade.tradeDate}</strong>
+                  <strong>Date &amp; Time Range</strong>
+                  <span>{selectedTrade.tradeDate}</span>
                   <span>{selectedTrade.openTime} to {selectedTrade.closeTime}</span>
                 </div>
                 <div>
-                  <strong>{selectedTrade.side}</strong>
+                  <strong>Short / Long</strong>
+                  <span>{selectedTrade.side}</span>
                   <span>{selectedTrade.status}</span>
                 </div>
                 <div>
-                  <strong>{selectedTrade.netPnlUsd >= 0 ? "+" : ""}${selectedTrade.netPnlUsd.toFixed(2)}</strong>
-                  <span>{selectedTrade.returnPerShare.toFixed(4)} return/share</span>
+                  <strong>Size</strong>
+                  <span>{selectedTrade.size.toLocaleString()}</span>
+                </div>
+                <div>
+                  <strong>Average Entry Price</strong>
+                  <span>{selectedTrade.entryPrice.toFixed(4)}</span>
+                </div>
+                <div>
+                  <strong>Average Exit Price</strong>
+                  <span>{selectedTrade.exitPrice.toFixed(4)}</span>
+                </div>
+                <div>
+                  <strong>Return / Share</strong>
+                  <span>{selectedTrade.returnPerShare.toFixed(4)}</span>
+                </div>
+                <div>
+                  <strong>Total Return</strong>
+                  <span>{selectedTrade.netPnlUsd >= 0 ? "+" : ""}${selectedTrade.netPnlUsd.toFixed(2)}</span>
                 </div>
               </div>
-              <div className="trade-route">
-                <div className="trade-route-row">
-                  <span className="trade-route-label">Entry</span>
-                  <div className="trade-route-time">
-                    <strong>{selectedTrade.openingExecutions[0]?.time ?? selectedTrade.openTime}</strong>
-                  </div>
-                  <div className="trade-route-value">
-                    <span className="trade-route-value-price">
-                      {(selectedTrade.openingExecutions[0]?.price ?? selectedTrade.entryPrice).toFixed(4)}
-                    </span>
-                    {selectedTrade.openingExecutions[0] ? (
-                      <span className="trade-route-value-qty">{selectedTrade.openingExecutions[0].quantity} sh</span>
-                    ) : null}
-                  </div>
-                </div>
-                {selectedTrade.openingExecutions.slice(1).map((execution, index) => {
-                  const signal = selectedTrade.addSignals[index];
-                  const qualifier = signal?.averagedDown ? "Avg down" : signal?.addedToWinner ? "To winner" : "";
-                  return (
-                    <div key={`${execution.time}-${execution.sourceIndex}-${index}`} className="trade-route-row">
-                      <span className="trade-route-label">Add</span>
-                      <div className="trade-route-time">
-                        <strong>{execution.time}</strong>
-                        {qualifier ? <span className="trade-route-qualifier">{qualifier}</span> : null}
-                      </div>
-                      <div className="trade-route-value">
-                        <span className="trade-route-value-price">{execution.price.toFixed(4)}</span>
-                        <span className="trade-route-value-qty">{execution.quantity} sh</span>
-                      </div>
-                    </div>
-                  );
-                })}
-                {selectedTrade.closingExecutions.length > 0 ? (
-                  selectedTrade.closingExecutions.map((execution, index) => {
-                    const isPartial = index < selectedTrade.closingExecutions.length - 1;
-                    return (
-                      <div key={`${execution.time}-${execution.sourceIndex}-${index}`} className="trade-route-row">
-                        <span className="trade-route-label">Exit</span>
-                        <div className="trade-route-time">
-                          <strong>{execution.time}</strong>
-                          {selectedTrade.closingExecutions.length > 1 && isPartial ? (
-                            <span className="trade-route-qualifier">Partial</span>
-                          ) : null}
-                        </div>
-                        <div className="trade-route-value">
-                          <span className="trade-route-value-price">{execution.price.toFixed(4)}</span>
-                          <span className="trade-route-value-qty">{execution.quantity} sh</span>
-                        </div>
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="trade-route-row">
-                    <span className="trade-route-label">Exit</span>
-                    <div className="trade-route-time">
-                      <strong>{selectedTrade.closeTime}</strong>
-                    </div>
-                    <div className="trade-route-value">
-                      <span className="trade-route-value-price">{selectedTrade.exitPrice.toFixed(4)}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
+              <TradeExecutionsTable trade={selectedTrade} />
               <div className="chart-toolbar-stack">
                 <div className="chart-toolbar-row">
                   <div className="chart-toolbar-group chart-toolbar-group-meta">
@@ -780,6 +821,7 @@ export const TradesPage = ({
                     bars={selectedBarSet?.bars ?? []}
                     trade={selectedTrade}
                     interval={reviewChartInterval}
+                    fillHeight
                     layerVisibility={chartLayerVisibility}
                     onToggleLayerVisibility={(layer) =>
                       setChartLayerVisibility((current) => ({
@@ -801,7 +843,7 @@ export const TradesPage = ({
                         <span className="trade-chart-pane-eyebrow">Context</span>
                         <strong>Day View</strong>
                       </div>
-                      <span>{selectedTrade.symbol} · {dayChartInterval}</span>
+                      <span>{selectedTrade.symbol} Â· {dayChartInterval}</span>
                     </div>
                     <TradeChart
                       bars={
@@ -811,6 +853,7 @@ export const TradesPage = ({
                       }
                       trade={selectedTrade}
                       height={500}
+                      fillHeight
                       showMarkers={false}
                       showEma={false}
                       focusMode="day"
@@ -841,61 +884,37 @@ export const TradesPage = ({
             </>
           ) : null}
         </article>
-        <article className="placeholder-panel trade-inspector">
-          <div className="panel-header">
-            <WorkspaceIcon icon="journal" alt="Trade inspector icon" className="panel-header-icon" />
-            <h2>Trade Inspector</h2>
-          </div>
-          {selectedTrade ? (
-            <div className="trade-inspector-grid">
-              <div className="inspector-card">
-                <WorkspaceIcon icon="text" alt="Name icon" className="inspector-card-icon" />
-                <strong>Name</strong>
-                <span>{selectedTrade.name}</span>
-              </div>
-              <div className="inspector-card">
-                <WorkspaceIcon icon="tags" alt="Game icon" className="inspector-card-icon" />
-                <strong>Game</strong>
-                <span>{selectedTrade.game || "Unrated"}</span>
-              </div>
-              <div className="inspector-card">
-                <WorkspaceIcon icon="execution" alt="Execution icon" className="inspector-card-icon" />
-                <strong>Execution</strong>
-                <span>{selectedTrade.execution.join(", ") || "None"}</span>
-              </div>
-              <div className="inspector-card">
-                <WorkspaceIcon icon="filter" alt="Out tag icon" className="inspector-card-icon" />
-                <strong>Out Tag</strong>
-                <span>{selectedTrade.outTag.join(", ") || "None"}</span>
-              </div>
-              <div className="inspector-card">
-                <WorkspaceIcon icon="plan" alt="Gateways icon" className="inspector-card-icon" />
-                <strong>Gateways</strong>
-                <span>{selectedTrade.gateways.join(", ") || "None"}</span>
-              </div>
-              <div className="inspector-card">
-                <WorkspaceIcon icon="money" alt="Fees icon" className="inspector-card-icon" />
-                <strong>Fees</strong>
-                <span>${selectedTrade.feesUsd.toFixed(2)}</span>
-              </div>
-              <div className="inspector-card">
-                <WorkspaceIcon icon="journal" alt="Setups icon" className="inspector-card-icon" />
-                <strong>Setups</strong>
-                <span>{selectedTrade.setups.join(", ") || "None"}</span>
-              </div>
-              <div className="inspector-card">
-                <WorkspaceIcon icon="checklist" alt="Mistakes icon" className="inspector-card-icon" />
-                <strong>Mistakes</strong>
-                <span>{selectedTrade.mistakes.join(", ") || "None"}</span>
-              </div>
+        {/* <article className="trade-chart-pane trade-chart-pane-secondary day-view-chart-card day-view-panel">
+          <div className="trade-chart-pane-header">
+            <div>
+              <span className="trade-chart-pane-eyebrow">Context</span>
+              <strong>Day View</strong>
             </div>
+            {selectedTrade ? <span>{selectedTrade.symbol} · {dayChartInterval}</span> : <span>No trade selected</span>}
+          </div>
+          {selectedTrade && selectedBarSet ? (
+            <TradeChart
+              bars={
+                dayChartInterval === "1D" || dayChartInterval === "1W"
+                  ? (selectedBarSet.dailyBars ?? selectedBarSet.bars)
+                  : selectedBarSet.bars
+              }
+              trade={selectedTrade}
+              fillHeight
+              showMarkers={false}
+              showEma={false}
+              focusMode="day"
+              interval={dayChartInterval}
+              availableIntervals={secondaryChartIntervals}
+              onChangeInterval={onChangeDayChartInterval}
+            />
           ) : (
             <PlaceholderPanel
-              title="No Trade Selected"
-              description="Choose a grouped trade from the grid to inspect the tags, fees, and execution details."
+              title="No Day View Loaded"
+              description="Choose a trade with historical bars to inspect the full session context."
             />
           )}
-        </article>
+        </article> */}
         <article className="placeholder-panel related-trades-panel">
           <div className="panel-header">
             <WorkspaceIcon icon="reports" alt="Related trades icon" className="panel-header-icon" />
@@ -950,6 +969,61 @@ export const TradesPage = ({
             <PlaceholderPanel
               title="No Review Loaded"
               description="Choose a trade to add review notes."
+            />
+          )}
+        </article>
+        <article className="placeholder-panel trade-inspector trade-inspector-bottom">
+          <div className="panel-header">
+            <WorkspaceIcon icon="journal" alt="Trade inspector icon" className="panel-header-icon" />
+            <h2>Trade Inspector</h2>
+          </div>
+          {selectedTrade ? (
+            <div className="trade-inspector-grid">
+              <div className="inspector-card">
+                <WorkspaceIcon icon="text" alt="Name icon" className="inspector-card-icon" />
+                <strong>Name</strong>
+                <span>{selectedTrade.name}</span>
+              </div>
+              <div className="inspector-card">
+                <WorkspaceIcon icon="tags" alt="Game icon" className="inspector-card-icon" />
+                <strong>Game</strong>
+                <span>{selectedTrade.game || "Unrated"}</span>
+              </div>
+              <div className="inspector-card">
+                <WorkspaceIcon icon="execution" alt="Execution icon" className="inspector-card-icon" />
+                <strong>Execution</strong>
+                <span>{selectedTrade.execution.join(", ") || "None"}</span>
+              </div>
+              <div className="inspector-card">
+                <WorkspaceIcon icon="filter" alt="Out tag icon" className="inspector-card-icon" />
+                <strong>Out Tag</strong>
+                <span>{selectedTrade.outTag.join(", ") || "None"}</span>
+              </div>
+              <div className="inspector-card">
+                <WorkspaceIcon icon="plan" alt="Gateways icon" className="inspector-card-icon" />
+                <strong>Gateways</strong>
+                <span>{selectedTrade.gateways.join(", ") || "None"}</span>
+              </div>
+              <div className="inspector-card">
+                <WorkspaceIcon icon="money" alt="Fees icon" className="inspector-card-icon" />
+                <strong>Fees</strong>
+                <span>${selectedTrade.feesUsd.toFixed(2)}</span>
+              </div>
+              <div className="inspector-card">
+                <WorkspaceIcon icon="journal" alt="Setups icon" className="inspector-card-icon" />
+                <strong>Setups</strong>
+                <span>{selectedTrade.setups.join(", ") || "None"}</span>
+              </div>
+              <div className="inspector-card">
+                <WorkspaceIcon icon="checklist" alt="Mistakes icon" className="inspector-card-icon" />
+                <strong>Mistakes</strong>
+                <span>{selectedTrade.mistakes.join(", ") || "None"}</span>
+              </div>
+            </div>
+          ) : (
+            <PlaceholderPanel
+              title="No Trade Selected"
+              description="Choose a grouped trade from the grid to inspect the tags, fees, and execution details."
             />
           )}
         </article>
@@ -1065,6 +1139,56 @@ export const TradesPage = ({
           onClose={() => {
             setIsBulkEditorOpen(false);
             setBulkEditorSearchQuery("");
+          }}
+        />
+      ) : null}
+      {quickTagEditorField && selectedTrade ? (
+        <TagDrawer
+          isOpen={!!quickTagEditorField}
+          title={`${quickTagLabels[quickTagEditorField] ?? tradeTagFieldLabels[quickTagEditorField]} - ${selectedTrade.name}`}
+          options={tagOptionsByField[quickTagEditorField]}
+          selectionMode={quickTagEditorField === "mistake" ? "multi" : "single"}
+          currentValue={
+            quickTagEditorField === "mistake"
+              ? ""
+              : (getQuickTagValue(selectedTrade, quickTagEditorField) as string)
+          }
+          currentValues={
+            quickTagEditorField === "mistake"
+              ? (getQuickTagValue(selectedTrade, "mistake") as string[])
+              : []
+          }
+          allowClear
+          clearLabel={
+            quickTagEditorField === "mistake"
+              ? "No mistakes"
+              : `Clear ${quickTagLabels[quickTagEditorField] ?? tradeTagFieldLabels[quickTagEditorField]}`
+          }
+          searchValue={quickTagEditorSearchQuery}
+          onSearchChange={setQuickTagEditorSearchQuery}
+          onSelect={(value) => {
+            onUpdateTradeTag(selectedTrade, quickTagEditorField, value);
+            if (quickTagEditorField !== "mistake") {
+              setQuickTagEditorField(null);
+              setQuickTagEditorSearchQuery("");
+            }
+          }}
+          onCreateOption={(value) => {
+            onCreateTradeTagOption(quickTagEditorField, value);
+            if (quickTagEditorField === "mistake") {
+              const currentValues = selectedTrade.mistakes ?? [];
+              const nextValues = currentValues.includes(value) ? currentValues : [...currentValues, value];
+              onUpdateTradeTag(selectedTrade, "mistake", nextValues);
+              return;
+            }
+
+            onUpdateTradeTag(selectedTrade, quickTagEditorField, value);
+            setQuickTagEditorField(null);
+            setQuickTagEditorSearchQuery("");
+          }}
+          onClose={() => {
+            setQuickTagEditorField(null);
+            setQuickTagEditorSearchQuery("");
           }}
         />
       ) : null}

@@ -6,7 +6,7 @@ import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
 import { getDatabaseStats, getTradeSummary } from "../../../lib/analytics/tradeAnalytics";
 import type { JournalChecklistTemplates, NamedChecklistTemplate } from "../../../lib/journal/journalTemplateStore";
 import { getTickerIcon as getTickerIconSrc, getTickerSector } from "../../../lib/tickers/tickerIcons";
-import { useEditableSelectOptions } from "../hooks/useEditableSelectOptions";
+import { useEditableSelectOptions } from "../../../lib/select/useEditableSelectOptions";
 import type { JournalContentField, JournalPageRecord } from "../../../types/journal";
 import type { EditableTradeRow, EditableTradeTagField } from "../../../types/tradeTags";
 import { HeadlinesBar } from "../../headlines/components/HeadlinesBar";
@@ -1187,7 +1187,11 @@ export const JournalPage = ({
                 </section>
               </section>
 
-              <HeadlinesBar className="journal-headlines-bar" />
+              <HeadlinesBar
+                key={`headlines-${selectedPage.tradeDate}`}
+                className="journal-headlines-bar"
+                journalDate={selectedPage.tradeDate}
+              />
 
                 <section className="journal-writing-split-grid">
                   <section className="journal-writing-section">
@@ -1600,24 +1604,39 @@ export const JournalPage = ({
             {linkedTrades.length === 0 ? (
               <span className="empty-inline-state">No trades linked to this date yet.</span>
             ) : (
-              linkedTrades.map((trade) => (
-                <button
-                  key={trade.id}
-                  type="button"
-                  className="linked-trade-card linked-trade-card-button"
-                  onClick={() => onSelectTrade(trade.id, trade.tradeDate)}
-                >
-                  <div className="linked-trade-title">
-                    <WorkspaceIcon icon="trades" alt="Linked trade icon" className="linked-trade-icon" />
-                    <strong>{trade.name}</strong>
-                  </div>
-                  <span>
-                    {trade.symbol} - {trade.side} - {trade.status}
-                  </span>
-                  <span>{trade.openTime} to {trade.closeTime}</span>
-                  <span>{trade.netPnlUsd >= 0 ? "+" : ""}{trade.netPnlUsd.toFixed(2)} net</span>
-                </button>
-              ))
+              linkedTrades.map((trade) => {
+                const tickerIcon = getTickerIconSrc(trade.symbol);
+                const tickerSector = getTickerSector(trade.symbol);
+
+                return (
+                  <button
+                    key={trade.id}
+                    type="button"
+                    className="linked-trade-card linked-trade-card-button"
+                    onClick={() => onSelectTrade(trade.id, trade.tradeDate)}
+                  >
+                    <div className="linked-trade-title">
+                      <strong>{trade.name}</strong>
+                    </div>
+                    <div className="linked-trade-meta">
+                      {tickerIcon ? (
+                        <img
+                          src={tickerIcon}
+                          alt={tickerSector ? `${tickerSector} sector icon` : `${trade.symbol} ticker icon`}
+                          className="linked-trade-icon"
+                        />
+                      ) : (
+                        <WorkspaceIcon icon="trades" alt={`${trade.symbol} ticker icon`} className="linked-trade-icon" />
+                      )}
+                      <span>
+                        {trade.symbol} - {trade.side} - {trade.status}
+                      </span>
+                    </div>
+                    <span>{trade.openTime} to {trade.closeTime}</span>
+                    <span>{trade.netPnlUsd >= 0 ? "+" : ""}{trade.netPnlUsd.toFixed(2)} net</span>
+                  </button>
+                );
+              })
             )}
           </div>
         </aside>

@@ -5,8 +5,7 @@ import {
   createMorningChecklistDoc,
   hasJournalDocContent
 } from "./journalContent";
-
-const STORAGE_KEY = "trade-engine-journal-checklist-templates";
+import { syncStores } from "../sync/syncStore";
 
 export interface NamedChecklistTemplate {
   id: string;
@@ -86,13 +85,21 @@ export const getDefaultChecklistContent = (
   );
 
 export const loadJournalChecklistTemplates = (): JournalChecklistTemplates => {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return defaultJournalChecklistTemplates();
-  }
-
   try {
-    const parsed = JSON.parse(raw) as
+    const parsed = syncStores.journalChecklistTemplates.load<
+      | Partial<JournalChecklistTemplates>
+      | {
+          morningChecklistContent?: JSONContent;
+          closingChecklistContent?: JSONContent;
+          mppPlanContent?: JSONContent;
+        }
+    >(defaultJournalChecklistTemplates());
+
+    if (!parsed) {
+      return defaultJournalChecklistTemplates();
+    }
+
+    const parsedRecord = parsed as
       | Partial<JournalChecklistTemplates>
       | {
           morningChecklistContent?: JSONContent;
@@ -100,36 +107,40 @@ export const loadJournalChecklistTemplates = (): JournalChecklistTemplates => {
           mppPlanContent?: JSONContent;
         };
 
-    if ("morningChecklistContent" in parsed || "closingChecklistContent" in parsed || "mppPlanContent" in parsed) {
+    if (
+      "morningChecklistContent" in parsedRecord ||
+      "closingChecklistContent" in parsedRecord ||
+      "mppPlanContent" in parsedRecord
+    ) {
       return {
         morningTemplates: [
           createTemplate(
             "Default Morning",
-            hasJournalDocContent(parsed.morningChecklistContent)
-              ? (parsed.morningChecklistContent as JSONContent)
+            hasJournalDocContent(parsedRecord.morningChecklistContent)
+              ? (parsedRecord.morningChecklistContent as JSONContent)
               : createMorningChecklistDoc()
           )
         ],
         closingTemplates: [
           createTemplate(
             "Default Closing",
-            hasJournalDocContent(parsed.closingChecklistContent)
-              ? (parsed.closingChecklistContent as JSONContent)
+            hasJournalDocContent(parsedRecord.closingChecklistContent)
+              ? (parsedRecord.closingChecklistContent as JSONContent)
               : createClosingChecklistDoc()
           )
         ],
         mppTemplates: [
           createTemplate(
             "Default MPP",
-            hasJournalDocContent(parsed.mppPlanContent)
-              ? (parsed.mppPlanContent as JSONContent)
+            hasJournalDocContent(parsedRecord.mppPlanContent)
+              ? (parsedRecord.mppPlanContent as JSONContent)
               : createMppPlanDoc()
           )
         ]
       };
     }
 
-    const templateParsed = parsed as Partial<JournalChecklistTemplates>;
+    const templateParsed = parsedRecord as Partial<JournalChecklistTemplates>;
 
     return {
       morningTemplates: ensureTemplateArray(
@@ -154,5 +165,5 @@ export const loadJournalChecklistTemplates = (): JournalChecklistTemplates => {
 };
 
 export const saveJournalChecklistTemplates = (templates: JournalChecklistTemplates): void => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(templates));
+  void syncStores.journalChecklistTemplates.save(templates);
 };

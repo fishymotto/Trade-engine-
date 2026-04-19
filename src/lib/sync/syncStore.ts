@@ -175,10 +175,30 @@ export const syncStores = {
   }),
   workspaceState: new HybridSyncStore({
     tableName: 'user_workspace_state',
-    storageKey: 'trade-engine-workspace-state',
+    storageKey: 'trade-engine-workspace',
   }),
   tradeTagCatalog: new HybridSyncStore({
     tableName: 'user_trade_tag_catalog',
     storageKey: 'trade-engine-trade-tag-catalog',
+  }),
+  playbooks: new HybridSyncStore({
+    tableName: 'user_playbooks',
+    storageKey: 'trade-engine-playbooks',
+  }),
+  libraryPages: new HybridSyncStore({
+    tableName: 'user_library_pages',
+    storageKey: 'trade-engine-library-pages',
+  }),
+  headlines: new HybridSyncStore({
+    tableName: 'user_headlines',
+    storageKey: 'trade-engine-headlines',
+  }),
+  selectOptionAdditions: new HybridSyncStore({
+    tableName: 'user_select_option_additions',
+    storageKey: 'trade-engine-select-option-additions',
+  }),
+  reviewTemplates: new HybridSyncStore({
+    tableName: 'user_review_templates',
+    storageKey: 'trade-engine-review-templates',
   }),
 };

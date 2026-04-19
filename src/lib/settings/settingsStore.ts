@@ -1,5 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { Settings } from "../../types/trade";
+import { syncStores } from "../sync/syncStore";
 
 const STORAGE_KEY = "trade-engine-settings";
 
@@ -31,6 +32,7 @@ export const defaultSettings: Settings = {
   twelveDataApiKey: "",
   brlToUsdRate: 0,
   brlTickerList: DEFAULT_BRL_TICKER_LIST,
+  dailyShutdownRiskUsd: 0,
   tradeTagVisibility: {
     status: true,
     mistake: true,
@@ -46,6 +48,7 @@ const normalizeSettings = (settings: Partial<Settings>): Settings => ({
   ...defaultSettings,
   ...settings,
   brlTickerList: settings.brlTickerList?.trim() ? settings.brlTickerList : DEFAULT_BRL_TICKER_LIST,
+  dailyShutdownRiskUsd: Number(settings.dailyShutdownRiskUsd) || 0,
   tradeTagVisibility: {
     ...defaultSettings.tradeTagVisibility,
     ...(settings.tradeTagVisibility ?? {})
@@ -66,20 +69,27 @@ const loadSettingsFromLocalStorage = (): Settings => {
 };
 
 export const loadSettings = async (): Promise<Settings> => {
-  if (isTauri()) {
-    try {
-      const settings = await invoke<Partial<Settings>>("load_app_settings");
-      return normalizeSettings(settings);
-    } catch {
-      return loadSettingsFromLocalStorage();
-    }
+  const localRaw = localStorage.getItem(STORAGE_KEY);
+  if (localRaw) {
+    return loadSettingsFromLocalStorage();
   }
 
-  return loadSettingsFromLocalStorage();
+  if (!isTauri()) {
+    return loadSettingsFromLocalStorage();
+  }
+
+  try {
+    const settings = await invoke<Partial<Settings>>("load_app_settings");
+    const normalized = normalizeSettings(settings);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+    return normalized;
+  } catch {
+    return loadSettingsFromLocalStorage();
+  }
 };
 
 export const saveSettings = async (settings: Settings): Promise<void> => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+  await syncStores.settings.save(settings);
 
   if (isTauri()) {
     await invoke("save_app_settings", { settings });

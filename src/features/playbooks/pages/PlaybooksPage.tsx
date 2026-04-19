@@ -17,6 +17,8 @@ import type { GroupedTrade } from "../../../types/trade";
 interface PlaybooksPageProps {
   trades: GroupedTrade[];
   onSelectTrade: (tradeId: string, tradeDate: string) => void;
+  onViewReportsForPlaybook?: (playbookName: string) => void;
+  embedded?: boolean;
 }
 
 interface PlaybookCardData {
@@ -28,6 +30,19 @@ const playbookScreenshotColumnLabels = ["Open Example", "Close Example", "Contex
 
 const formatSignedMoney = (value: number): string =>
   `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`;
+
+const formatUpdatedAt = (value: string): string => {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "-";
+  }
+
+  return parsed.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  });
+};
 
 const normalizePlaybookName = (value: string): string => value.trim().toLowerCase();
 
@@ -130,7 +145,13 @@ const shouldShowPlaybook = (entry: PlaybookCardData): boolean => {
   return entry.playbook.sections.some((section) => hasMeaningfulJournalContent(section.content));
 };
 
-export const PlaybooksPage = ({ trades, onSelectTrade }: PlaybooksPageProps) => {
+export const PlaybooksPage = ({
+  trades,
+  onSelectTrade,
+  onViewReportsForPlaybook,
+  embedded = false
+}: PlaybooksPageProps) => {
+  const Shell = embedded ? "div" : "main";
   const [playbooks, setPlaybooks] = useState<PlaybookRecord[]>(() => loadPlaybooks());
   const [selectedPlaybookId, setSelectedPlaybookId] = useState<string | null>(null);
   const [activePlaybookPage, setActivePlaybookPage] = useState<"playbook" | "a-plus">("playbook");
@@ -185,6 +206,24 @@ export const PlaybooksPage = ({ trades, onSelectTrade }: PlaybooksPageProps) => 
     [playbookCards]
   );
 
+  const sortedPlaybookCards = useMemo(() => {
+    const compareStrings = (a: string, b: string) =>
+      a.localeCompare(b, undefined, { sensitivity: "base" });
+    return [...playbookCards].sort((left, right) => {
+      const updatedCompare = right.playbook.updatedAt.localeCompare(left.playbook.updatedAt);
+      if (updatedCompare !== 0) {
+        return updatedCompare;
+      }
+
+      const tradeCompare = right.trades.length - left.trades.length;
+      if (tradeCompare !== 0) {
+        return tradeCompare;
+      }
+
+      return compareStrings(left.playbook.name, right.playbook.name);
+    });
+  }, [playbookCards]);
+
   const handleAddPlaybook = () => {
     const nextName = window.prompt("New playbook name");
     if (!nextName) {
@@ -217,7 +256,7 @@ export const PlaybooksPage = ({ trades, onSelectTrade }: PlaybooksPageProps) => 
 
   if (!selectedPlaybook) {
     return (
-      <main className="page-shell">
+      <Shell className="page-shell">
         <PageHero
           eyebrow="Playbooks"
           title="Setup Library"
@@ -243,84 +282,80 @@ export const PlaybooksPage = ({ trades, onSelectTrade }: PlaybooksPageProps) => 
           </div>
         </PageHero>
 
-        <section className="playbook-card-grid">
-          {playbookCards.map(({ playbook, trades: matchedTrades }) => {
-            const summary = getTradeSummary(matchedTrades);
-            const symbols = new Set(matchedTrades.map((trade) => trade.symbol)).size;
-
-            return (
-              <button
-                key={playbook.id}
-                type="button"
-                className="playbook-card"
-                onClick={() => setSelectedPlaybookId(playbook.id)}
-              >
-                <div className="playbook-card-header">
-                  <div className="panel-header">
-                    <WorkspaceIcon
-                      icon="playbooks"
-                      alt={`${playbook.name} icon`}
-                      className="panel-header-icon"
-                    />
-                    <h2>{playbook.name}</h2>
-                  </div>
-                  <span className="playbook-card-badge">{matchedTrades.length} tagged trades</span>
-                </div>
-                <p>{playbook.description}</p>
-                <div className="playbook-card-meta">
-                  <span>
-                    <strong>{summary.winRate.toFixed(1)}%</strong>
-                    Win rate
-                  </span>
-                  <span>
-                    <strong>{formatSignedMoney(summary.totalNetPnl)}</strong>
-                    Net P&amp;L
-                  </span>
-                  <span>
-                    <strong>{symbols}</strong>
-                    Symbols
-                  </span>
-                </div>
-                <div className="playbook-card-link">Open Playbook</div>
-              </button>
-            );
-          })}
-
-          <button
-            type="button"
-            className="playbook-card playbook-card-add"
-            onClick={handleAddPlaybook}
-          >
-            <div className="playbook-card-header">
-              <div className="panel-header">
-                <WorkspaceIcon
-                  icon="playbooks"
-                  alt="Add playbook icon"
-                  className="panel-header-icon"
-                />
-                <h2>Add Playbook</h2>
+        <section className="playbook-database" aria-label="Playbooks table view">
+          <div className="playbook-database-header">
+            <div className="playbook-database-title">
+              <WorkspaceIcon icon="playbooks" alt="" className="panel-header-icon" />
+              <div>
+                <h3>Playbooks</h3>
+                <span>
+                  {sortedPlaybookCards.length} playbook{sortedPlaybookCards.length === 1 ? "" : "s"} · {totalTaggedTrades} tagged trade{totalTaggedTrades === 1 ? "" : "s"}
+                </span>
               </div>
-              <span className="playbook-card-badge">New</span>
             </div>
-            <p>Create a new setup page and start building the library out as your process grows.</p>
-            <div className="playbook-card-meta">
-              <span>
-                <strong>Template</strong>
-                Blank starter sections
-              </span>
-              <span>
-                <strong>Flow</strong>
-                Create and open
-              </span>
-              <span>
-                <strong>Use</strong>
-                Add notes, stats, examples
-              </span>
-            </div>
-            <div className="playbook-card-link">Create Playbook</div>
-          </button>
+            <button className="button button-primary" type="button" onClick={handleAddPlaybook}>
+              New Playbook
+            </button>
+          </div>
+
+          <div className="library-table-wrap playbook-table-wrap">
+            <table className="library-table playbook-table">
+              <thead>
+                <tr>
+                  <th>Playbook Name</th>
+                  <th>Tagged Trades</th>
+                  <th>Win Rate</th>
+                  <th>Net P&amp;L</th>
+                  <th>Symbols</th>
+                  <th>Last Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedPlaybookCards.length > 0 ? (
+                  sortedPlaybookCards.map(({ playbook, trades: matchedTrades }) => {
+                    const summary = getTradeSummary(matchedTrades);
+                    const uniqueSymbols = new Set(matchedTrades.map((trade) => trade.symbol));
+                    const topSymbols = getTopSymbols(matchedTrades);
+                    const symbolSuffix =
+                      uniqueSymbols.size > topSymbols.length ? ` +${uniqueSymbols.size - topSymbols.length}` : "";
+                    const symbolsLabel =
+                      topSymbols.length > 0 ? `${topSymbols.join(", ")}${symbolSuffix}` : "-";
+
+                    return (
+                      <tr key={playbook.id} onClick={() => setSelectedPlaybookId(playbook.id)}>
+                        <td>
+                          <button
+                            type="button"
+                            className="library-table-title playbook-table-title"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedPlaybookId(playbook.id);
+                            }}
+                          >
+                            {playbook.name}
+                          </button>
+                          <div className="playbook-table-description">{playbook.description}</div>
+                        </td>
+                        <td>{matchedTrades.length}</td>
+                        <td>{summary.totalTrades > 0 ? `${summary.winRate.toFixed(1)}%` : "-"}</td>
+                        <td>{summary.totalTrades > 0 ? formatSignedMoney(summary.totalNetPnl) : "-"}</td>
+                        <td>{symbolsLabel}</td>
+                        <td>{formatUpdatedAt(playbook.updatedAt)}</td>
+                      </tr>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={6} className="playbook-table-empty">
+                      No playbooks yet. Click “New Playbook” to create your first setup.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </section>
-      </main>
+      </Shell>
     );
   }
 
@@ -344,7 +379,7 @@ export const PlaybooksPage = ({ trades, onSelectTrade }: PlaybooksPageProps) => 
     .slice(0, 10);
 
   return (
-    <main className="page-shell">
+    <Shell className="page-shell">
       <PageHero
         eyebrow="Playbooks"
         title={selectedPlaybook.playbook.name}
@@ -402,6 +437,17 @@ export const PlaybooksPage = ({ trades, onSelectTrade }: PlaybooksPageProps) => 
             >
               A+ Example Library
             </button>
+            {onViewReportsForPlaybook ? (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={false}
+                className="mini-action mini-action-soft"
+                onClick={() => onViewReportsForPlaybook(selectedPlaybook.playbook.name)}
+              >
+                Reports
+              </button>
+            ) : null}
           </div>
         </div>
         <span>
@@ -781,6 +827,6 @@ export const PlaybooksPage = ({ trades, onSelectTrade }: PlaybooksPageProps) => 
           </div>
         </div>
       ) : null}
-    </main>
+    </Shell>
   );
 };

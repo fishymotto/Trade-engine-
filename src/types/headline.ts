@@ -1,5 +1,6 @@
 export interface HeadlineItem {
   id: string;
+  journalDate: string;
   title: string;
   source: string;
   url: string;
@@ -8,4 +9,3 @@ export interface HeadlineItem {
   createdAt: string;
   updatedAt: string;
 }
-

@@ -4,8 +4,11 @@ export type LibraryCollectionId =
   | "idea-inbox"
   | "book-club"
   | "trading-notes"
+  | "weekly-review"
+  | "monthly-review"
   | "replay"
-  | "signal-mapping";
+  | "signal-mapping"
+  | "ticker-groups";
 
 export interface LibraryCollectionDefinition {
   id: LibraryCollectionId;
@@ -21,7 +24,7 @@ export interface LibraryPageRecord {
   status: string;
   tags: string[];
   sourceUrl: string;
-  properties?: Record<string, string | string[] | boolean>;
+  properties?: Record<string, unknown>;
   content: JSONContent;
   createdAt: string;
   updatedAt: string;

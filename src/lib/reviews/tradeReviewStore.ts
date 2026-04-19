@@ -1,21 +1,11 @@
 import type { TradeReviewRecord } from "../../types/review";
-
-const STORAGE_KEY = "trade-engine-trade-reviews";
+import { syncStores } from "../sync/syncStore";
 
 export const loadTradeReviews = (): TradeReviewRecord[] => {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as TradeReviewRecord[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  const parsed = syncStores.tradeReviews.load<TradeReviewRecord[]>([]);
+  return Array.isArray(parsed) ? parsed : [];
 };
 
 export const saveTradeReviews = (reviews: TradeReviewRecord[]): void => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(reviews));
+  void syncStores.tradeReviews.save(reviews);
 };

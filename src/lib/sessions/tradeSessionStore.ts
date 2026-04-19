@@ -3,17 +3,22 @@ import type { TradeSessionRecord } from "../../types/session";
 import type { GroupedTrade } from "../../types/trade";
 import { syncStores } from "../sync/syncStore";
 
+const STORAGE_KEY = "trade-engine-trade-sessions";
+
 export const loadTradeSessions = async (): Promise<TradeSessionRecord[]> => {
-  if (isTauri()) {
-    try {
-      const sessions = await invoke<TradeSessionRecord[]>("load_trade_sessions");
-      return Array.isArray(sessions) ? sessions : [];
-    } catch {
-      return syncStores.tradeSessions.load<TradeSessionRecord[]>([]);
-    }
+  const localRaw = localStorage.getItem(STORAGE_KEY);
+  if (localRaw || !isTauri()) {
+    return syncStores.tradeSessions.load<TradeSessionRecord[]>([]);
   }
 
-  return syncStores.tradeSessions.load<TradeSessionRecord[]>([]);
+  try {
+    const sessions = await invoke<TradeSessionRecord[]>("load_trade_sessions");
+    const normalized = Array.isArray(sessions) ? sessions : [];
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+    return normalized;
+  } catch {
+    return syncStores.tradeSessions.load<TradeSessionRecord[]>([]);
+  }
 };
 
 export const saveTradeSessions = async (sessions: TradeSessionRecord[]): Promise<void> => {

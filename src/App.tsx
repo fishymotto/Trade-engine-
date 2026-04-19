@@ -1,104 +1,104 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
-import { AppLayout } from "../components/AppLayout";
-import { AuthModal } from "../components/AuthModal";
-import { authService, type User } from "../lib/auth";
-import { createEmptyJournalDoc } from "../lib/journal/journalContent";
+import { AppLayout } from "./components/AppLayout";
+import { AuthModal } from "./components/AuthModal";
+import { authService, type User } from "./lib/auth";
+import { createEmptyJournalDoc } from "./lib/journal/journalContent";
 import {
   getDefaultChecklistContent,
-  defaultJournalChecklistTemplates,
   loadJournalChecklistTemplates,
   saveJournalChecklistTemplates,
   type JournalChecklistTemplates,
   type NamedChecklistTemplate
-} from "../lib/journal/journalTemplateStore";
-import { buildCsvContent, toExportRows } from "../features/export/lib/csvExporter";
-import { dedupeJournalPages, loadJournalPages, saveJournalPages } from "../lib/journal/journalStore";
+} from "./lib/journal/journalTemplateStore";
+import { buildCsvContent, toExportRows } from "./lib/export/csvExporter";
+import { dedupeJournalPages, loadJournalPages, saveJournalPages } from "./lib/journal/journalStore";
 import {
   findNotionDuplicates,
   importTradesToNotion,
   testNotionConnection
-} from "../features/notion/lib/notionClient";
-import { loadTradeReviews, saveTradeReviews } from "../lib/reviews/tradeReviewStore";
-import { ensurePlaybooksForNames, loadPlaybooks, savePlaybooks } from "../lib/playbooks/playbookStore";
+} from "./lib/notion/notionClient";
+import { loadTradeReviews, saveTradeReviews } from "./lib/reviews/tradeReviewStore";
 import {
   buildBarSetKey,
   loadHistoricalBarSets,
   removeHistoricalBarSet,
   saveHistoricalBarSets,
   upsertHistoricalBarSet
-} from "../lib/charts/historicalBarStore";
+} from "./lib/charts/historicalBarStore";
 import {
   fetchDailyHistoricalBarsFromTwelveData,
   fetchHistoricalBarsFromTwelveData
-} from "../lib/charts/twelveDataClient";
-import { parseHistoricalBarsCsv } from "../lib/parser/historicalBarsParser";
-import { loadTradeSessions, mergeTradesIntoSessions, saveTradeSessions } from "../lib/sessions/tradeSessionStore";
-import { processTradeFile } from "../features/import/lib/tradePipeline";
-import { buildTradeTagOptionsByField, tradeTagFields } from "../lib/trades/tradeTagCatalog";
-import { loadTradeTagOptions, saveTradeTagOptions } from "../lib/trades/tradeTagOptionStore";
-import { loadTradeTagOverrides, saveTradeTagOverrides } from "../lib/trades/tradeTagOverrideStore";
+} from "./lib/charts/twelveDataClient";
+import { parseHistoricalBarsCsv } from "./lib/parser/historicalBarsParser";
+import { loadTradeSessions, mergeTradesIntoSessions, saveTradeSessions } from "./lib/sessions/tradeSessionStore";
+import { processTradeFile } from "./lib/tradePipeline";
+import { buildTradeTagOptionsByField, tradeTagFields } from "./lib/trades/tradeTagCatalog";
+import { loadTradeTagOptions, saveTradeTagOptions } from "./lib/trades/tradeTagOptionStore";
+import { loadTradeTagOverrides, saveTradeTagOverrides } from "./lib/trades/tradeTagOverrideStore";
 import {
   applyTradeTagOverrides,
   hasTradeTagOverridesForTradeDates,
   removeTradeTagOverridesForTradeDates,
   upsertTradeTagOverride
-} from "../lib/trades/tradeTagOverrides";
-import { loadWorkspaceState, saveWorkspaceState } from "../lib/workspace/workspaceStore";
-import { defaultSettings, loadSettings, saveSettings } from "../lib/settings/settingsStore";
-import { setUserIdForSync, syncUserDataOnLogin } from "../lib/sync/userDataSync";
-import type { AppNavItem, AppRoute } from "../types/app";
-import type { ChartInterval, HistoricalBarSet } from "../types/chart";
-import type { JournalContentField, JournalPageRecord } from "../types/journal";
-import type { TradeReviewRecord } from "../types/review";
-import type { TradeSessionRecord } from "../types/session";
-import type { GroupedTrade, Settings } from "../types/trade";
+} from "./lib/trades/tradeTagOverrides";
+import { loadWorkspaceState, saveWorkspaceState } from "./lib/workspace/workspaceStore";
+import { defaultSettings, loadSettings, saveSettings } from "./lib/settings/settingsStore";
+import type { AppNavItem, AppRoute } from "./types/app";
+import type { ChartInterval, HistoricalBarSet } from "./types/chart";
+import type { JournalContentField, JournalPageRecord } from "./types/journal";
+import type { TradeReviewRecord } from "./types/review";
+import type { TradeSessionRecord } from "./types/session";
+import type { GroupedTrade, Settings } from "./types/trade";
 import type {
   EditableTradeRow,
   EditableTradeTagField,
   TradeTagOptionsRecord,
   TradeTagOverrideRecord
-} from "../types/tradeTags";
+} from "./types/tradeTags";
 
 const navItems: AppNavItem[] = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard" },
   { id: "trades", label: "Trades", icon: "trades" },
   { id: "journal", label: "Journal", icon: "journal" },
   { id: "library", label: "Library", icon: "library" },
+  { id: "playbooks", label: "Playbooks", icon: "playbooks" },
   { id: "reports", label: "Reports", icon: "reports" },
   { id: "import", label: "Import", icon: "import" },
   { id: "data", label: "Data", icon: "data" }
 ];
 
 const DashboardPage = lazy(() =>
-  import("../features/dashboard/pages/DashboardPage").then((module) => ({ default: module.DashboardPage }))
+  import("./pages/DashboardPage").then((module) => ({ default: module.DashboardPage }))
 );
 const TradesPage = lazy(() =>
-  import("../features/grouping/pages/TradesPage").then((module) => ({ default: module.TradesPage }))
+  import("./pages/TradesPage").then((module) => ({ default: module.TradesPage }))
 );
 const JournalPage = lazy(() =>
-  import("../features/journal/pages/JournalPage").then((module) => ({ default: module.JournalPage }))
+  import("./pages/JournalPage").then((module) => ({ default: module.JournalPage }))
 );
 const LibraryPage = lazy(() =>
-  import("../features/library/pages/LibraryPage").then((module) => ({ default: module.LibraryPage }))
+  import("./pages/LibraryPage").then((module) => ({ default: module.LibraryPage }))
+);
+const PlaybooksPage = lazy(() =>
+  import("./pages/PlaybooksPage").then((module) => ({ default: module.PlaybooksPage }))
 );
 const ReportsPage = lazy(() =>
-  import("../features/reports/pages/ReportsPage").then((module) => ({ default: module.ReportsPage }))
+  import("./pages/ReportsPage").then((module) => ({ default: module.ReportsPage }))
 );
 const ImportPage = lazy(() =>
-  import("../features/import/pages/ImportPage").then((module) => ({ default: module.ImportPage }))
+  import("./pages/ImportPage").then((module) => ({ default: module.ImportPage }))
 );
 const DataPage = lazy(() =>
-  import("../features/data/pages/DataPage").then((module) => ({ default: module.DataPage }))
+  import("./pages/DataPage").then((module) => ({ default: module.DataPage }))
 );
 const SettingsModal = lazy(() =>
-  import("../components/SettingsModal").then((module) => ({ default: module.SettingsModal }))
+  import("./components/SettingsModal").then((module) => ({ default: module.SettingsModal }))
 );
 
 const buildJournalTemplate = (checklistTemplates: JournalChecklistTemplates) => ({
   title: "Daily Journal",
   dayGrade: "",
-  marketRegime: "",
   mpp: "",
   sleepHours: "7.5",
   sleepScore: "",
@@ -154,14 +154,7 @@ const downloadCsvInBrowser = (fileName: string, contents: string): void => {
 
 function App() {
   const hasRestoredWorkspaceRef = useRef(false);
-  const [authChecked, setAuthChecked] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  const [user, setUser] = useState<User | null>(null);
-  const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
-  const [journalPagesLoaded, setJournalPagesLoaded] = useState(false);
-  const [journalChecklistTemplatesLoaded, setJournalChecklistTemplatesLoaded] = useState(false);
-  const [tradeReviewsLoaded, setTradeReviewsLoaded] = useState(false);
-  const [historicalBarSetsLoaded, setHistoricalBarSetsLoaded] = useState(false);
+  const initialWorkspaceStateRef = useRef(loadWorkspaceState());
   const [activeRoute, setActiveRoute] = useState<AppRoute>("dashboard");
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -185,14 +178,18 @@ function App() {
   const [dashboardExecutionFilter, setDashboardExecutionFilter] = useState("all");
   const [dashboardSelectedTradeId, setDashboardSelectedTradeId] = useState("");
   const [dashboardSelectedTradeRequestId, setDashboardSelectedTradeRequestId] = useState(0);
-  const [reviewChartInterval, setReviewChartInterval] = useState<ChartInterval>("1m");
-  const [dayChartInterval, setDayChartInterval] = useState<ChartInterval>("1D");
-  const [historicalBarSets, setHistoricalBarSets] = useState<HistoricalBarSet[]>([]);
-  const [journalPages, setJournalPages] = useState<JournalPageRecord[]>([]);
-  const [journalChecklistTemplates, setJournalChecklistTemplates] = useState<JournalChecklistTemplates>(
-    defaultJournalChecklistTemplates()
+  const [reviewChartInterval, setReviewChartInterval] = useState<ChartInterval>(
+    initialWorkspaceStateRef.current.reviewChartInterval
   );
-  const [tradeReviews, setTradeReviews] = useState<TradeReviewRecord[]>([]);
+  const [dayChartInterval, setDayChartInterval] = useState<ChartInterval>(
+    initialWorkspaceStateRef.current.dayChartInterval
+  );
+  const [historicalBarSets, setHistoricalBarSets] = useState<HistoricalBarSet[]>(() => loadHistoricalBarSets());
+  const [journalPages, setJournalPages] = useState<JournalPageRecord[]>(() => loadJournalPages());
+  const [journalChecklistTemplates, setJournalChecklistTemplates] = useState<JournalChecklistTemplates>(() =>
+    loadJournalChecklistTemplates()
+  );
+  const [tradeReviews, setTradeReviews] = useState<TradeReviewRecord[]>(() => loadTradeReviews());
   const [selectedJournalPageId, setSelectedJournalPageId] = useState("");
   const [isCurrentImportSaved, setIsCurrentImportSaved] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -201,78 +198,57 @@ function App() {
   useEffect(() => {
     let cancelled = false;
 
-    const boot = async () => {
-      setSyncing(true);
-      try {
-        const existingUser = await authService.getCurrentUser();
-        if (cancelled) {
-          return;
-        }
-
-        if (!existingUser) {
-          setUser(null);
-          setAuthChecked(true);
-          return;
-        }
-
-        await syncUserDataOnLogin(existingUser.id);
-        if (cancelled) {
-          return;
-        }
-
-        setUserIdForSync(existingUser.id);
-
-        const loadedSettings = await loadSettings();
-        const loadedOptions = await loadTradeTagOptions();
-        const loadedOverrides = await loadTradeTagOverrides();
-        const loadedSessions = await loadTradeSessions();
-
-        if (cancelled) {
-          return;
-        }
-
-        setSettings(loadedSettings);
-        setSettingsLoaded(true);
-
-        setTradeTagOptions(loadedOptions);
-        setTradeTagOptionsLoaded(true);
-
-        setTradeTagOverrides(loadedOverrides);
-        setTradeTagOverridesLoaded(true);
-
-        setTradeSessions(loadedSessions);
-        setTradeSessionsLoaded(true);
-
-        const workspaceState = loadWorkspaceState();
-        setActiveRoute(workspaceState.activeRoute);
-        setReviewChartInterval(workspaceState.reviewChartInterval);
-        setDayChartInterval(workspaceState.dayChartInterval);
-        setFileName(workspaceState.fileName);
-        setIsCurrentImportSaved(workspaceState.isCurrentImportSaved);
-        setWorkspaceLoaded(true);
-
-        setHistoricalBarSets(loadHistoricalBarSets());
-        setHistoricalBarSetsLoaded(true);
-
-        setJournalPages(loadJournalPages());
-        setJournalPagesLoaded(true);
-
-        setJournalChecklistTemplates(loadJournalChecklistTemplates());
-        setJournalChecklistTemplatesLoaded(true);
-
-        setTradeReviews(loadTradeReviews());
-        setTradeReviewsLoaded(true);
-
-        setUser(existingUser);
-        setAuthChecked(true);
-      } finally {
-        if (!cancelled) {
-          setSyncing(false);
-        }
+    const initializeSettings = async () => {
+      const loadedSettings = await loadSettings();
+      if (cancelled) {
+        return;
       }
+
+      setSettings(loadedSettings);
+      setSettingsLoaded(true);
     };
 
-    void boot();
+    initializeSettings();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const initializeTradeTagOptions = async () => {
+      const loadedOptions = await loadTradeTagOptions();
+      if (cancelled) {
+        return;
+      }
+
+      setTradeTagOptions(loadedOptions);
+      setTradeTagOptionsLoaded(true);
+    };
+
+    void initializeTradeTagOptions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const initializeTradeTagOverrides = async () => {
+      const loadedOverrides = await loadTradeTagOverrides();
+      if (cancelled) {
+        return;
+      }
+
+      setTradeTagOverrides(loadedOverrides);
+      setTradeTagOverridesLoaded(true);
+    };
+
+    void initializeTradeTagOverrides();
 
     return () => {
       cancelled = true;
@@ -286,6 +262,26 @@ function App() {
 
     void saveSettings(settings);
   }, [settings, settingsLoaded]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const initializeTradeSessions = async () => {
+      const loadedSessions = await loadTradeSessions();
+      if (cancelled) {
+        return;
+      }
+
+      setTradeSessions(loadedSessions);
+      setTradeSessionsLoaded(true);
+    };
+
+    void initializeTradeSessions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (hasRestoredWorkspaceRef.current) {
@@ -306,10 +302,6 @@ function App() {
   }, [tradeSessions, tradeSessionsLoaded]);
 
   useEffect(() => {
-    if (!journalPagesLoaded) {
-      return;
-    }
-
     const dedupedPages = dedupeJournalPages(journalPages);
     if (dedupedPages.length !== journalPages.length) {
       setJournalPages(dedupedPages);
@@ -317,23 +309,15 @@ function App() {
     }
 
     saveJournalPages(dedupedPages);
-  }, [journalPages, journalPagesLoaded]);
+  }, [journalPages]);
 
   useEffect(() => {
-    if (!journalChecklistTemplatesLoaded) {
-      return;
-    }
-
     saveJournalChecklistTemplates(journalChecklistTemplates);
-  }, [journalChecklistTemplates, journalChecklistTemplatesLoaded]);
+  }, [journalChecklistTemplates]);
 
   useEffect(() => {
-    if (!tradeReviewsLoaded) {
-      return;
-    }
-
     saveTradeReviews(tradeReviews);
-  }, [tradeReviews, tradeReviewsLoaded]);
+  }, [tradeReviews]);
 
   useEffect(() => {
     if (!tradeTagOptionsLoaded) {
@@ -360,18 +344,10 @@ function App() {
   }, [tradeTagOverrides, tradeTagOverridesLoaded]);
 
   useEffect(() => {
-    if (!historicalBarSetsLoaded) {
-      return;
-    }
-
     saveHistoricalBarSets(historicalBarSets);
-  }, [historicalBarSets, historicalBarSetsLoaded]);
+  }, [historicalBarSets]);
 
   useEffect(() => {
-    if (!workspaceLoaded) {
-      return;
-    }
-
     const loadedTradeDates = Array.from(new Set(trades.map((trade) => trade.tradeDate))).sort();
     saveWorkspaceState({
       activeRoute,
@@ -511,12 +487,12 @@ function App() {
   const handleExport = async () => {
     setBusy(true);
     try {
-      if (resolvedTrades.length === 0) {
+      if (trades.length === 0) {
         throw new Error("Load a CSV file before exporting.");
       }
 
       const fileName = createExportFileName();
-      const csvContent = buildCsvContent(toExportRows(resolvedTrades, allowedSymbols));
+      const csvContent = buildCsvContent(toExportRows(trades, allowedSymbols));
 
       if (!isTauri()) {
         downloadCsvInBrowser(fileName, csvContent);
@@ -556,7 +532,7 @@ function App() {
   const handleImport = async () => {
     setBusy(true);
     try {
-      if (resolvedTrades.length === 0) {
+      if (trades.length === 0) {
         throw new Error("Load a CSV file before importing.");
       }
 
@@ -565,7 +541,7 @@ function App() {
         throw new Error(connectionMessage);
       }
 
-      const duplicateScan = await findNotionDuplicates(settings, resolvedTrades);
+      const duplicateScan = await findNotionDuplicates(settings, trades);
       if (duplicateScan.duplicates.length > 0) {
         const continueImport = window.confirm(
           `${duplicateScan.duplicates.length} duplicate trades already exist in Notion. Press OK to import the remaining ${duplicateScan.remaining.length} trades, or Cancel to stop.`
@@ -722,7 +698,6 @@ function App() {
       title: templateContent.title,
       tradeDate: normalizedTradeDate,
       dayGrade: templateContent.dayGrade,
-      marketRegime: templateContent.marketRegime,
       mpp: templateContent.mpp,
       sleepHours: templateContent.sleepHours,
       sleepScore: templateContent.sleepScore,
@@ -759,7 +734,6 @@ function App() {
         | "title"
         | "tradeDate"
         | "dayGrade"
-        | "marketRegime"
         | "mpp"
         | "sleepHours"
         | "sleepScore"
@@ -842,33 +816,6 @@ function App() {
     );
   };
 
-  const updateJournalChecklistTemplate = (
-    type: "morning" | "closing" | "mpp",
-    templateId: string,
-    content: NamedChecklistTemplate["content"]
-  ) => {
-    if (!templateId) {
-      return;
-    }
-
-    setJournalChecklistTemplates((current) => {
-      const templateKey =
-        type === "morning" ? "morningTemplates" : type === "closing" ? "closingTemplates" : "mppTemplates";
-      const templates = current[templateKey];
-
-      if (!templates.some((template) => template.id === templateId)) {
-        return current;
-      }
-
-      return {
-        ...current,
-        [templateKey]: templates.map((template) => (template.id === templateId ? { ...template, content } : template))
-      };
-    });
-
-    setMessage(`${type === "morning" ? "Morning" : type === "closing" ? "Closing" : "MPP"} template updated.`);
-  };
-
   const deleteJournalChecklistTemplate = (type: "morning" | "closing" | "mpp", templateId: string) => {
     setJournalChecklistTemplates((current) => {
       const templateKey =
@@ -930,19 +877,9 @@ function App() {
   const updateTradeTag = (
     trade: EditableTradeRow,
     field: EditableTradeTagField,
-    value: string | string[] | null
+    value: string | null
   ) => {
     setTradeTagOverrides((current) => upsertTradeTagOverride(current, trade, field, value));
-
-    if (field === "playbook") {
-      const nextPlaybookName = Array.isArray(value) ? (value[0] ?? "") : value ?? "";
-      if (nextPlaybookName.trim()) {
-        const { playbooks, addedPlaybookIds } = ensurePlaybooksForNames(loadPlaybooks(), [nextPlaybookName]);
-        if (addedPlaybookIds.length > 0) {
-          savePlaybooks(playbooks);
-        }
-      }
-    }
   };
 
   const createTradeTagOption = (field: EditableTradeTagField, rawValue: string) => {
@@ -959,14 +896,13 @@ function App() {
       ...current,
       [field]: [...(current[field] ?? []), value]
     }));
-
     setMessage(`Added "${value}" to the ${field} tag list.`);
   };
 
   const bulkUpdateTradeTags = (
     tradeIds: string[],
     field: EditableTradeTagField,
-    value: string | string[] | null
+    value: string | null
   ) => {
     const targetTrades = resolvedTrades.filter((trade) => tradeIds.includes(trade.id));
     if (targetTrades.length === 0) {
@@ -979,19 +915,8 @@ function App() {
         current
       )
     );
-
-    if (field === "playbook") {
-      const nextPlaybookName = Array.isArray(value) ? (value[0] ?? "") : value ?? "";
-      if (nextPlaybookName.trim()) {
-        const { playbooks, addedPlaybookIds } = ensurePlaybooksForNames(loadPlaybooks(), [nextPlaybookName]);
-        if (addedPlaybookIds.length > 0) {
-          savePlaybooks(playbooks);
-        }
-      }
-    }
-
     setMessage(
-      `${value && (!Array.isArray(value) || value.length > 0) ? "Applied" : "Cleared"} ${field} for ${targetTrades.length} selected trade${targetTrades.length === 1 ? "" : "s"}.`
+      `${value ? "Applied" : "Cleared"} ${field} for ${targetTrades.length} selected trade${targetTrades.length === 1 ? "" : "s"}.`
     );
   };
 
@@ -1095,48 +1020,17 @@ function App() {
               onUpdatePage={updateJournalPage}
               onUpdateContent={updateJournalContent}
               onSaveChecklistTemplateAs={saveJournalChecklistTemplateAs}
-              onUpdateChecklistTemplate={updateJournalChecklistTemplate}
               onDeleteChecklistTemplate={deleteJournalChecklistTemplate}
               onUpdateTradeTag={updateTradeTag}
               onCreateTradeTagOption={createTradeTagOption}
             />
           );
       case "library":
-        return (
-          <LibraryPage
-            trades={allStoredTrades}
-            settings={settings}
-            onSelectTrade={(tradeId, tradeDate) => {
-              setDashboardTradeDateFilterStart(tradeDate);
-              setDashboardTradeDateFilterEnd(tradeDate);
-              setDashboardSelectedTradeId(tradeId);
-              setDashboardSelectedTradeRequestId((current) => current + 1);
-              setDashboardPlaybookFilter("all");
-              setActiveRoute("trades");
-            }}
-            onOpenJournalDate={(tradeDate) => {
-              setDashboardTradeDateFilterStart(tradeDate);
-              setDashboardTradeDateFilterEnd(tradeDate);
-              setActiveRoute("journal");
-            }}
-            onViewReportsForPlaybook={(playbookName) => {
-              setDashboardTradeDateFilterStart("");
-              setDashboardTradeDateFilterEnd("");
-              setDashboardPlaybookFilter(playbookName);
-              setDashboardSymbolFilter("all");
-              setDashboardStatusFilter("all");
-              setDashboardGameFilter("all");
-              setDashboardExecutionFilter("all");
-              setActiveRoute("reports");
-            }}
-          />
-        );
+        return <LibraryPage />;
       case "playbooks":
         return (
-          <LibraryPage
+          <PlaybooksPage
             trades={allStoredTrades}
-            settings={settings}
-            initialSection="playbooks"
             onSelectTrade={(tradeId, tradeDate) => {
               setDashboardTradeDateFilterStart(tradeDate);
               setDashboardTradeDateFilterEnd(tradeDate);
@@ -1144,21 +1038,6 @@ function App() {
               setDashboardSelectedTradeRequestId((current) => current + 1);
               setDashboardPlaybookFilter("all");
               setActiveRoute("trades");
-            }}
-            onOpenJournalDate={(tradeDate) => {
-              setDashboardTradeDateFilterStart(tradeDate);
-              setDashboardTradeDateFilterEnd(tradeDate);
-              setActiveRoute("journal");
-            }}
-            onViewReportsForPlaybook={(playbookName) => {
-              setDashboardTradeDateFilterStart("");
-              setDashboardTradeDateFilterEnd("");
-              setDashboardPlaybookFilter(playbookName);
-              setDashboardSymbolFilter("all");
-              setDashboardStatusFilter("all");
-              setDashboardGameFilter("all");
-              setDashboardExecutionFilter("all");
-              setActiveRoute("reports");
             }}
           />
         );
@@ -1188,7 +1067,7 @@ function App() {
         return (
           <ImportPage
             fileName={fileName}
-            trades={resolvedTrades}
+            trades={trades}
             busy={busy}
             isCurrentImportSaved={isCurrentImportSaved}
             onFileDrop={handleFileDrop}
@@ -1198,8 +1077,6 @@ function App() {
             onClear={handleClear}
             onSettings={() => setSettingsOpen(true)}
             tagOptionsByField={activeTradeTagOptionsByField}
-            onUpdateTradeTag={updateTradeTag}
-            onCreateTradeTagOption={createTradeTagOption}
           />
         );
       case "data":
@@ -1218,69 +1095,6 @@ function App() {
 
   return (
     <>
-      {!authChecked || syncing ? (
-        <div className="page-loading-shell">
-          <div className="page-loading-state">
-            <div className="page-loading-orb" aria-hidden="true" />
-            <div className="page-loading-copy">
-              <strong>{!authChecked ? "Checking session" : "Syncing workspace"}</strong>
-              <span>Preparing charts, reports, and journal tools.</span>
-            </div>
-          </div>
-        </div>
-      ) : null}
-      {authChecked && !syncing && !user ? (
-        <AuthModal
-          onAuthenticated={async (authenticatedUser) => {
-            setSyncing(true);
-            try {
-              await syncUserDataOnLogin(authenticatedUser.id);
-              setUserIdForSync(authenticatedUser.id);
-
-              const loadedSettings = await loadSettings();
-              const loadedOptions = await loadTradeTagOptions();
-              const loadedOverrides = await loadTradeTagOverrides();
-              const loadedSessions = await loadTradeSessions();
-
-              setSettings(loadedSettings);
-              setSettingsLoaded(true);
-
-              setTradeTagOptions(loadedOptions);
-              setTradeTagOptionsLoaded(true);
-
-              setTradeTagOverrides(loadedOverrides);
-              setTradeTagOverridesLoaded(true);
-
-              setTradeSessions(loadedSessions);
-              setTradeSessionsLoaded(true);
-
-              const workspaceState = loadWorkspaceState();
-              setActiveRoute(workspaceState.activeRoute);
-              setReviewChartInterval(workspaceState.reviewChartInterval);
-              setDayChartInterval(workspaceState.dayChartInterval);
-              setFileName(workspaceState.fileName);
-              setIsCurrentImportSaved(workspaceState.isCurrentImportSaved);
-              setWorkspaceLoaded(true);
-
-              setHistoricalBarSets(loadHistoricalBarSets());
-              setHistoricalBarSetsLoaded(true);
-
-              setJournalPages(loadJournalPages());
-              setJournalPagesLoaded(true);
-
-              setJournalChecklistTemplates(loadJournalChecklistTemplates());
-              setJournalChecklistTemplatesLoaded(true);
-
-              setTradeReviews(loadTradeReviews());
-              setTradeReviewsLoaded(true);
-
-              setUser(authenticatedUser);
-            } finally {
-              setSyncing(false);
-            }
-          }}
-        />
-      ) : null}
       <Suspense
         fallback={
           <div className="page-loading-shell">
@@ -1294,24 +1108,20 @@ function App() {
           </div>
         }
       >
-        {user ? (
-          <AppLayout activeRoute={activeRoute} navItems={navItems} onNavigate={setActiveRoute}>
-            {renderActivePage()}
-          </AppLayout>
-        ) : null}
+        <AppLayout activeRoute={activeRoute} navItems={navItems} onNavigate={setActiveRoute}>
+          {renderActivePage()}
+        </AppLayout>
       </Suspense>
-      {user ? <footer className="status-bar">{message}</footer> : null}
+      <footer className="status-bar">{message}</footer>
       <Suspense fallback={null}>
-        {user ? (
-          <SettingsModal
-            isOpen={settingsOpen}
-            settings={settings}
-            onClose={() => setSettingsOpen(false)}
-            onChange={setSettings}
-            onBrowse={handleBrowseFolder}
-            onTestConnection={runConnectionTest}
-          />
-        ) : null}
+        <SettingsModal
+          isOpen={settingsOpen}
+          settings={settings}
+          onClose={() => setSettingsOpen(false)}
+          onChange={setSettings}
+          onBrowse={handleBrowseFolder}
+          onTestConnection={runConnectionTest}
+        />
       </Suspense>
     </>
   );

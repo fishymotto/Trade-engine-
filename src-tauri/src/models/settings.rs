@@ -44,6 +44,8 @@ pub struct AppSettings {
     twelve_data_api_key: String,
     brl_to_usd_rate: f64,
     brl_ticker_list: String,
+    #[serde(default)]
+    daily_shutdown_risk_usd: f64,
     #[serde(default = "default_trade_tag_visibility")]
     trade_tag_visibility: TradeTagVisibilitySettings,
 }
@@ -58,6 +60,7 @@ pub fn default_settings() -> AppSettings {
         brl_ticker_list:
             "BBAS3, ITSA4, BBDC4, VALE3, ASAI3, CEAB3, ABEV3, PETR4, PRIO3, CSAN3, BRAV3, RECV3, COGN3, AMBP3, GGPS3, WEGE3, EMBJ3, HAPV3"
                 .to_string(),
+        daily_shutdown_risk_usd: 0.0,
         trade_tag_visibility: default_trade_tag_visibility(),
     }
 }

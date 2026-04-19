@@ -1,33 +1,47 @@
 import { createEmptyJournalDoc } from "../journal/journalContent";
+import { defaultReviewReflectionState } from "../review/reviewTemplateStore";
 import type { JSONContent } from "@tiptap/core";
 import type {
   LibraryCollectionDefinition,
   LibraryCollectionId,
   LibraryPageRecord
 } from "../../types/library";
+import { syncStores } from "../sync/syncStore";
 
 const STORAGE_KEY = "trade-engine-library-pages";
 const SEED_VERSION_KEY = "trade-engine-library-seed-version";
-const CURRENT_SEED_VERSION = "notion-book-club-v5";
+const CURRENT_SEED_VERSION = "notion-book-club-v6";
 
 export const libraryCollections: LibraryCollectionDefinition[] = [
   {
     id: "idea-inbox",
-    name: "Idea Inbox",
+    name: "Trading Notes",
     description: "Quick captures, future app ideas, and loose trading thoughts before they have a home.",
     accent: "Inbox"
   },
   {
     id: "book-club",
-    name: "Book Club",
+    name: "Trading and Poker Books",
     description: "Book notes, takeaways, mental models, and lessons you want to bring back into trading.",
     accent: "Reading"
   },
   {
     id: "trading-notes",
-    name: "Trading Notes",
+    name: "Book Club Notes",
     description: "Long-form notes, lessons, mental game work, and observations that are bigger than one day.",
     accent: "Notes"
+  },
+  {
+    id: "weekly-review",
+    name: "Weekly Review",
+    description: "Weekly performance snapshots, shutdown-risk breach tracking, and reflection templates for planning the next week.",
+    accent: "Weekly"
+  },
+  {
+    id: "monthly-review",
+    name: "Monthly Review",
+    description: "Monthly versions of Weekly Review entries for bigger-picture reflection and planning.",
+    accent: "Monthly"
   },
   {
     id: "replay",
@@ -40,6 +54,12 @@ export const libraryCollections: LibraryCollectionDefinition[] = [
     name: "Signal Mapping",
     description: "Mapped signals, triggers, context clues, and the conditions that make them worth acting on.",
     accent: "Signals"
+  },
+  {
+    id: "ticker-groups",
+    name: "Ticker Groups",
+    description: "Create icon groups and assign tickers so ticker chips share a consistent icon across the app.",
+    accent: "Icons"
   }
 ];
 
@@ -47,6 +67,12 @@ const createId = () => `library-${Math.random().toString(36).slice(2, 10)}`;
 
 const nowIso = () => new Date().toISOString();
 const SEED_TIMESTAMP = "2026-04-11T00:00:00.000Z";
+
+const TICKER_GROUP_PROPERTY_KEYS = {
+  icon: "Icon",
+  description: "Description",
+  tickers: "Tickers"
+} as const;
 
 const normalizeCollectionId = (value: string): LibraryCollectionId =>
   libraryCollections.some((collection) => collection.id === value)
@@ -92,6 +118,15 @@ const bulletList = (items: string[]): JSONContent => ({
   type: "bulletList",
   content: items.map((item) => ({
     type: "listItem",
+    content: [paragraph(item)]
+  }))
+});
+
+const taskList = (items: string[]): JSONContent => ({
+  type: "taskList",
+  content: items.map((item) => ({
+    type: "taskItem",
+    attrs: { checked: false },
     content: [paragraph(item)]
   }))
 });
@@ -752,9 +787,63 @@ const notionSeedPages: LibraryPageRecord[] = [
 
 const notionSeedPageMap = new Map(notionSeedPages.map((page) => [page.id, page]));
 
+const createTickerGroupSeedPage = (
+  id: string,
+  title: string,
+  icon: string,
+  tickers: readonly string[] = []
+): LibraryPageRecord =>
+  createSeedPage(
+    id,
+    "ticker-groups",
+    title,
+    ["ticker-group", "seed"],
+    "",
+    doc([heading(1, title), paragraph("Manage group icons and assign tickers here.")]),
+    {
+      [TICKER_GROUP_PROPERTY_KEYS.icon]: icon,
+      [TICKER_GROUP_PROPERTY_KEYS.description]: "",
+      [TICKER_GROUP_PROPERTY_KEYS.tickers]: [...tickers]
+    }
+  );
+
+const legacySeedTickers = {
+  airTravel: ["AAL", "DAL", "UAL", "JETS", "JBLU", "ALK", "RYAAY", "LUV"],
+  energy: ["AR", "BP", "CSAN3", "CVE", "PETR4"],
+  materials: ["AG", "CDE", "KGC"],
+  social: ["BMBL", "PINS", "SNAP"],
+  healthcare: ["BAX", "BFLY", "HAPV3", "PFE", "MRNA", "HIMS", "BMY"],
+  finance: ["BAC", "NU", "NWBI", "OWL", "PYPL", "RF", "SOFI"],
+  technology: ["ALIT", "FIG", "HPQ", "INTC", "ONDS", "PATH", "RNG", "SMCI", "TOST", "U", "VNET", "CLSK", "MARA", "RIOT"]
+} as const;
+
+const tickerGroupSeedPages: LibraryPageRecord[] = [
+  createTickerGroupSeedPage("ticker-group-air-travel", "Air Travel", "preset:sector-airlines-travel", legacySeedTickers.airTravel),
+  createTickerGroupSeedPage("ticker-group-cruise-ships", "Cruise Ships", ""),
+  createTickerGroupSeedPage("ticker-group-metals", "Metals", "preset:sector-materials-mining", legacySeedTickers.materials),
+  createTickerGroupSeedPage("ticker-group-gas-oil", "Gas / Oil", "preset:sector-energy", legacySeedTickers.energy),
+  createTickerGroupSeedPage("ticker-group-food", "Food", ""),
+  createTickerGroupSeedPage("ticker-group-social-media", "Social Media", "preset:sector-social-consumer-apps", legacySeedTickers.social),
+  createTickerGroupSeedPage("ticker-group-technology", "Technology", "preset:sector-technology", legacySeedTickers.technology),
+  createTickerGroupSeedPage("ticker-group-semiconductors", "Semiconductors", ""),
+  createTickerGroupSeedPage("ticker-group-cars", "Cars", ""),
+  createTickerGroupSeedPage("ticker-group-sporting-goods", "Sporting Goods", ""),
+  createTickerGroupSeedPage("ticker-group-software", "Software", ""),
+  createTickerGroupSeedPage("ticker-group-real-estate", "Real Estate", ""),
+  createTickerGroupSeedPage("ticker-group-banks", "Banks", ""),
+  createTickerGroupSeedPage("ticker-group-pharma", "Pharma", "preset:sector-healthcare", legacySeedTickers.healthcare),
+  createTickerGroupSeedPage("ticker-group-apparel", "Apparel", ""),
+  createTickerGroupSeedPage("ticker-group-china", "China", ""),
+  createTickerGroupSeedPage("ticker-group-retail", "Retail", ""),
+  createTickerGroupSeedPage("ticker-group-index", "Index", ""),
+  createTickerGroupSeedPage("ticker-group-finance", "Finance", "preset:sector-financials", legacySeedTickers.finance)
+];
+
+const librarySeedPages: LibraryPageRecord[] = [...tickerGroupSeedPages, ...notionSeedPages];
+
 export const createDefaultLibraryPages = (): LibraryPageRecord[] => [
   createStarterPage("idea-inbox", "New trading idea", ["idea"]),
-  ...notionSeedPages
+  ...librarySeedPages
 ];
 
 const normalizeLibraryPage = (page: Partial<LibraryPageRecord>): LibraryPageRecord => {
@@ -826,7 +915,7 @@ export const loadLibraryPages = (): LibraryPageRecord[] => {
       seedVersion === CURRENT_SEED_VERSION
         ? pagesWithSeedRefresh
         : [
-            ...notionSeedPages.filter((seedPage) =>
+            ...librarySeedPages.filter((seedPage) =>
               pagesWithSeedRefresh.every((page) => page.id !== seedPage.id)
             ),
             ...pagesWithSeedRefresh
@@ -845,13 +934,123 @@ export const loadLibraryPages = (): LibraryPageRecord[] => {
 };
 
 export const saveLibraryPages = (pages: LibraryPageRecord[]): void => {
-  localStorage.setItem(
-    STORAGE_KEY,
-    JSON.stringify([...pages].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)))
-  );
+  const sorted = [...pages].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  void syncStores.libraryPages.save(sorted);
+
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("trade-engine-library-pages-updated", { detail: { pages: sorted } }));
+  }
 };
 
 export const createLibraryPage = (collectionId: LibraryCollectionId): LibraryPageRecord => {
+  if (collectionId === "ticker-groups") {
+    const base = createStarterPage(collectionId, "New Ticker Group", ["ticker-group"]);
+
+    return {
+      ...base,
+      properties: {
+        [TICKER_GROUP_PROPERTY_KEYS.icon]: "",
+        [TICKER_GROUP_PROPERTY_KEYS.description]: "",
+        [TICKER_GROUP_PROPERTY_KEYS.tickers]: []
+      }
+    };
+  }
+
+  if (collectionId === "weekly-review" || collectionId === "monthly-review") {
+    const periodLabel = collectionId === "weekly-review" ? "Weekly" : "Monthly";
+    const rangeLabel = collectionId === "weekly-review" ? "Next Week" : "Next Month";
+    const meditationLabel = collectionId === "weekly-review" ? "Meditation - Weekly Goals" : "Meditation - Monthly Goals";
+    const checkInItems =
+      collectionId === "weekly-review"
+        ? ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+        : ["Week 1", "Week 2", "Week 3", "Week 4", "Week 5"];
+    const journalItems =
+      collectionId === "weekly-review"
+        ? [
+            "Monday Morning",
+            "Monday Close",
+            "Tuesday Morning",
+            "Tuesday Close",
+            "Wednesday Morning",
+            "Wednesday Close",
+            "Thursday Morning",
+            "Thursday Close",
+            "Friday Morning",
+            "Friday Close"
+          ]
+        : [
+            "Week 1 Morning",
+            "Week 1 Close",
+            "Week 2 Morning",
+            "Week 2 Close",
+            "Week 3 Morning",
+            "Week 3 Close",
+            "Week 4 Morning",
+            "Week 4 Close",
+            "Week 5 Morning",
+            "Week 5 Close"
+          ];
+
+    const base = createStarterPage(collectionId, `${periodLabel} Review`, ["review"]);
+
+    return {
+      ...base,
+      properties: {
+        "Range Start": "",
+        "Range End": "",
+        "Tickers Traded": [],
+        Trades: "",
+        Shares: "",
+        "Win Rate": "",
+        Net: "",
+        Gross: "",
+        MPP: "",
+        "Closed Orders": "",
+        "Breach Days": [],
+        Overall: "",
+        "Risk Management": "",
+        Psychology: "",
+        "Trading Plans": "",
+        "Red Days": "",
+        "Green Days": "",
+        __review_reflection_v1: defaultReviewReflectionState()
+      },
+      content: doc([
+        heading(1, `${periodLabel} Review`),
+        detailsBlock("Takeaway", [paragraph("")]),
+        detailsBlock("Learning Goals", [paragraph("")]),
+        detailsBlock("Reading", [paragraph("")]),
+        detailsBlock(meditationLabel, [taskList(checkInItems)]),
+        detailsBlock(`Plans for ${rangeLabel}`, [
+          heading(3, "Risk and Discipline"),
+          taskList([
+            `Finish the ${collectionId === "weekly-review" ? "week" : "month"} green or down, no more than one full daily risk unit total`,
+            "No widening stops under any circumstance"
+          ]),
+          heading(3, "Risk Check In, meet daily goals"),
+          taskList(checkInItems),
+          heading(3, "Morning and Close Journals Completed"),
+          taskList(journalItems),
+          heading(3, "Trading Behavior"),
+          taskList([
+            "Average position size stays within plan, no discretionary size-ups",
+            "No chasing after extended moves",
+            "Exit logic followed, no hope holds"
+          ]),
+          heading(3, "System Building"),
+          taskList([
+            "Automate one repeatable process that saves at least 10 minutes per day",
+            collectionId === "weekly-review"
+              ? "Next week’s chapter slides are completed and reviewed once, out loud"
+              : "Next month’s chapter slides are completed and reviewed once, out loud"
+          ]),
+          heading(3, "Performance Balance"),
+          taskList(["More green days than red days"])
+        ])
+      ])
+    };
+  }
+
   const collection = libraryCollections.find((item) => item.id === collectionId);
   return createStarterPage(collectionId, collection ? `New ${collection.name} page` : "Untitled");
 };

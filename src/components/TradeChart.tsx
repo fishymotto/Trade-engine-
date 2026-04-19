@@ -45,6 +45,7 @@ interface TradeChartProps {
   bars: HistoricalBar[];
   trade: GroupedTrade | null;
   height?: number;
+  fillHeight?: boolean;
   showMarkers?: boolean;
   showEma?: boolean;
   focusMode?: "trade" | "day";
@@ -504,6 +505,7 @@ export const TradeChart = ({
   bars,
   trade,
   height = 500,
+  fillHeight = false,
   showMarkers = true,
   showEma = true,
   focusMode = "trade",
@@ -1441,9 +1443,14 @@ export const TradeChart = ({
   }, [refreshOverlay]);
 
   useEffect(() => {
+    if (fillHeight) {
+      requestAnimationFrame(refreshOverlay);
+      return;
+    }
+
     chartRef.current?.applyOptions({ height });
     requestAnimationFrame(refreshOverlay);
-  }, [height, refreshOverlay]);
+  }, [fillHeight, height, refreshOverlay]);
 
   useEffect(() => {
     if (
@@ -1997,7 +2004,7 @@ export const TradeChart = ({
   ) : null;
 
   return (
-    <div className="trade-chart-shell">
+    <div className={`trade-chart-shell${fillHeight ? " is-fill" : ""}`}>
       <div className="trade-chart-command-bar" role="toolbar" aria-label="Chart controls">
         <div className="trade-chart-command-group trade-chart-command-group-main">
           <button type="button" className="trade-chart-symbol-pill">
@@ -2248,7 +2255,11 @@ export const TradeChart = ({
           </div>
         ) : null}
         <div className="trade-chart-canvas-wrap" style={{ minHeight: height }}>
-          <div ref={containerRef} className="trade-chart-canvas" style={{ height }} />
+          <div
+            ref={containerRef}
+            className="trade-chart-canvas"
+            style={fillHeight ? undefined : { height }}
+          />
           {showDrawingTools && drawingTool !== "cursor" ? (
             <div className="trade-chart-drawing-help">
               <strong>{activeDrawingTool.label}</strong>

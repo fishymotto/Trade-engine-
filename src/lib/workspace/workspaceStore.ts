@@ -1,7 +1,6 @@
 import type { ChartInterval } from "../../types/chart";
 import type { AppRoute } from "../../types/app";
-
-const STORAGE_KEY = "trade-engine-workspace";
+import { syncStores } from "../sync/syncStore";
 
 export interface WorkspaceState {
   activeRoute: AppRoute;
@@ -12,7 +11,7 @@ export interface WorkspaceState {
   dayChartInterval: ChartInterval;
 }
 
-const defaultWorkspaceState: WorkspaceState = {
+export const defaultWorkspaceState: WorkspaceState = {
   activeRoute: "dashboard",
   loadedTradeDates: [],
   fileName: "",
@@ -22,23 +21,14 @@ const defaultWorkspaceState: WorkspaceState = {
 };
 
 export const loadWorkspaceState = (): WorkspaceState => {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return defaultWorkspaceState;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<WorkspaceState>;
-    return {
-      ...defaultWorkspaceState,
-      ...parsed,
-      loadedTradeDates: Array.isArray(parsed.loadedTradeDates) ? parsed.loadedTradeDates : []
-    };
-  } catch {
-    return defaultWorkspaceState;
-  }
+  const parsed = syncStores.workspaceState.load<WorkspaceState>(defaultWorkspaceState);
+  return {
+    ...defaultWorkspaceState,
+    ...(parsed && typeof parsed === "object" ? parsed : {}),
+    loadedTradeDates: Array.isArray(parsed?.loadedTradeDates) ? parsed.loadedTradeDates : []
+  };
 };
 
 export const saveWorkspaceState = (state: WorkspaceState): void => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  void syncStores.workspaceState.save(state);
 };

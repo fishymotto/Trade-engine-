@@ -1,6 +1,7 @@
 import type { JSONContent } from "@tiptap/core";
 import { hasJournalDocContent } from "../journal/journalContent";
 import type { PlaybookExampleRating, PlaybookRecord } from "../../types/playbook";
+import { syncStores } from "../sync/syncStore";
 
 const PLAYBOOKS_STORAGE_KEY = "trade-engine-playbooks";
 const DEFAULT_PLAYBOOK_ID = "wide-spread-open-drive";
@@ -742,7 +743,7 @@ export const savePlaybooks = (playbooks: PlaybookRecord[]) => {
     return;
   }
 
-  window.localStorage.setItem(PLAYBOOKS_STORAGE_KEY, JSON.stringify(playbooks));
+  void syncStores.playbooks.save(playbooks);
 };
 
 export const updatePlaybookSectionContent = (

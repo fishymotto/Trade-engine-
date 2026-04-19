@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { JournalRichTextEditor } from "../../journal/components/JournalRichTextEditor";
+import { PlaybooksPage } from "../../playbooks/pages/PlaybooksPage";
 import { PageHero } from "../../../components/PageHero";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
 import { PropertyMultiSelect } from "../../../components/PropertyMultiSelect";
 import { FilterSelect } from "../../../components/FilterSelect";
 import { TagDrawer } from "../../../components/TagDrawer";
+import { getTickerIcon, resolveTickerGroupIcon } from "../../../lib/tickers/tickerIcons";
 import {
   createLibraryBookRow,
   createLibraryPage,
@@ -13,8 +15,26 @@ import {
   saveLibraryPages
 } from "../../../lib/library/libraryStore";
 import type { LibraryCollectionId, LibraryPageRecord } from "../../../types/library";
+import type { Settings } from "../../../types/trade";
+import type { GroupedTrade } from "../../../types/trade";
+import { ReviewDatabaseTable } from "../components/ReviewDatabaseTable";
+import { TickerGroupIconPicker } from "../components/TickerGroupIconPicker";
+import { ReviewReflectionPanel } from "../components/review/ReviewReflectionPanel";
+import { coerceReviewReflectionState, loadReviewTemplates, saveReviewTemplates } from "../../../lib/review/reviewTemplateStore";
+import {
+  buildReviewPropertiesPatch,
+  computeOverallScore,
+  computeReviewMetrics,
+  getDailyShutdownRiskFromSettings,
+  getReviewPeriodForCollection,
+  getReviewRangesFromTrades,
+  getReviewRange,
+  getReviewTitleForRange,
+  REVIEW_PROPERTY_KEYS
+} from "../lib/reviewUtils";
 
 const statusOptions = ["Active", "Draft", "Review", "Archived"];
+const REVIEW_REFLECTION_KEY = "__review_reflection_v1";
 
 const formatUpdatedAt = (value: string): string => {
   const parsed = new Date(value);
@@ -42,14 +62,23 @@ const renderPropertyValue = (
 ): string => {
   const value = page.properties?.[propertyName];
   if (Array.isArray(value)) {
-    return value.length > 0 ? value.join(", ") : fallback;
+    const parts = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+    return parts.length > 0 ? parts.join(", ") : fallback;
   }
 
   if (typeof value === "boolean") {
     return value ? "Yes" : "No";
   }
 
-  return value || fallback;
+  if (typeof value === "number") {
+    return String(value);
+  }
+
+  if (typeof value === "string") {
+    return value || fallback;
+  }
+
+  return fallback;
 };
 
 const readFileAsDataUrl = (file: File): Promise<string> =>
@@ -81,6 +110,8 @@ const renderPropertyList = (page: LibraryPageRecord, propertyName: string): stri
   return [];
 };
 
+const normalizeTickerToken = (value: string): string => value.trim().replace(/^\$/, "").toUpperCase();
+
 const isBookRow = (page: LibraryPageRecord): boolean => page.tags.includes("book-row");
 
 const bookReadingStatusOptions = ["To Read", "In Progress", "Completed", "Abandoned", "Imported"];
@@ -101,6 +132,31 @@ const getReadingStatusToneClass = (value: string): string => {
     default:
       return "";
   }
+};
+
+const scoreOptions = ["", "1", "2", "3", "4", "5"];
+
+const normalizeIsoTradeDate = (value: string): string => {
+  if (!value) {
+    return "";
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return parsed.toISOString().slice(0, 10);
+};
+
+const formatSignedUsd = (value: number): string => {
+  const amount = Number.isFinite(value) ? value : 0;
+  const formatted = Math.abs(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return amount >= 0 ? `+$${formatted}` : `-$${formatted}`;
 };
 
 type BookCellEditorState = {
@@ -124,11 +180,29 @@ const ratingSortValue = (value: string): number => {
   return Number.isFinite(parsed) ? parsed : -Infinity;
 };
 
-export const LibraryPage = () => {
+interface LibraryPageProps {
+  trades: GroupedTrade[];
+  settings: Settings;
+  onSelectTrade: (tradeId: string, tradeDate: string) => void;
+  onOpenJournalDate?: (tradeDate: string) => void;
+  onViewReportsForPlaybook?: (playbookName: string) => void;
+  initialSection?: "collections" | "playbooks";
+}
+
+export const LibraryPage = ({
+  trades,
+  settings,
+  onSelectTrade,
+  onOpenJournalDate,
+  onViewReportsForPlaybook,
+  initialSection = "collections"
+}: LibraryPageProps) => {
+  const [activeSection, setActiveSection] = useState<"collections" | "playbooks">(initialSection);
   const [pages, setPages] = useState<LibraryPageRecord[]>(() => loadLibraryPages());
   const [selectedCollectionId, setSelectedCollectionId] =
     useState<LibraryCollectionId>("idea-inbox");
   const [selectedPageId, setSelectedPageId] = useState("");
+  const [collectionView, setCollectionView] = useState<"list" | "page">("list");
   const [bookSearchQuery, setBookSearchQuery] = useState("");
   const [bookStatusFilter, setBookStatusFilter] = useState("");
   const [bookGenreFilter, setBookGenreFilter] = useState<string[]>([]);
@@ -140,14 +214,156 @@ export const LibraryPage = () => {
   const [bookCellEditorSearchQuery, setBookCellEditorSearchQuery] = useState("");
   const [isBookGenreFilterOpen, setIsBookGenreFilterOpen] = useState(false);
   const [bookGenreFilterSearchQuery, setBookGenreFilterSearchQuery] = useState("");
+  const [reviewTemplates, setReviewTemplates] = useState(() => loadReviewTemplates());
+  const [selectedWeeklyReviewTemplateId, setSelectedWeeklyReviewTemplateId] = useState(
+    () => reviewTemplates.weeklyTemplates[0]?.id ?? ""
+  );
+  const [selectedMonthlyReviewTemplateId, setSelectedMonthlyReviewTemplateId] = useState(
+    () => reviewTemplates.monthlyTemplates[0]?.id ?? ""
+  );
+  const [showLegacyReviewNotes, setShowLegacyReviewNotes] = useState(false);
 
   const handleImageInsert = async (file: File): Promise<string> => {
     return readFileAsDataUrl(file);
   };
 
   useEffect(() => {
+    setActiveSection(initialSection);
+    setCollectionView("list");
+  }, [initialSection]);
+
+  useEffect(() => {
     saveLibraryPages(pages);
   }, [pages]);
+
+  useEffect(() => {
+    saveReviewTemplates(reviewTemplates);
+  }, [reviewTemplates]);
+
+  useEffect(() => {
+    const shutdownRiskUsd = getDailyShutdownRiskFromSettings(settings);
+
+    setPages((current) => {
+      let changed = false;
+      const now = new Date().toISOString();
+
+      const next = current.map((page) => {
+        const period = getReviewPeriodForCollection(page.collectionId);
+        if (!period) {
+          return page;
+        }
+
+        const range = getReviewRange(page.properties);
+        if (!range) {
+          const overall = computeOverallScore(page.properties);
+          if (
+            overall &&
+            typeof page.properties?.[REVIEW_PROPERTY_KEYS.overall] === "string" &&
+            page.properties?.[REVIEW_PROPERTY_KEYS.overall] === overall
+          ) {
+            return page;
+          }
+
+          const nextProperties = {
+            ...(page.properties ?? {}),
+            [REVIEW_PROPERTY_KEYS.overall]: overall
+          };
+
+          if (JSON.stringify(page.properties ?? {}) === JSON.stringify(nextProperties)) {
+            return page;
+          }
+
+          changed = true;
+          return { ...page, properties: nextProperties, updatedAt: now };
+        }
+
+        const metrics = computeReviewMetrics({
+          trades,
+          rangeStart: range.start,
+          rangeEnd: range.end,
+          dailyShutdownRiskUsd: shutdownRiskUsd
+        });
+
+        const nextProperties = buildReviewPropertiesPatch({
+          metrics,
+          existingProperties: page.properties
+        });
+
+        if (JSON.stringify(page.properties ?? {}) === JSON.stringify(nextProperties)) {
+          return page;
+        }
+
+        changed = true;
+        return { ...page, properties: nextProperties, updatedAt: now };
+      });
+
+      return changed ? next : current;
+    });
+  }, [settings, trades]);
+
+  useEffect(() => {
+    if (trades.length === 0) {
+      return;
+    }
+
+    setPages((current) => {
+      const now = new Date().toISOString();
+      const next = [...current];
+      let changed = false;
+
+      const ensureReviewPages = (collectionId: "weekly-review" | "monthly-review") => {
+        const period = collectionId === "weekly-review" ? "weekly" : "monthly";
+        const existingRangeKeys = new Set<string>();
+
+        for (const page of current) {
+          if (page.collectionId !== collectionId) {
+            continue;
+          }
+
+          const range = getReviewRange(page.properties);
+          if (!range) {
+            continue;
+          }
+
+          existingRangeKeys.add(`${range.start}_${range.end}`);
+        }
+
+        const ranges = getReviewRangesFromTrades(trades, period);
+        for (const range of ranges) {
+          const key = `${range.start}_${range.end}`;
+          if (existingRangeKeys.has(key)) {
+            continue;
+          }
+
+          const base = createLibraryPage(collectionId);
+          const endTimestamp = new Date(`${range.end}T23:59:59`);
+          const timestamp = Number.isNaN(endTimestamp.getTime()) ? now : endTimestamp.toISOString();
+
+          next.push({
+            ...base,
+            id: `${collectionId}-${range.start}`,
+            title: getReviewTitleForRange(period, range.start, range.end),
+            status: "Active",
+            properties: {
+              ...(base.properties ?? {}),
+              [REVIEW_PROPERTY_KEYS.rangeStart]: range.start,
+              [REVIEW_PROPERTY_KEYS.rangeEnd]: range.end
+            },
+            createdAt: timestamp,
+            updatedAt: timestamp
+          });
+
+          existingRangeKeys.add(key);
+          changed = true;
+        }
+      };
+
+      ensureReviewPages("weekly-review");
+      ensureReviewPages("monthly-review");
+
+      return changed ? next : current;
+    });
+  }, [trades]);
 
   const selectedCollection = useMemo(
     () =>
@@ -162,6 +378,23 @@ export const LibraryPage = () => {
   );
 
   const isBookClub = selectedCollectionId === "book-club";
+  const isTickerGroups = selectedCollectionId === "ticker-groups";
+  const selectedReviewPeriod = getReviewPeriodForCollection(selectedCollectionId);
+  const isReviewCollection = selectedReviewPeriod !== null;
+
+  const tickerGroupTickerOptions = useMemo(() => {
+    const fromTrades = trades
+      .map((trade) => normalizeTickerToken(trade.symbol ?? ""))
+      .filter(Boolean);
+    const fromGroups = pages
+      .filter((page) => page.collectionId === "ticker-groups")
+      .flatMap((page) => renderPropertyList(page, "Tickers").map(normalizeTickerToken))
+      .filter(Boolean);
+
+    return Array.from(new Set([...fromTrades, ...fromGroups])).sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: "base" })
+    );
+  }, [pages, trades]);
 
   const bookRows = useMemo(
     () => collectionPages.filter(isBookRow),
@@ -256,9 +489,119 @@ export const LibraryPage = () => {
   );
 
   const selectedPage = useMemo(
-    () => pages.find((page) => page.id === selectedPageId) ?? databasePages[0] ?? null,
-    [databasePages, pages, selectedPageId]
+    () => pages.find((page) => page.id === selectedPageId) ?? null,
+    [pages, selectedPageId]
   );
+
+  const bestDayEntries = useMemo(() => {
+    if (!selectedPage) {
+      return [];
+    }
+
+    if (!isReviewCollection || !selectedReviewPeriod) {
+      return [];
+    }
+
+    const range = getReviewRange(selectedPage.properties);
+    if (!range?.start || !range?.end) {
+      return [];
+    }
+
+    const start = normalizeIsoTradeDate(range.start);
+    const end = normalizeIsoTradeDate(range.end);
+    if (!start || !end) {
+      return [];
+    }
+
+    const dayNetMap = trades.reduce<Map<string, number>>((acc, trade) => {
+      const date = normalizeIsoTradeDate(trade.tradeDate);
+      if (!date || date < start || date > end) {
+        return acc;
+      }
+
+      acc.set(date, (acc.get(date) ?? 0) + (trade.netPnlUsd || 0));
+      return acc;
+    }, new Map());
+
+    const limit = selectedReviewPeriod === "monthly" ? 3 : 1;
+    return Array.from(dayNetMap.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit);
+  }, [isReviewCollection, selectedPage, selectedReviewPeriod, trades]);
+
+  const reviewReadingBookDefaults = useMemo(() => {
+    const titles = pages
+      .filter((page) => page.collectionId === "book-club" && isBookRow(page))
+      .map((page) => page.title.trim())
+      .filter(Boolean);
+
+    return Array.from(new Set(titles)).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }, [pages]);
+
+  const reviewReadingAuthorDefaults = useMemo(() => {
+    const authors = pages
+      .filter((page) => page.collectionId === "book-club" && isBookRow(page))
+      .map((page) => getBookFieldValue(page, "Author").trim())
+      .filter(Boolean);
+
+    return Array.from(new Set(authors)).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }, [pages]);
+
+  const handleSaveReviewTemplate = (period: "weekly" | "monthly", templateId: string, content: unknown) => {
+    setReviewTemplates((current) => {
+      const key = period === "weekly" ? "weeklyTemplates" : "monthlyTemplates";
+      const templates = current[key].map((template) =>
+        template.id === templateId ? { ...template, content: coerceReviewReflectionState(content) } : template
+      );
+      return { ...current, [key]: templates };
+    });
+  };
+
+  const handleSaveReviewTemplateAs = (period: "weekly" | "monthly", name: string, content: unknown) => {
+    const newTemplate = {
+      id: `review-template-${Math.random().toString(36).slice(2, 10)}`,
+      name,
+      content: coerceReviewReflectionState(content)
+    };
+
+    setReviewTemplates((current) => {
+      const key = period === "weekly" ? "weeklyTemplates" : "monthlyTemplates";
+      return { ...current, [key]: [...current[key], newTemplate] };
+    });
+
+    if (period === "weekly") {
+      setSelectedWeeklyReviewTemplateId(newTemplate.id);
+    } else {
+      setSelectedMonthlyReviewTemplateId(newTemplate.id);
+    }
+  };
+
+  const handleDeleteReviewTemplate = (period: "weekly" | "monthly", templateId: string) => {
+    setReviewTemplates((current) => {
+      const key = period === "weekly" ? "weeklyTemplates" : "monthlyTemplates";
+      const existing = current[key];
+      const filtered = existing.filter((template) => template.id !== templateId);
+      const nextTemplates = filtered.length > 0 ? filtered : existing;
+      const fallbackSelected = nextTemplates[0]?.id ?? "";
+
+      if (period === "weekly") {
+        setSelectedWeeklyReviewTemplateId((selected) => (selected === templateId ? fallbackSelected : selected));
+      } else {
+        setSelectedMonthlyReviewTemplateId((selected) => (selected === templateId ? fallbackSelected : selected));
+      }
+
+      return { ...current, [key]: nextTemplates };
+    });
+  };
+
+  const handleOpenJournalDate = (tradeDate: string) => {
+    const normalized = normalizeIsoTradeDate(tradeDate);
+    if (!normalized) {
+      return;
+    }
+
+    onOpenJournalDate?.(normalized);
+  };
 
   const bookCellEditorPage = useMemo(() => {
     if (!bookCellEditor) {
@@ -269,12 +612,20 @@ export const LibraryPage = () => {
   }, [bookCellEditor, pages]);
 
   useEffect(() => {
-    if (selectedPage && selectedPage.collectionId === selectedCollectionId) {
+    if (collectionView !== "page") {
       return;
     }
 
-    setSelectedPageId(databasePages[0]?.id ?? "");
-  }, [databasePages, selectedCollectionId, selectedPage]);
+    if (!selectedPage) {
+      setCollectionView("list");
+      return;
+    }
+
+    if (selectedPage.collectionId !== selectedCollectionId) {
+      setCollectionView("list");
+      setSelectedPageId("");
+    }
+  }, [collectionView, selectedCollectionId, selectedPage]);
 
   const totalTags = useMemo(
     () => new Set(pages.flatMap((page) => page.tags.map((tag) => tag.toLowerCase()))).size,
@@ -298,7 +649,7 @@ export const LibraryPage = () => {
   const updatePageProperty = (
     page: LibraryPageRecord,
     propertyName: string,
-    value: string | string[]
+    value: unknown
   ) => {
     updatePage(page.id, {
       properties: {
@@ -308,16 +659,88 @@ export const LibraryPage = () => {
     });
   };
 
+  useEffect(() => {
+    if (!selectedPage || !isReviewCollection) {
+      return;
+    }
+
+    const current = selectedPage.properties?.[REVIEW_REFLECTION_KEY];
+    if (current && typeof current === "object") {
+      return;
+    }
+
+    updatePage(selectedPage.id, {
+      properties: {
+        ...(selectedPage.properties ?? {}),
+        [REVIEW_REFLECTION_KEY]: coerceReviewReflectionState(null)
+      }
+    });
+    setShowLegacyReviewNotes(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isReviewCollection, selectedPage?.id]);
+
+  const updateTickerGroupTickers = (groupPageId: string, nextTickers: string[]) => {
+    const normalizedTickers = Array.from(
+      new Set(nextTickers.map(normalizeTickerToken).filter(Boolean))
+    ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+
+    setPages((current) => {
+      const now = new Date().toISOString();
+      let changed = false;
+
+      const nextPages = current.map((page) => {
+        if (page.collectionId !== "ticker-groups") {
+          return page;
+        }
+
+        const existingTickers = renderPropertyList(page, "Tickers").map(normalizeTickerToken).filter(Boolean);
+
+        if (page.id === groupPageId) {
+          const nextProperties = {
+            ...(page.properties ?? {}),
+            Tickers: normalizedTickers
+          };
+
+          if (JSON.stringify(existingTickers) === JSON.stringify(normalizedTickers)) {
+            return page;
+          }
+
+          changed = true;
+          return { ...page, properties: nextProperties, updatedAt: now };
+        }
+
+        const filtered = existingTickers.filter((ticker) => !normalizedTickers.includes(ticker));
+        if (filtered.length === existingTickers.length) {
+          return page;
+        }
+
+        changed = true;
+        return {
+          ...page,
+          properties: {
+            ...(page.properties ?? {}),
+            Tickers: filtered
+          },
+          updatedAt: now
+        };
+      });
+
+      return changed ? nextPages : current;
+    });
+  };
+
   const handleCreatePage = () => {
     const newPage = createLibraryPage(selectedCollectionId);
     setPages((current) => [newPage, ...current]);
     setSelectedPageId(newPage.id);
+    setCollectionView("page");
   };
 
   const handleCreateBookRow = () => {
     const newPage = createLibraryBookRow();
     setPages((current) => [newPage, ...current]);
     setSelectedPageId(newPage.id);
+    setCollectionView("page");
     setBookSearchQuery("");
     setBookStatusFilter("");
     setBookGenreFilter([]);
@@ -335,6 +758,14 @@ export const LibraryPage = () => {
 
     setPages((current) => current.filter((page) => page.id !== pageId));
     setSelectedPageId("");
+    setCollectionView("list");
+  };
+
+  const openPage = (pageId: string) => {
+    setSelectedPageId(pageId);
+    setCollectionView("page");
+    setBookCellEditor(null);
+    setBookCellEditorSearchQuery("");
   };
 
   const toggleBookSort = (key: BookSortKey) => {
@@ -361,30 +792,32 @@ export const LibraryPage = () => {
 
   return (
     <main className="page-shell library-page">
-      <PageHero
-        eyebrow="Library"
-        title="Knowledge Library"
-        description="A Notion-style home for books, trading notes, replay reviews, signal mapping, and raw ideas."
-      >
-        <div className="page-hero-stat-grid">
-          <div className="page-hero-stat-card">
-            <span>Collections</span>
-            <strong>{libraryCollections.length}</strong>
+      {activeSection === "collections" ? (
+        <PageHero
+          eyebrow="Library"
+          title="Knowledge Library"
+          description="A Notion-style home for books, trading notes, replay reviews, signal mapping, and raw ideas."
+        >
+          <div className="page-hero-stat-grid">
+            <div className="page-hero-stat-card">
+              <span>Collections</span>
+              <strong>{libraryCollections.length}</strong>
+            </div>
+            <div className="page-hero-stat-card">
+              <span>Pages</span>
+              <strong>{pages.length}</strong>
+            </div>
+            <div className="page-hero-stat-card">
+              <span>Tags</span>
+              <strong>{totalTags}</strong>
+            </div>
+            <div className="page-hero-stat-card">
+              <span>Current View</span>
+              <strong>{selectedCollection.name}</strong>
+            </div>
           </div>
-          <div className="page-hero-stat-card">
-            <span>Pages</span>
-            <strong>{pages.length}</strong>
-          </div>
-          <div className="page-hero-stat-card">
-            <span>Tags</span>
-            <strong>{totalTags}</strong>
-          </div>
-          <div className="page-hero-stat-card">
-            <span>Current View</span>
-            <strong>{selectedCollection.name}</strong>
-          </div>
-        </div>
-      </PageHero>
+        </PageHero>
+      ) : null}
 
       <section className="library-layout">
         <aside className="library-collection-panel">
@@ -400,11 +833,15 @@ export const LibraryPage = () => {
                   key={collection.id}
                   type="button"
                   className={`library-collection-button${
-                    collection.id === selectedCollectionId ? " library-collection-button-active" : ""
+                    activeSection === "collections" && collection.id === selectedCollectionId
+                      ? " library-collection-button-active"
+                      : ""
                   }`}
                   onClick={() => {
+                    setActiveSection("collections");
                     setSelectedCollectionId(collection.id);
                     setSelectedPageId("");
+                    setCollectionView("list");
                     setBookSearchQuery("");
                     setBookStatusFilter("");
                     setBookGenreFilter([]);
@@ -420,22 +857,111 @@ export const LibraryPage = () => {
                 </button>
               );
             })}
+
+            <button
+              type="button"
+              className={`library-collection-button${
+                activeSection === "playbooks" ? " library-collection-button-active" : ""
+              }`}
+              onClick={() => {
+                setActiveSection("playbooks");
+                setSelectedPageId("");
+                setCollectionView("list");
+                setBookCellEditor(null);
+                setBookCellEditorSearchQuery("");
+                setIsBookGenreFilterOpen(false);
+                setBookGenreFilterSearchQuery("");
+              }}
+            >
+              <span>Setup</span>
+              <strong>Playbooks</strong>
+              <small>Open setup library</small>
+            </button>
           </div>
         </aside>
 
         <section className="library-database-panel">
-          <div className="library-database-header">
-            <div>
-              <span className="page-eyebrow">{selectedCollection.accent}</span>
-              <h2>{selectedCollection.name}</h2>
-              <p>{selectedCollection.description}</p>
-            </div>
-            <button className="button button-primary" type="button" onClick={handleCreatePage}>
-              New Page
-            </button>
-          </div>
+          {activeSection === "playbooks" ? (
+            <PlaybooksPage
+              embedded
+              trades={trades}
+              onSelectTrade={onSelectTrade}
+              onViewReportsForPlaybook={onViewReportsForPlaybook}
+            />
+          ) : null}
 
-          {isBookClub && bookRows.length > 0 ? (
+          {activeSection === "collections" && collectionView === "list" ? (
+            <>
+              <div className="library-database-header">
+                <div>
+                  <span className="page-eyebrow">{selectedCollection.accent}</span>
+                  <h2>{selectedCollection.name}</h2>
+                  <p>{selectedCollection.description}</p>
+                </div>
+                <button className="button button-primary" type="button" onClick={handleCreatePage}>
+                  {isReviewCollection
+                    ? selectedReviewPeriod === "weekly"
+                      ? "New Weekly Review"
+                      : "New Monthly Review"
+                    : isTickerGroups
+                      ? "New Group"
+                      : "New Page"}
+                </button>
+              </div>
+
+              {isTickerGroups ? (
+                <div className="library-table-wrap" aria-label="Ticker groups database">
+                  <table className="library-table">
+                    <thead>
+                      <tr>
+                        <th>Group</th>
+                        <th>Icon</th>
+                        <th>Description</th>
+                        <th>Tickers</th>
+                        <th>Updated</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {collectionPages.length > 0 ? (
+                        collectionPages.map((page) => {
+                          const iconValue = typeof page.properties?.Icon === "string" ? page.properties.Icon : "";
+                          const iconUrl = resolveTickerGroupIcon(iconValue);
+                          const description = typeof page.properties?.Description === "string" ? page.properties.Description : "";
+                          const tickers = renderPropertyList(page, "Tickers").map(normalizeTickerToken).filter(Boolean);
+
+                          return (
+                            <tr
+                              key={page.id}
+                              className={selectedPage?.id === page.id ? "library-table-row-active" : ""}
+                              onClick={() => openPage(page.id)}
+                            >
+                              <td>
+                                <button type="button" className="library-table-title" onClick={() => openPage(page.id)}>
+                                  {page.title}
+                                </button>
+                              </td>
+                              <td>
+                                {iconUrl ? (
+                                  <img src={iconUrl} alt={`${page.title} icon`} className="ticker-icon" />
+                                ) : (
+                                  <span className="library-table-muted">-</span>
+                                )}
+                              </td>
+                              <td>{description || <span className="library-table-muted">-</span>}</td>
+                              <td>{tickers.length}</td>
+                              <td>{formatUpdatedAt(page.updatedAt)}</td>
+                            </tr>
+                          );
+                        })
+                      ) : (
+                        <tr>
+                          <td colSpan={5}>No groups yet. Create the first ticker group.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              ) : isBookClub && bookRows.length > 0 ? (
             <div className="library-table-wrap library-book-table-wrap" aria-label="Trading and Poker Books database">
               <div className="library-book-table-title">
                 <WorkspaceIcon icon="library" alt="" className="panel-header-icon" />
@@ -536,7 +1062,7 @@ export const LibraryPage = () => {
                         <tr
                           key={page.id}
                           className={selectedPage?.id === page.id ? "library-table-row-active" : ""}
-                          onClick={() => setSelectedPageId(page.id)}
+                          onClick={() => openPage(page.id)}
                         >
                           <td>
                             <div className="library-book-title-cell">
@@ -637,6 +1163,13 @@ export const LibraryPage = () => {
                 </tbody>
               </table>
             </div>
+          ) : isReviewCollection && selectedReviewPeriod ? (
+            <ReviewDatabaseTable
+              pages={databasePages}
+              period={selectedReviewPeriod}
+              selectedPageId={selectedPage?.id ?? ""}
+              onOpenPage={openPage}
+            />
           ) : (
             <div className="library-table-wrap" aria-label={`${selectedCollection.name} database view`}>
               <table className="library-table">
@@ -656,13 +1189,13 @@ export const LibraryPage = () => {
                       <tr
                         key={page.id}
                         className={selectedPage?.id === page.id ? "library-table-row-active" : ""}
-                        onClick={() => setSelectedPageId(page.id)}
+                        onClick={() => openPage(page.id)}
                       >
                         <td>
                           <button
                             type="button"
                             className="library-table-title"
-                            onClick={() => setSelectedPageId(page.id)}
+                            onClick={() => openPage(page.id)}
                           >
                             {page.title}
                           </button>
@@ -682,9 +1215,9 @@ export const LibraryPage = () => {
                 </tbody>
               </table>
             </div>
-          )}
+              )}
 
-          {!isBookClub ? (
+          {!isBookClub && !isReviewCollection && !isTickerGroups ? (
             <div className="library-page-grid" aria-label={`${selectedCollection.name} cards`}>
               {collectionPages.length > 0 ? (
               collectionPages.map((page) => (
@@ -694,7 +1227,7 @@ export const LibraryPage = () => {
                   className={`library-page-card${
                     selectedPage?.id === page.id ? " library-page-card-active" : ""
                   }`}
-                  onClick={() => setSelectedPageId(page.id)}
+                  onClick={() => openPage(page.id)}
                 >
                   <div className="library-page-card-topline">
                     <strong>{page.title}</strong>
@@ -718,161 +1251,483 @@ export const LibraryPage = () => {
               )}
             </div>
           ) : null}
+            </>
+          ) : null}
+
+          {activeSection === "collections" && collectionView === "page" && selectedPage ? (
+            <section
+              className={`library-detail-card${
+                isBookClub && isBookRow(selectedPage)
+                  ? " library-open-page-card"
+                  : isReviewCollection || isTickerGroups
+                    ? " library-open-page-card"
+                    : ""
+              }${isReviewCollection ? " library-review-page-card" : ""}`}
+            >
+              <div className="library-detail-header">
+                <button type="button" className="mini-action" onClick={() => setCollectionView("list")}>
+                  Back to {selectedCollection.name}
+                </button>
+                <div className="library-title-stack">
+                  <span className="page-eyebrow">
+                    {isBookClub && isBookRow(selectedPage) ? "Open Book Page" : selectedCollection.name}
+                  </span>
+                  <input
+                    className="library-title-input"
+                    value={selectedPage.title}
+                    onChange={(event) => updatePage(selectedPage.id, { title: event.target.value })}
+                    placeholder="Untitled"
+                  />
+                  {isReviewCollection && selectedReviewPeriod ? (
+                    <div className="library-review-chip-row" aria-label="Tickers traded">
+                      {(
+                        Array.isArray(selectedPage.properties?.[REVIEW_PROPERTY_KEYS.tickersTraded])
+                          ? (selectedPage.properties?.[REVIEW_PROPERTY_KEYS.tickersTraded] as string[])
+                          : []
+                      )
+                        .map(normalizeTickerToken)
+                        .filter(Boolean)
+                        .map((ticker) => {
+                          const iconUrl = getTickerIcon(ticker);
+
+                          return (
+                            <span key={ticker} className="symbol-pill">
+                              {iconUrl ? (
+                                <img src={iconUrl} alt={`${ticker} icon`} className="symbol-pill-icon" />
+                              ) : (
+                                <WorkspaceIcon icon="trades" alt="" className="symbol-pill-icon" />
+                              )}
+                              {ticker}
+                            </span>
+                          );
+                        })}
+                    </div>
+                  ) : null}
+                </div>
+                <button
+                  type="button"
+                  className="button button-danger"
+                  onClick={() => handleDeletePage(selectedPage.id)}
+                >
+                  Delete Page
+                </button>
+              </div>
+
+              {isTickerGroups ? (
+                <>
+                  <div className="library-open-page-properties ticker-group-open-page">
+                    <TickerGroupIconPicker
+                      label="Icon"
+                      value={typeof selectedPage.properties?.Icon === "string" ? selectedPage.properties.Icon : ""}
+                      onChange={(next) => updatePageProperty(selectedPage, "Icon", next)}
+                    />
+
+                    <label className="library-open-page-property ticker-group-description">
+                      <span>Description</span>
+                      <textarea
+                        className="library-open-page-textarea"
+                        value={renderPropertyValue(selectedPage, "Description", "")}
+                        onChange={(event) => updatePageProperty(selectedPage, "Description", event.target.value)}
+                        placeholder="Optional short description"
+                        rows={3}
+                      />
+                    </label>
+
+                    <PropertyMultiSelect
+                      label="Tickers"
+                      values={renderPropertyList(selectedPage, "Tickers").map(normalizeTickerToken).filter(Boolean)}
+                      onChange={(values) => updateTickerGroupTickers(selectedPage.id, values)}
+                      predefinedOptions={tickerGroupTickerOptions}
+                      placeholder="Add ticker (ex: AAPL)"
+                      allowCustom
+                    />
+                  </div>
+
+                  <div className="ticker-group-chip-preview" aria-label="Ticker chip preview">
+                    <span className="property-label">Preview</span>
+                    <div className="ticker-group-chip-preview-row">
+                      {renderPropertyList(selectedPage, "Tickers")
+                        .map(normalizeTickerToken)
+                        .filter(Boolean)
+                        .slice(0, 14)
+                        .map((ticker) => {
+                          const iconUrl = resolveTickerGroupIcon(
+                            typeof selectedPage.properties?.Icon === "string" ? selectedPage.properties.Icon : ""
+                          );
+
+                          return (
+                            <span key={ticker} className="symbol-pill">
+                              {iconUrl ? (
+                                <img src={iconUrl} alt={`${selectedPage.title} icon`} className="symbol-pill-icon" />
+                              ) : (
+                                <WorkspaceIcon icon="trades" alt={`${ticker} ticker icon`} className="symbol-pill-icon" />
+                              )}
+                              {ticker}
+                            </span>
+                          );
+                        })}
+                      {renderPropertyList(selectedPage, "Tickers").length === 0 ? (
+                        <span className="ticker-group-chip-preview-empty">Add tickers to preview chips.</span>
+                      ) : null}
+                    </div>
+                    <p className="ticker-group-hint">One ticker can only belong to one group at a time.</p>
+                  </div>
+                </>
+              ) : isReviewCollection && selectedReviewPeriod ? (
+                <>
+                  <div className="library-open-page-properties">
+                    <label className="library-open-page-property">
+                      <span>{selectedReviewPeriod === "weekly" ? "Week Start" : "Month Start"}</span>
+                      <input
+                        type="date"
+                        value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.rangeStart, "")}
+                        onChange={(event) => updatePageProperty(selectedPage, REVIEW_PROPERTY_KEYS.rangeStart, event.target.value)}
+                      />
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>{selectedReviewPeriod === "weekly" ? "Week End" : "Month End"}</span>
+                      <input
+                        type="date"
+                        value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.rangeEnd, "")}
+                        onChange={(event) => updatePageProperty(selectedPage, REVIEW_PROPERTY_KEYS.rangeEnd, event.target.value)}
+                      />
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Daily Shutdown Risk</span>
+                      <input type="text" readOnly value={`$${getDailyShutdownRiskFromSettings(settings).toFixed(2)}`} />
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Closed Orders</span>
+                      <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.closedOrders, "-")} />
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Trades</span>
+                      <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.trades, "-")} />
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Shares</span>
+                      <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.shares, "-")} />
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Win Rate</span>
+                      <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.winRate, "-")} />
+                    </label>
+
+                    <label className="library-open-page-property">
+                      <span>Net</span>
+                      <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.net, "-")} />
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Gross</span>
+                      <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.gross, "-")} />
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Red Days</span>
+                      <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.redDays, "-")} />
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Green Days</span>
+                      <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.greenDays, "-")} />
+                    </label>
+
+                    <label className="library-open-page-property">
+                      <span>Risk Management (1-5)</span>
+                      <select
+                        value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.risk, "")}
+                        onChange={(event) => updatePageProperty(selectedPage, REVIEW_PROPERTY_KEYS.risk, event.target.value)}
+                      >
+                        {scoreOptions.map((score) => (
+                          <option key={score || "empty"} value={score}>
+                            {score || "\u2014"}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Psychology (1-5)</span>
+                      <select
+                        value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.psychology, "")}
+                        onChange={(event) => updatePageProperty(selectedPage, REVIEW_PROPERTY_KEYS.psychology, event.target.value)}
+                      >
+                        {scoreOptions.map((score) => (
+                          <option key={score || "empty"} value={score}>
+                            {score || "\u2014"}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Trading Plans (1-5)</span>
+                      <select
+                        value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.tradingPlans, "")}
+                        onChange={(event) => updatePageProperty(selectedPage, REVIEW_PROPERTY_KEYS.tradingPlans, event.target.value)}
+                      >
+                        {scoreOptions.map((score) => (
+                          <option key={score || "empty"} value={score}>
+                            {score || "\u2014"}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Overall (Avg)</span>
+                      <input
+                        type="text"
+                        readOnly
+                        value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.overall, "-")}
+                        onFocus={(event) => event.currentTarget.select()}
+                        onClick={(event) => event.currentTarget.select()}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="review-breach-days">
+                    <span>Breach Days</span>
+                    <div className="review-breach-day-list" aria-label="Shutdown-risk breach days">
+                      {Array.isArray(selectedPage.properties?.[REVIEW_PROPERTY_KEYS.breachDays]) &&
+                      (selectedPage.properties?.[REVIEW_PROPERTY_KEYS.breachDays] as unknown[]).length > 0 ? (
+                        (selectedPage.properties?.[REVIEW_PROPERTY_KEYS.breachDays] as unknown[])
+                          .filter((day): day is string => typeof day === "string" && day.trim().length > 0)
+                          .map((day) => (
+                            <button
+                              key={day}
+                              type="button"
+                              className="review-day-pill review-breach-day-pill"
+                              onClick={() => handleOpenJournalDate(day)}
+                              title={`Open journal for ${normalizeIsoTradeDate(day)}`}
+                            >
+                              {normalizeIsoTradeDate(day)}
+                            </button>
+                          ))
+                      ) : (
+                        <span className="review-breach-day-empty">None</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="review-breach-days">
+                    <span>Best Days</span>
+                    <div className="review-breach-day-list" aria-label="Best trading days">
+                      {bestDayEntries.length > 0 ? (
+                        bestDayEntries.map(([day, net]) => (
+                          <button
+                            key={day}
+                            type="button"
+                            className="review-day-pill review-best-day-pill"
+                            onClick={() => handleOpenJournalDate(day)}
+                            title={`${day} · ${formatSignedUsd(net)}`}
+                          >
+                            {day}
+                          </button>
+                        ))
+                      ) : (
+                        <span className="review-breach-day-empty">None</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <ReviewReflectionPanel
+                    period={selectedReviewPeriod ?? "weekly"}
+                    pageId={selectedPage.id}
+                    timeLabels={
+                      selectedReviewPeriod === "monthly"
+                        ? ["Week 1", "Week 2", "Week 3", "Week 4", "Week 5"]
+                        : ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+                    }
+                    improvementGoalsLabel={
+                      selectedReviewPeriod === "monthly" ? "Next Month Improvement Goals" : "Next Week Improvement Goals"
+                    }
+                    templates={
+                      selectedReviewPeriod === "monthly" ? reviewTemplates.monthlyTemplates : reviewTemplates.weeklyTemplates
+                    }
+                    selectedTemplateId={
+                      selectedReviewPeriod === "monthly" ? selectedMonthlyReviewTemplateId : selectedWeeklyReviewTemplateId
+                    }
+                    reflection={coerceReviewReflectionState(selectedPage.properties?.[REVIEW_REFLECTION_KEY])}
+                    defaultBookOptions={reviewReadingBookDefaults}
+                    defaultAuthorOptions={reviewReadingAuthorDefaults}
+                    onSelectTemplateId={
+                      selectedReviewPeriod === "monthly"
+                        ? setSelectedMonthlyReviewTemplateId
+                        : setSelectedWeeklyReviewTemplateId
+                    }
+                    onChangeReflection={(next) =>
+                      updatePage(selectedPage.id, {
+                        properties: {
+                          ...(selectedPage.properties ?? {}),
+                          [REVIEW_REFLECTION_KEY]: next
+                        }
+                      })
+                    }
+                    onSaveTemplate={(templateId, content) =>
+                      handleSaveReviewTemplate(selectedReviewPeriod === "monthly" ? "monthly" : "weekly", templateId, content)
+                    }
+                    onSaveTemplateAs={(name, content) =>
+                      handleSaveReviewTemplateAs(selectedReviewPeriod === "monthly" ? "monthly" : "weekly", name, content)
+                    }
+                    onDeleteTemplate={(templateId) =>
+                      handleDeleteReviewTemplate(selectedReviewPeriod === "monthly" ? "monthly" : "weekly", templateId)
+                    }
+                  />
+
+                  <section className="journal-writing-section review-writing-section review-legacy-notes">
+                    <div className="journal-writing-header">
+                      <div className="journal-writing-header-title">
+                        <WorkspaceIcon icon="journal" alt="" className="mini-action-icon" />
+                        <strong>Notes</strong>
+                      </div>
+                      <div className="journal-writing-header-actions">
+                        <button
+                          type="button"
+                          className="mini-action"
+                          onClick={() => setShowLegacyReviewNotes((current) => !current)}
+                        >
+                          {showLegacyReviewNotes ? "Hide" : "Show"}
+                        </button>
+                      </div>
+                    </div>
+                    {showLegacyReviewNotes ? (
+                      <JournalRichTextEditor
+                        content={selectedPage.content}
+                        onChange={(content) => updatePage(selectedPage.id, { content })}
+                        onImageInsert={handleImageInsert}
+                        placeholder="Optional extra notes (legacy editor)"
+                        taskListColumns={2}
+                      />
+                    ) : null}
+                  </section>
+                </>
+              ) : isBookClub && isBookRow(selectedPage) ? (
+                <>
+                  <div className="library-open-page-properties">
+                    <label className="library-open-page-property">
+                      <span>Author</span>
+                      <input
+                        value={getBookFieldValue(selectedPage, "Author")}
+                        onChange={(event) => updatePageProperty(selectedPage, "Author", event.target.value)}
+                        placeholder="Author"
+                      />
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Status</span>
+                      <select
+                        value={getBookFieldValue(selectedPage, "Reading Status") || selectedPage.status}
+                        onChange={(event) => updatePageProperty(selectedPage, "Reading Status", event.target.value)}
+                      >
+                        {["To Read", "In Progress", "Completed", "Abandoned", "Imported"].map((status) => (
+                          <option key={status} value={status}>
+                            {status}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Rating</span>
+                      <input
+                        value={getBookFieldValue(selectedPage, "Rating")}
+                        onChange={(event) => updatePageProperty(selectedPage, "Rating", event.target.value)}
+                        placeholder="Optional rating"
+                      />
+                    </label>
+                    <PropertyMultiSelect
+                      label="Genres"
+                      values={renderPropertyList(selectedPage, "Genre")}
+                      onChange={(genres) => updatePageProperty(selectedPage, "Genre", genres)}
+                      predefinedOptions={allGenres}
+                      placeholder="Add genre"
+                      allowCustom
+                    />
+                    <label className="library-open-page-property library-open-page-property-wide">
+                      <span>Source URL</span>
+                      <input
+                        value={selectedPage.sourceUrl}
+                        onChange={(event) => updatePage(selectedPage.id, { sourceUrl: event.target.value })}
+                        placeholder="Paste source, video, article, or Notion link"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="library-open-page-notes">
+                    <label className="library-open-page-note">
+                      <span>Summary</span>
+                      <textarea
+                        value={getBookFieldValue(selectedPage, "Summary")}
+                        onChange={(event) => updatePageProperty(selectedPage, "Summary", event.target.value)}
+                        placeholder="Key ideas, takeaways, and notes from the book."
+                      />
+                    </label>
+                    <label className="library-open-page-note">
+                      <span>Review</span>
+                      <textarea
+                        value={getBookFieldValue(selectedPage, "Review")}
+                        onChange={(event) => updatePageProperty(selectedPage, "Review", event.target.value)}
+                        placeholder="What stood out, what mattered, and how it applies to trading."
+                      />
+                    </label>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="library-property-grid">
+                    <label>
+                      <span>Status</span>
+                      <select
+                        value={selectedPage.status}
+                        onChange={(event) => updatePage(selectedPage.id, { status: event.target.value })}
+                      >
+                        {statusOptions.map((status) => (
+                          <option key={status} value={status}>
+                            {status}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Tags</span>
+                      <input
+                        value={selectedPage.tags.join(", ")}
+                        onChange={(event) => updatePage(selectedPage.id, { tags: parseTags(event.target.value) })}
+                        placeholder="mental-game, replay, lesson"
+                      />
+                    </label>
+                    <label>
+                      <span>Source URL</span>
+                      <input
+                        value={selectedPage.sourceUrl}
+                        onChange={(event) => updatePage(selectedPage.id, { sourceUrl: event.target.value })}
+                        placeholder="Paste source, video, article, or Notion link"
+                      />
+                    </label>
+                    <label>
+                      <span>Author / Owner</span>
+                      <input
+                        value={renderPropertyValue(selectedPage, "Author", "")}
+                        onChange={(event) => updatePageProperty(selectedPage, "Author", event.target.value)}
+                        placeholder="Author, creator, or owner"
+                      />
+                    </label>
+                    <label>
+                      <span>Rating</span>
+                      <input
+                        value={renderPropertyValue(selectedPage, "Rating", "")}
+                        onChange={(event) => updatePageProperty(selectedPage, "Rating", event.target.value)}
+                        placeholder="Optional rating"
+                      />
+                    </label>
+                  </div>
+
+                  <JournalRichTextEditor
+                    content={selectedPage.content}
+                    onChange={(content) => updatePage(selectedPage.id, { content })}
+                    onImageInsert={handleImageInsert}
+                    placeholder="Type '/' for commands"
+                  />
+                </>
+              )}
+            </section>
+          ) : null}
         </section>
       </section>
-
-      {selectedPage ? (
-        <section className={`library-detail-card${isBookClub && isBookRow(selectedPage) ? " library-open-page-card" : ""}`}>
-          <div className="library-detail-header">
-            <div className="library-title-stack">
-              <span className="page-eyebrow">
-                {isBookClub && isBookRow(selectedPage) ? "Open Book Page" : selectedCollection.name}
-              </span>
-              <input
-                className="library-title-input"
-                value={selectedPage.title}
-                onChange={(event) => updatePage(selectedPage.id, { title: event.target.value })}
-                placeholder="Untitled"
-              />
-            </div>
-            <button
-              type="button"
-              className="button button-danger"
-              onClick={() => handleDeletePage(selectedPage.id)}
-            >
-              Delete Page
-            </button>
-          </div>
-
-          {isBookClub && isBookRow(selectedPage) ? (
-            <>
-              <div className="library-open-page-properties">
-                <label className="library-open-page-property">
-                  <span>Author</span>
-                  <input
-                    value={getBookFieldValue(selectedPage, "Author")}
-                    onChange={(event) => updatePageProperty(selectedPage, "Author", event.target.value)}
-                    placeholder="Author"
-                  />
-                </label>
-                <label className="library-open-page-property">
-                  <span>Status</span>
-                  <select
-                    value={getBookFieldValue(selectedPage, "Reading Status") || selectedPage.status}
-                    onChange={(event) => updatePageProperty(selectedPage, "Reading Status", event.target.value)}
-                  >
-                    {["To Read", "In Progress", "Completed", "Abandoned", "Imported"].map((status) => (
-                      <option key={status} value={status}>
-                        {status}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="library-open-page-property">
-                  <span>Rating</span>
-                  <input
-                    value={getBookFieldValue(selectedPage, "Rating")}
-                    onChange={(event) => updatePageProperty(selectedPage, "Rating", event.target.value)}
-                    placeholder="Optional rating"
-                  />
-                </label>
-                <PropertyMultiSelect
-                  label="Genres"
-                  values={renderPropertyList(selectedPage, "Genre")}
-                  onChange={(genres) => updatePageProperty(selectedPage, "Genre", genres)}
-                  predefinedOptions={allGenres}
-                  placeholder="Add genre"
-                  allowCustom
-                />
-                <label className="library-open-page-property library-open-page-property-wide">
-                  <span>Source URL</span>
-                  <input
-                    value={selectedPage.sourceUrl}
-                    onChange={(event) => updatePage(selectedPage.id, { sourceUrl: event.target.value })}
-                    placeholder="Paste source, video, article, or Notion link"
-                  />
-                </label>
-              </div>
-
-              <div className="library-open-page-notes">
-                <label className="library-open-page-note">
-                  <span>Summary</span>
-                  <textarea
-                    value={getBookFieldValue(selectedPage, "Summary")}
-                    onChange={(event) => updatePageProperty(selectedPage, "Summary", event.target.value)}
-                    placeholder="Key ideas, takeaways, and notes from the book."
-                  />
-                </label>
-                <label className="library-open-page-note">
-                  <span>Review</span>
-                  <textarea
-                    value={getBookFieldValue(selectedPage, "Review")}
-                    onChange={(event) => updatePageProperty(selectedPage, "Review", event.target.value)}
-                    placeholder="What stood out, what mattered, and how it applies to trading."
-                  />
-                </label>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="library-property-grid">
-                <label>
-                  <span>Status</span>
-                  <select
-                    value={selectedPage.status}
-                    onChange={(event) => updatePage(selectedPage.id, { status: event.target.value })}
-                  >
-                    {statusOptions.map((status) => (
-                      <option key={status} value={status}>
-                        {status}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>Tags</span>
-                  <input
-                    value={selectedPage.tags.join(", ")}
-                    onChange={(event) => updatePage(selectedPage.id, { tags: parseTags(event.target.value) })}
-                    placeholder="mental-game, replay, lesson"
-                  />
-                </label>
-                <label>
-                  <span>Source URL</span>
-                  <input
-                    value={selectedPage.sourceUrl}
-                    onChange={(event) => updatePage(selectedPage.id, { sourceUrl: event.target.value })}
-                    placeholder="Paste source, video, article, or Notion link"
-                  />
-                </label>
-                <label>
-                  <span>Author / Owner</span>
-                  <input
-                    value={renderPropertyValue(selectedPage, "Author", "")}
-                    onChange={(event) => updatePageProperty(selectedPage, "Author", event.target.value)}
-                    placeholder="Author, creator, or owner"
-                  />
-                </label>
-                <label>
-                  <span>Rating</span>
-                  <input
-                    value={renderPropertyValue(selectedPage, "Rating", "")}
-                    onChange={(event) => updatePageProperty(selectedPage, "Rating", event.target.value)}
-                    placeholder="Optional rating"
-                  />
-                </label>
-              </div>
-
-              <JournalRichTextEditor
-                content={selectedPage.content}
-                onChange={(content) => updatePage(selectedPage.id, { content })}
-                onImageInsert={handleImageInsert}
-                placeholder="Type '/' for commands"
-              />
-            </>
-          )}
-        </section>
-      ) : null}
       {bookCellEditor && bookCellEditorPage ? (
         <TagDrawer
           isOpen={!!bookCellEditor}

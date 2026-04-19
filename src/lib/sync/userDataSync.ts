@@ -5,7 +5,12 @@ import type { Settings } from '../../types/trade';
 import type { TradeTagOptionsRecord, TradeTagOverrideRecord } from '../../types/tradeTags';
 import type { TradeReviewRecord } from '../../types/review';
 import type { HistoricalBarSet } from '../../types/chart';
+import type { PlaybookRecord } from '../../types/playbook';
+import type { LibraryPageRecord } from '../../types/library';
+import type { HeadlineItem } from '../../types/headline';
 import { defaultJournalChecklistTemplates, type JournalChecklistTemplates } from '../../lib/journal/journalTemplateStore';
+import { defaultSettings } from '../settings/settingsStore';
+import { defaultWorkspaceState, type WorkspaceState } from '../workspace/workspaceStore';
 
 /**
  * Syncs all user data from Supabase to localStorage after login
@@ -18,13 +23,21 @@ export const syncUserDataOnLogin = async (userId: string): Promise<void> => {
     await Promise.all([
       syncStores.tradeSessions.syncFromSupabase<TradeSessionRecord[]>(userId, []),
       syncStores.journalPages.syncFromSupabase<JournalPageRecord[]>(userId, []),
-      syncStores.settings.syncFromSupabase<Settings>(userId, {} as Settings),
+      syncStores.settings.syncFromSupabase<Settings>(userId, defaultSettings),
       syncStores.tradeTagOptions.syncFromSupabase<TradeTagOptionsRecord>(userId, {}),
       syncStores.tradeTagOverrides.syncFromSupabase<TradeTagOverrideRecord[]>(userId, []),
       syncStores.tradeReviews.syncFromSupabase<TradeReviewRecord[]>(userId, []),
       syncStores.historicalBars.syncFromSupabase<HistoricalBarSet[]>(userId, []),
-      syncStores.journalChecklistTemplates.syncFromSupabase<JournalChecklistTemplates>(userId, defaultJournalChecklistTemplates()),
-      syncStores.workspaceState.syncFromSupabase(userId, {}),
+      syncStores.journalChecklistTemplates.syncFromSupabase<JournalChecklistTemplates>(
+        userId,
+        defaultJournalChecklistTemplates()
+      ),
+      syncStores.workspaceState.syncFromSupabase<WorkspaceState>(userId, defaultWorkspaceState),
+      syncStores.tradeTagCatalog.syncFromSupabase(userId, {}),
+      syncStores.playbooks.syncFromSupabase<PlaybookRecord[]>(userId, []),
+      syncStores.libraryPages.syncFromSupabase<LibraryPageRecord[]>(userId, []),
+      syncStores.headlines.syncFromSupabase<Record<string, HeadlineItem[]>>(userId, {}),
+      syncStores.selectOptionAdditions.syncFromSupabase<Record<string, string[]>>(userId, {}),
     ]);
 
     console.log('User data synced successfully');

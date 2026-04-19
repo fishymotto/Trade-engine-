@@ -1,7 +1,11 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = 'https://pyfcshzunlsjtktynvae.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_HiBmU9YKW5_Y0L8w86rp2A_p-RAMx7t';
+const FALLBACK_SUPABASE_URL = 'https://pyfcshzunlsjtktynvae.supabase.co';
+const FALLBACK_SUPABASE_ANON_KEY = 'sb_publishable_HiBmU9YKW5_Y0L8w86rp2A_p-RAMx7t';
+
+const SUPABASE_URL = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_SUPABASE_URL || FALLBACK_SUPABASE_URL;
+const SUPABASE_ANON_KEY =
+  (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_SUPABASE_ANON_KEY || FALLBACK_SUPABASE_ANON_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   throw new Error('Missing Supabase environment variables');

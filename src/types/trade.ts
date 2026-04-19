@@ -19,6 +19,7 @@ export interface Settings {
   twelveDataApiKey: string;
   brlToUsdRate: number;
   brlTickerList: string;
+  dailyShutdownRiskUsd: number;
   tradeTagVisibility: TradeTagVisibilitySettings;
 }
 

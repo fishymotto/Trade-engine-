@@ -1,5 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { EditableTradeTagField, TradeTagOptionsRecord } from "../../types/tradeTags";
+import { syncStores } from "../sync/syncStore";
 
 const STORAGE_KEY = "trade-engine-trade-tag-options";
 
@@ -41,20 +42,23 @@ const loadTradeTagOptionsFromLocalStorage = (): TradeTagOptionsRecord => {
 };
 
 export const loadTradeTagOptions = async (): Promise<TradeTagOptionsRecord> => {
-  if (isTauri()) {
-    try {
-      const options = await invoke<TradeTagOptionsRecord>("load_trade_tag_options");
-      return normalizeTradeTagOptions(options);
-    } catch {
-      return loadTradeTagOptionsFromLocalStorage();
-    }
+  const localRaw = localStorage.getItem(STORAGE_KEY);
+  if (localRaw || !isTauri()) {
+    return loadTradeTagOptionsFromLocalStorage();
   }
 
-  return loadTradeTagOptionsFromLocalStorage();
+  try {
+    const options = await invoke<TradeTagOptionsRecord>("load_trade_tag_options");
+    const normalized = normalizeTradeTagOptions(options);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+    return normalized;
+  } catch {
+    return loadTradeTagOptionsFromLocalStorage();
+  }
 };
 
 export const saveTradeTagOptions = async (options: TradeTagOptionsRecord): Promise<void> => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(options));
+  await syncStores.tradeTagOptions.save(options);
 
   if (isTauri()) {
     await invoke("save_trade_tag_options", { options });

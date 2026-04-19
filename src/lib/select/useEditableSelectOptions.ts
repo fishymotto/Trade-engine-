@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { syncStores } from "../sync/syncStore";
 
 const normalizeOption = (value: string) => value.trim().replace(/\s+/g, " ");
 
@@ -6,17 +7,17 @@ const hasValue = (value: unknown): value is string => typeof value === "string" 
 
 const loadStoredAdditions = (storageKey: string): string[] => {
   try {
-    const raw = window.localStorage.getItem(storageKey);
-    if (!raw) {
+    if (typeof window === "undefined") {
       return [];
     }
 
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) {
+    const store = syncStores.selectOptionAdditions.load<Record<string, string[]>>({});
+    const values = store?.[storageKey];
+    if (!Array.isArray(values)) {
       return [];
     }
 
-    return parsed.filter(hasValue).map(normalizeOption);
+    return values.filter(hasValue).map(normalizeOption);
   } catch {
     return [];
   }
@@ -52,7 +53,11 @@ export const useEditableSelectOptions = (storageKey: string, defaultOptions: str
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(storageKey, JSON.stringify(additions));
+      const current = syncStores.selectOptionAdditions.load<Record<string, string[]>>({});
+      void syncStores.selectOptionAdditions.save({
+        ...(current && typeof current === "object" ? current : {}),
+        [storageKey]: additions
+      });
     } catch {
       // ignore
     }
@@ -88,4 +93,3 @@ export const useEditableSelectOptions = (storageKey: string, defaultOptions: str
 
   return { options, addOption };
 };
-

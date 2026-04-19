@@ -1,5 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { TradeTagOverrideRecord } from "../../types/tradeTags";
+import { syncStores } from "../sync/syncStore";
 
 const STORAGE_KEY = "trade-engine-trade-tag-overrides";
 
@@ -18,22 +19,25 @@ const loadTradeTagOverridesFromLocalStorage = (): TradeTagOverrideRecord[] => {
 };
 
 export const loadTradeTagOverrides = async (): Promise<TradeTagOverrideRecord[]> => {
-  if (isTauri()) {
-    try {
-      const overrides = await invoke<TradeTagOverrideRecord[]>("load_trade_tag_overrides");
-      return Array.isArray(overrides) ? overrides : [];
-    } catch {
-      return loadTradeTagOverridesFromLocalStorage();
-    }
+  const localRaw = localStorage.getItem(STORAGE_KEY);
+  if (localRaw || !isTauri()) {
+    return loadTradeTagOverridesFromLocalStorage();
   }
 
-  return loadTradeTagOverridesFromLocalStorage();
+  try {
+    const overrides = await invoke<TradeTagOverrideRecord[]>("load_trade_tag_overrides");
+    const normalized = Array.isArray(overrides) ? overrides : [];
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+    return normalized;
+  } catch {
+    return loadTradeTagOverridesFromLocalStorage();
+  }
 };
 
 export const saveTradeTagOverrides = async (
   overrides: TradeTagOverrideRecord[]
 ): Promise<void> => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(overrides));
+  await syncStores.tradeTagOverrides.save(overrides);
 
   if (isTauri()) {
     await invoke("save_trade_tag_overrides", { overrides });
