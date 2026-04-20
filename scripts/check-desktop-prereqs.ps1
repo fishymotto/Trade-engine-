@@ -18,13 +18,20 @@ function Add-CheckResult {
 
 function Find-CommandPath {
   param(
-    [string[]]$Names
+    [string[]]$Names,
+    [string[]]$FallbackPaths = @()
   )
 
   foreach ($name in $Names) {
     $command = Get-Command $name -ErrorAction SilentlyContinue
     if ($command) {
       return $command.Source
+    }
+  }
+
+  foreach ($path in $FallbackPaths) {
+    if (Test-Path $path) {
+      return $path
     }
   }
 
@@ -55,7 +62,10 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectPath = Split-Path -Parent $scriptDir
 $results = @()
 
-$nodePath = Find-CommandPath @("node.exe", "node")
+$nodePath = Find-CommandPath @("node.exe", "node") @(
+  "C:\Program Files\nodejs\node.exe",
+  "C:\Program Files (x86)\nodejs\node.exe"
+)
 if ($nodePath) {
   $nodeVersion = & $nodePath --version
   Add-CheckResult "ok" "Node detected: $nodeVersion at $nodePath"
@@ -63,7 +73,10 @@ if ($nodePath) {
   Add-CheckResult "error" "Node.js was not found. Install the Node.js LTS release."
 }
 
-$npmPath = Find-CommandPath @("npm.cmd", "npm")
+$npmPath = Find-CommandPath @("npm.cmd", "npm") @(
+  "C:\Program Files\nodejs\npm.cmd",
+  "C:\Program Files (x86)\nodejs\npm.cmd"
+)
 if ($npmPath) {
   $npmVersion = & $npmPath --version
   Add-CheckResult "ok" "npm detected: v$npmVersion at $npmPath"
@@ -71,7 +84,10 @@ if ($npmPath) {
   Add-CheckResult "error" "npm was not found. Reinstall Node.js so npm.cmd is available."
 }
 
-$cargoPath = Find-CommandPath @("cargo.exe", "cargo")
+$cargoPath = Find-CommandPath @("cargo.exe", "cargo") @(
+  "$env:USERPROFILE\.cargo\bin\cargo.exe",
+  "$env:USERPROFILE\.cargo\bin\cargo"
+)
 if ($cargoPath) {
   $cargoVersion = & $cargoPath --version
   Add-CheckResult "ok" "Cargo detected: $cargoVersion at $cargoPath"
