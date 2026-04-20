@@ -9,9 +9,10 @@ interface SettingsPageProps {
   onChange: (settings: Settings) => void;
   onBrowse: () => Promise<void>;
   onTestConnection: () => Promise<string>;
+  onForceCloudSeed: () => Promise<string>;
 }
 
-export const SettingsPage = ({ settings, onChange, onBrowse, onTestConnection }: SettingsPageProps) => {
+export const SettingsPage = ({ settings, onChange, onBrowse, onTestConnection, onForceCloudSeed }: SettingsPageProps) => {
   const [message, setMessage] = useState("");
 
   const update = (patch: Partial<Settings>) => onChange({ ...settings, ...patch });
@@ -26,6 +27,11 @@ export const SettingsPage = ({ settings, onChange, onBrowse, onTestConnection }:
   const handleTest = async () => {
     setMessage("Testing Notion connection...");
     setMessage(await onTestConnection());
+  };
+
+  const handleForceCloudSeed = async () => {
+    setMessage("Pushing this computer to cloud...");
+    setMessage(await onForceCloudSeed());
   };
 
   return (
@@ -134,6 +140,9 @@ export const SettingsPage = ({ settings, onChange, onBrowse, onTestConnection }:
           <div className="settings-page-actions">
             <Button variant="secondary" onClick={handleTest}>
               Test Notion Connection
+            </Button>
+            <Button variant="secondary" onClick={handleForceCloudSeed}>
+              Push This Computer To Cloud
             </Button>
           </div>
           <p className="settings-message">{message}</p>

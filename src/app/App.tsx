@@ -46,7 +46,7 @@ import {
 } from "../lib/trades/tradeTagOverrides";
 import { loadWorkspaceState, saveWorkspaceState } from "../lib/workspace/workspaceStore";
 import { defaultSettings, loadSettings, saveSettings } from "../lib/settings/settingsStore";
-import { setUserIdForSync, syncUserDataOnLogin } from "../lib/sync/userDataSync";
+import { forcePushLocalDataToCloud, setUserIdForSync, syncUserDataOnLogin } from "../lib/sync/userDataSync";
 import type { AppNavItem, AppRoute } from "../types/app";
 import type { ChartInterval, HistoricalBarSet } from "../types/chart";
 import type { JournalContentField, JournalPageRecord } from "../types/journal";
@@ -405,6 +405,23 @@ function App() {
       return result.message;
     } catch (error) {
       return error instanceof Error ? error.message : "The Notion connection test failed.";
+    }
+  };
+
+  const handleForceCloudSeed = async (): Promise<string> => {
+    if (!user) {
+      return "Sign in before pushing this computer to cloud.";
+    }
+
+    setSyncing(true);
+    try {
+      await forcePushLocalDataToCloud(user.id);
+      setUserIdForSync(user.id);
+      return "This computer's saved workspace was pushed to cloud. Pull from the other computer after signing in.";
+    } catch (error) {
+      return error instanceof Error ? error.message : "Cloud push failed.";
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -1217,6 +1234,7 @@ function App() {
             onChange={setSettings}
             onBrowse={handleBrowseFolder}
             onTestConnection={runConnectionTest}
+            onForceCloudSeed={handleForceCloudSeed}
           />
         );
       default:

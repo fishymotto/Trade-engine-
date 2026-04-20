@@ -60,6 +60,14 @@ export const syncUserDataOnLogin = async (userId: string): Promise<void> => {
   }
 };
 
+export const forcePushLocalDataToCloud = async (userId: string): Promise<void> => {
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(FORCE_LOCAL_TO_CLOUD_KEY, '1');
+  }
+
+  await syncUserDataOnLogin(userId);
+};
+
 /**
  * Sets the userId for sync stores (needed for future saves)
  */
