@@ -80,6 +80,69 @@ const extractMaxTimestamp = (value: unknown): number | null => {
   return null;
 };
 
+const getMergeKey = (value: unknown): string | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const key = record.id ?? record.tradeDate ?? record.key;
+  return typeof key === 'string' && key.trim() ? key : null;
+};
+
+const mergeSyncedValues = <T>(localValue: T, cloudValue: T): T => {
+  if (!Array.isArray(localValue) || !Array.isArray(cloudValue)) {
+    return cloudValue;
+  }
+
+  const merged: unknown[] = [];
+  const indexByKey = new Map<string, number>();
+
+  const addItem = (item: unknown, preferOnTie: boolean): boolean => {
+    const key = getMergeKey(item);
+    if (!key) {
+      return false;
+    }
+
+    const existingIndex = indexByKey.get(key);
+    if (existingIndex === undefined) {
+      indexByKey.set(key, merged.length);
+      merged.push(item);
+      return true;
+    }
+
+    const existing = merged[existingIndex];
+    const existingTs = extractMaxTimestamp(existing);
+    const candidateTs = extractMaxTimestamp(item);
+    const shouldReplace =
+      candidateTs !== null && existingTs !== null
+        ? candidateTs > existingTs || (candidateTs === existingTs && preferOnTie)
+        : candidateTs !== null
+          ? true
+          : existingTs === null && preferOnTie;
+
+    if (shouldReplace) {
+      merged[existingIndex] = item;
+    }
+
+    return true;
+  };
+
+  for (const item of localValue) {
+    if (!addItem(item, false)) {
+      return cloudValue;
+    }
+  }
+
+  for (const item of cloudValue) {
+    if (!addItem(item, true)) {
+      return cloudValue;
+    }
+  }
+
+  return merged as T;
+};
+
 const shouldPreferLocalOverCloud = <T>(
   localValue: T,
   cloudValue: T,
@@ -211,8 +274,8 @@ export class HybridSyncStore {
       // Parse and cache the data locally
       const parsed = JSON.parse(data.data) as T;
 
-      // Normal login should make the cloud copy authoritative so a stale device
-      // does not push old localStorage back over newer saved data.
+      const merged = mergeSyncedValues(localValue, parsed);
+
       if (
         !isProbablyDefaultValue(localValue, defaultValue) &&
         (options.forcePushLocal ||
@@ -228,8 +291,16 @@ export class HybridSyncStore {
         return localValue;
       }
 
-      localStorage.setItem(this.config.storageKey, JSON.stringify(parsed));
-      return parsed;
+      if (!isProbablyDefaultValue(localValue, defaultValue) && !isProbablyDefaultValue(merged, parsed)) {
+        try {
+          await this.syncToSupabase(merged, userId);
+        } catch (mergeError) {
+          console.warn(`Failed to sync merged data to Supabase (${this.config.tableName}):`, mergeError);
+        }
+      }
+
+      localStorage.setItem(this.config.storageKey, JSON.stringify(merged));
+      return merged;
     } catch (err) {
       console.warn(`Failed to parse Supabase data (${this.config.tableName}):`, err);
       return this.load(defaultValue);
