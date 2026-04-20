@@ -32,6 +32,87 @@ const isProbablyDefaultValue = <T>(value: T, defaultValue: T): boolean => {
   }
 };
 
+const parseTimestamp = (value: unknown): number | null => {
+  if (typeof value !== 'string' || !value.trim()) {
+    return null;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const extractMaxTimestamp = (value: unknown): number | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    let max: number | null = null;
+    for (const entry of value) {
+      const candidate = extractMaxTimestamp(entry);
+      if (candidate !== null && (max === null || candidate > max)) {
+        max = candidate;
+      }
+    }
+    return max;
+  }
+
+  const record = value as Record<string, unknown>;
+  const candidates = [
+    record.updatedAt,
+    record.updated_at,
+    record.importedAt,
+    record.createdAt,
+    record.created_at
+  ]
+    .map(parseTimestamp)
+    .filter((candidate): candidate is number => candidate !== null);
+
+  if (candidates.length > 0) {
+    return Math.max(...candidates);
+  }
+
+  return null;
+};
+
+const shouldPreferLocalOverCloud = <T>(
+  localValue: T,
+  cloudValue: T,
+  defaultValue: T,
+  cloudUpdatedAt?: string | null
+): boolean => {
+  if (isProbablyDefaultValue(localValue, cloudValue)) {
+    return false;
+  }
+
+  const localIsDefault = isProbablyDefaultValue(localValue, defaultValue);
+  const cloudIsDefault = isProbablyDefaultValue(cloudValue, defaultValue);
+
+  if (!localIsDefault && cloudIsDefault) return true;
+  if (localIsDefault && !cloudIsDefault) return false;
+
+  const localTs = extractMaxTimestamp(localValue);
+  const cloudTs = extractMaxTimestamp(cloudValue) ?? parseTimestamp(cloudUpdatedAt ?? undefined);
+
+  if (localTs !== null && cloudTs !== null) {
+    return localTs > cloudTs + 30_000;
+  }
+
+  if (localTs !== null && cloudTs === null) {
+    return true;
+  }
+
+  if (localTs === null && cloudTs !== null) {
+    return false;
+  }
+
+  if (Array.isArray(localValue) && Array.isArray(cloudValue) && localValue.length !== cloudValue.length) {
+    return localValue.length > cloudValue.length;
+  }
+
+  return false;
+};
+
 /**
  * Hybrid sync utility: reads from localStorage (cache), writes to both localStorage and Supabase
  * This provides offline-first experience with cloud sync
@@ -96,19 +177,19 @@ export class HybridSyncStore {
     }
 
     try {
+      const localValue = this.load(defaultValue);
       const { data, error } = await supabase
         .from(this.config.tableName)
-        .select('data')
+        .select('data, updated_at')
         .eq('user_id', userId)
         .maybeSingle();
 
       if (error) {
         console.warn(`Failed to sync from Supabase (${this.config.tableName}):`, error);
-        return this.load(defaultValue);
+        return localValue;
       }
 
       if (!data) {
-        const localValue = this.load(defaultValue);
         if (!isProbablyDefaultValue(localValue, defaultValue)) {
           // Seed cloud on first login for accounts that have only local data.
           // This avoids a "blank on new device" experience when users had data before signing in.
@@ -124,6 +205,22 @@ export class HybridSyncStore {
 
       // Parse and cache the data locally
       const parsed = JSON.parse(data.data) as T;
+
+      // If local looks newer than cloud, push local up instead of clobbering it with old cloud data.
+      if (
+        !isProbablyDefaultValue(localValue, defaultValue) &&
+        shouldPreferLocalOverCloud(localValue, parsed, defaultValue, data.updated_at)
+      ) {
+        try {
+          await this.syncToSupabase(localValue, userId);
+        } catch (mergeError) {
+          console.warn(`Failed to sync newer local data to Supabase (${this.config.tableName}):`, mergeError);
+        }
+
+        localStorage.setItem(this.config.storageKey, JSON.stringify(localValue));
+        return localValue;
+      }
+
       localStorage.setItem(this.config.storageKey, JSON.stringify(parsed));
       return parsed;
     } catch (err) {
