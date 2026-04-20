@@ -12,33 +12,43 @@ import { defaultJournalChecklistTemplates, type JournalChecklistTemplates } from
 import { defaultSettings } from '../settings/settingsStore';
 import { defaultWorkspaceState, type WorkspaceState } from '../workspace/workspaceStore';
 
+const FORCE_LOCAL_TO_CLOUD_KEY = 'trade-engine-force-cloud-seed';
+
 /**
  * Syncs all user data from Supabase to localStorage after login
  */
 export const syncUserDataOnLogin = async (userId: string): Promise<void> => {
   try {
     console.log('Syncing user data from Supabase...');
+    const forcePushLocal =
+      typeof window !== 'undefined' && window.localStorage.getItem(FORCE_LOCAL_TO_CLOUD_KEY) === '1';
+    const syncOptions = { forcePushLocal };
 
     // Sync all data types in parallel
     await Promise.all([
-      syncStores.tradeSessions.syncFromSupabase<TradeSessionRecord[]>(userId, []),
-      syncStores.journalPages.syncFromSupabase<JournalPageRecord[]>(userId, []),
-      syncStores.settings.syncFromSupabase<Settings>(userId, defaultSettings),
-      syncStores.tradeTagOptions.syncFromSupabase<TradeTagOptionsRecord>(userId, {}),
-      syncStores.tradeTagOverrides.syncFromSupabase<TradeTagOverrideRecord[]>(userId, []),
-      syncStores.tradeReviews.syncFromSupabase<TradeReviewRecord[]>(userId, []),
-      syncStores.historicalBars.syncFromSupabase<HistoricalBarSet[]>(userId, []),
+      syncStores.tradeSessions.syncFromSupabase<TradeSessionRecord[]>(userId, [], syncOptions),
+      syncStores.journalPages.syncFromSupabase<JournalPageRecord[]>(userId, [], syncOptions),
+      syncStores.settings.syncFromSupabase<Settings>(userId, defaultSettings, syncOptions),
+      syncStores.tradeTagOptions.syncFromSupabase<TradeTagOptionsRecord>(userId, {}, syncOptions),
+      syncStores.tradeTagOverrides.syncFromSupabase<TradeTagOverrideRecord[]>(userId, [], syncOptions),
+      syncStores.tradeReviews.syncFromSupabase<TradeReviewRecord[]>(userId, [], syncOptions),
+      syncStores.historicalBars.syncFromSupabase<HistoricalBarSet[]>(userId, [], syncOptions),
       syncStores.journalChecklistTemplates.syncFromSupabase<JournalChecklistTemplates>(
         userId,
-        defaultJournalChecklistTemplates()
+        defaultJournalChecklistTemplates(),
+        syncOptions
       ),
-      syncStores.workspaceState.syncFromSupabase<WorkspaceState>(userId, defaultWorkspaceState),
-      syncStores.tradeTagCatalog.syncFromSupabase(userId, {}),
-      syncStores.playbooks.syncFromSupabase<PlaybookRecord[]>(userId, []),
-      syncStores.libraryPages.syncFromSupabase<LibraryPageRecord[]>(userId, []),
-      syncStores.headlines.syncFromSupabase<Record<string, HeadlineItem[]>>(userId, {}),
-      syncStores.selectOptionAdditions.syncFromSupabase<Record<string, string[]>>(userId, {}),
+      syncStores.workspaceState.syncFromSupabase<WorkspaceState>(userId, defaultWorkspaceState, syncOptions),
+      syncStores.tradeTagCatalog.syncFromSupabase(userId, {}, syncOptions),
+      syncStores.playbooks.syncFromSupabase<PlaybookRecord[]>(userId, [], syncOptions),
+      syncStores.libraryPages.syncFromSupabase<LibraryPageRecord[]>(userId, [], syncOptions),
+      syncStores.headlines.syncFromSupabase<Record<string, HeadlineItem[]>>(userId, {}, syncOptions),
+      syncStores.selectOptionAdditions.syncFromSupabase<Record<string, string[]>>(userId, {}, syncOptions),
     ]);
+
+    if (forcePushLocal && typeof window !== 'undefined') {
+      window.localStorage.removeItem(FORCE_LOCAL_TO_CLOUD_KEY);
+    }
 
     console.log('User data synced successfully');
   } catch (err) {

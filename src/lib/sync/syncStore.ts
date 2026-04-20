@@ -6,6 +6,10 @@ export interface SyncStoreConfig {
   userId?: string;
 }
 
+export interface SyncFromSupabaseOptions {
+  forcePushLocal?: boolean;
+}
+
 const stableStringify = (value: unknown): string => {
   if (value === null || value === undefined) {
     return JSON.stringify(value);
@@ -171,7 +175,7 @@ export class HybridSyncStore {
    * Sync data from Supabase to localStorage
    * Used after login to pull cloud data
    */
-  async syncFromSupabase<T>(userId: string, defaultValue: T): Promise<T> {
+  async syncFromSupabase<T>(userId: string, defaultValue: T, options: SyncFromSupabaseOptions = {}): Promise<T> {
     if (!userId) {
       return this.load(defaultValue);
     }
@@ -209,7 +213,7 @@ export class HybridSyncStore {
       // If local looks newer than cloud, push local up instead of clobbering it with old cloud data.
       if (
         !isProbablyDefaultValue(localValue, defaultValue) &&
-        shouldPreferLocalOverCloud(localValue, parsed, defaultValue, data.updated_at)
+        (options.forcePushLocal || shouldPreferLocalOverCloud(localValue, parsed, defaultValue, data.updated_at))
       ) {
         try {
           await this.syncToSupabase(localValue, userId);
