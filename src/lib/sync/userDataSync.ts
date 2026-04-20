@@ -8,7 +8,9 @@ import type { HistoricalBarSet } from '../../types/chart';
 import type { PlaybookRecord } from '../../types/playbook';
 import type { LibraryPageRecord } from '../../types/library';
 import type { HeadlineItem } from '../../types/headline';
+import type { ReviewTemplates } from '../../types/libraryReview';
 import { defaultJournalChecklistTemplates, type JournalChecklistTemplates } from '../../lib/journal/journalTemplateStore';
+import { defaultReviewTemplates } from '../review/reviewTemplateStore';
 import { defaultSettings } from '../settings/settingsStore';
 import { defaultWorkspaceState, type WorkspaceState } from '../workspace/workspaceStore';
 
@@ -44,6 +46,7 @@ export const syncUserDataOnLogin = async (userId: string): Promise<void> => {
       syncStores.libraryPages.syncFromSupabase<LibraryPageRecord[]>(userId, [], syncOptions),
       syncStores.headlines.syncFromSupabase<Record<string, HeadlineItem[]>>(userId, {}, syncOptions),
       syncStores.selectOptionAdditions.syncFromSupabase<Record<string, string[]>>(userId, {}, syncOptions),
+      syncStores.reviewTemplates.syncFromSupabase<ReviewTemplates>(userId, defaultReviewTemplates(), syncOptions),
     ]);
 
     if (forcePushLocal && typeof window !== 'undefined') {

@@ -8,6 +8,7 @@ export interface SyncStoreConfig {
 
 export interface SyncFromSupabaseOptions {
   forcePushLocal?: boolean;
+  preferCloud?: boolean;
 }
 
 const stableStringify = (value: unknown): string => {
@@ -210,10 +211,12 @@ export class HybridSyncStore {
       // Parse and cache the data locally
       const parsed = JSON.parse(data.data) as T;
 
-      // If local looks newer than cloud, push local up instead of clobbering it with old cloud data.
+      // Normal login should make the cloud copy authoritative so a stale device
+      // does not push old localStorage back over newer saved data.
       if (
         !isProbablyDefaultValue(localValue, defaultValue) &&
-        (options.forcePushLocal || shouldPreferLocalOverCloud(localValue, parsed, defaultValue, data.updated_at))
+        (options.forcePushLocal ||
+          (options.preferCloud === false && shouldPreferLocalOverCloud(localValue, parsed, defaultValue, data.updated_at)))
       ) {
         try {
           await this.syncToSupabase(localValue, userId);

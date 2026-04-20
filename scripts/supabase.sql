@@ -119,6 +119,12 @@ create table if not exists public.user_select_option_additions (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.user_review_templates (
+  user_id uuid primary key references auth.users (id) on delete cascade,
+  data text not null,
+  updated_at timestamptz not null default now()
+);
+
 -- Enable RLS + per-user policies for each blob table.
 -- (Idempotent: policies are wrapped in `do $$` blocks.)
 
@@ -139,7 +145,8 @@ declare
     'user_playbooks',
     'user_library_pages',
     'user_headlines',
-    'user_select_option_additions'
+    'user_select_option_additions',
+    'user_review_templates'
   ];
 begin
   foreach t in array tables loop
