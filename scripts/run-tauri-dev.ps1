@@ -52,7 +52,7 @@ if (-not $cargoBinaryPath) {
 $nodePath = Split-Path -Parent $npmPath
 $cargoPath = Split-Path -Parent $cargoBinaryPath
 
-$command = "`"$vcvarsPath`" && set `"PATH=$nodePath;$cargoPath;%PATH%`" && cd /d `"$projectPath`" && npm.cmd run tauri dev"
+$command = "`"$vcvarsPath`" && set `"PATH=$nodePath;$cargoPath;%PATH%`" && cd /d `"$projectPath`" && npm.cmd run tauri -- dev --no-watch"
 
 cmd /c $command
 
