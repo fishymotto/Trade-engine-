@@ -6,6 +6,32 @@ export interface SyncStoreConfig {
   userId?: string;
 }
 
+const stableStringify = (value: unknown): string => {
+  if (value === null || value === undefined) {
+    return JSON.stringify(value);
+  }
+
+  if (typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(',')}]`;
+  }
+
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`;
+};
+
+const isProbablyDefaultValue = <T>(value: T, defaultValue: T): boolean => {
+  try {
+    return stableStringify(value) === stableStringify(defaultValue);
+  } catch {
+    return false;
+  }
+};
+
 /**
  * Hybrid sync utility: reads from localStorage (cache), writes to both localStorage and Supabase
  * This provides offline-first experience with cloud sync
@@ -82,7 +108,18 @@ export class HybridSyncStore {
       }
 
       if (!data) {
-        return this.load(defaultValue);
+        const localValue = this.load(defaultValue);
+        if (!isProbablyDefaultValue(localValue, defaultValue)) {
+          // Seed cloud on first login for accounts that have only local data.
+          // This avoids a "blank on new device" experience when users had data before signing in.
+          try {
+            await this.syncToSupabase(localValue, userId);
+          } catch (seedError) {
+            console.warn(`Failed to seed Supabase (${this.config.tableName}):`, seedError);
+          }
+        }
+
+        return localValue;
       }
 
       // Parse and cache the data locally
