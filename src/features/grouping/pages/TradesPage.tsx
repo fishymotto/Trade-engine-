@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DateFilterPopover } from "../../../components/DateFilterPopover";
 import { FilterSelect } from "../../../components/FilterSelect";
 import { PageHero } from "../../../components/PageHero";
@@ -168,6 +168,9 @@ export const TradesPage = ({
     }
   };
 
+  const getToneIndex = (value: string): number =>
+    value.split("").reduce((sum, character) => sum + character.charCodeAt(0), 0) % 6;
+
   const selectTradeAndReveal = (trade: EditableTradeRow) => {
     setSelectedTradeId(trade.id);
     setSelectedTradeDateFilterStart(trade.tradeDate);
@@ -336,47 +339,62 @@ export const TradesPage = ({
     );
   }, [databaseTrades]);
 
+  const matchesReviewSliceFilters = useCallback(
+    (trade: EditableTradeRow) => {
+      if (selectedTradeDateFilterStart && trade.tradeDate < selectedTradeDateFilterStart) {
+        return false;
+      }
+
+      if (selectedTradeDateFilterEnd && trade.tradeDate > selectedTradeDateFilterEnd) {
+        return false;
+      }
+
+      if (selectedPlaybookFilter !== "all" && (trade.setups[0] ?? "") !== selectedPlaybookFilter) {
+        return false;
+      }
+
+      if (selectedSymbolFilter !== "all" && trade.symbol !== selectedSymbolFilter) {
+        return false;
+      }
+
+      if (selectedStatusFilter !== "all" && trade.status !== selectedStatusFilter) {
+        return false;
+      }
+
+      if (selectedGameFilter !== "all" && trade.game !== selectedGameFilter) {
+        return false;
+      }
+
+      if (selectedExecutionFilter !== "all" && !trade.execution.includes(selectedExecutionFilter)) {
+        return false;
+      }
+
+      if (showUntaggedPlaybookOnly && trade.setups[0]) {
+        return false;
+      }
+
+      if (showUntaggedMistakesOnly && trade.mistakes[0]) {
+        return false;
+      }
+
+      return true;
+    },
+    [
+      selectedExecutionFilter,
+      selectedGameFilter,
+      selectedPlaybookFilter,
+      selectedStatusFilter,
+      selectedSymbolFilter,
+      selectedTradeDateFilterEnd,
+      selectedTradeDateFilterStart,
+      showUntaggedMistakesOnly,
+      showUntaggedPlaybookOnly
+    ]
+  );
+
   const filteredTrades = useMemo(() => {
     return [...databaseTrades]
-      .filter((trade) => {
-        if (selectedTradeDateFilterStart && trade.tradeDate < selectedTradeDateFilterStart) {
-          return false;
-        }
-
-        if (selectedTradeDateFilterEnd && trade.tradeDate > selectedTradeDateFilterEnd) {
-          return false;
-        }
-
-        if (selectedPlaybookFilter !== "all" && (trade.setups[0] ?? "") !== selectedPlaybookFilter) {
-          return false;
-        }
-
-        if (selectedSymbolFilter !== "all" && trade.symbol !== selectedSymbolFilter) {
-          return false;
-        }
-
-        if (selectedStatusFilter !== "all" && trade.status !== selectedStatusFilter) {
-          return false;
-        }
-
-        if (selectedGameFilter !== "all" && trade.game !== selectedGameFilter) {
-          return false;
-        }
-
-        if (selectedExecutionFilter !== "all" && !trade.execution.includes(selectedExecutionFilter)) {
-          return false;
-        }
-
-        if (showUntaggedPlaybookOnly && trade.setups[0]) {
-          return false;
-        }
-
-        if (showUntaggedMistakesOnly && trade.mistakes[0]) {
-          return false;
-        }
-
-        return true;
-      })
+      .filter(matchesReviewSliceFilters)
       .sort(
         (left, right) =>
           right.tradeDate.localeCompare(left.tradeDate) ||
@@ -385,18 +403,7 @@ export const TradesPage = ({
           left.symbol.localeCompare(right.symbol) ||
           left.name.localeCompare(right.name)
       );
-  }, [
-    databaseTrades,
-    selectedExecutionFilter,
-    selectedGameFilter,
-    selectedPlaybookFilter,
-    selectedStatusFilter,
-    selectedSymbolFilter,
-    selectedTradeDateFilterEnd,
-    selectedTradeDateFilterStart,
-    showUntaggedMistakesOnly,
-    showUntaggedPlaybookOnly
-  ]);
+  }, [databaseTrades, matchesReviewSliceFilters]);
 
   const selectedTrade = useMemo(
     () =>
@@ -479,43 +486,163 @@ export const TradesPage = ({
   };
 
   const relatedTrades = useMemo(() => {
-    if (!selectedTrade) {
+    const selectedTradeIdValue = selectedTrade?.id ?? "";
+    const relationshipPlaybook =
+      selectedPlaybookFilter !== "all" ? selectedPlaybookFilter : (selectedTrade?.setups[0] ?? "");
+
+    let matchingTrades: EditableTradeRow[] = [];
+
+    if (relationshipPlaybook) {
+      matchingTrades = databaseTrades.filter(
+        (trade) => trade.id !== selectedTradeIdValue && trade.setups.includes(relationshipPlaybook)
+      );
+    } else if (selectedTrade) {
+      matchingTrades = databaseTrades.filter(
+        (trade) =>
+          trade.tradeDate === selectedTrade.tradeDate &&
+          trade.symbol === selectedTrade.symbol &&
+          trade.id !== selectedTrade.id
+      );
+    } else if (selectedSymbolFilter !== "all") {
+      matchingTrades = databaseTrades.filter(
+        (trade) => trade.id !== selectedTradeIdValue && trade.symbol === selectedSymbolFilter
+      );
+    } else {
       return [];
     }
 
-    const selectedPlaybook = selectedTrade.setups[0] ?? "";
-    const matchingTrades = selectedPlaybook
-      ? databaseTrades.filter(
-          (trade) =>
-            trade.id !== selectedTrade.id &&
-            trade.setups.includes(selectedPlaybook)
-        )
-      : databaseTrades.filter(
-          (trade) =>
-            trade.tradeDate === selectedTrade.tradeDate &&
-            trade.symbol === selectedTrade.symbol &&
-            trade.id !== selectedTrade.id
-        );
-
-    return matchingTrades.sort(
+    return matchingTrades
+      .filter(matchesReviewSliceFilters)
+      .sort(
       (left, right) =>
         right.tradeDate.localeCompare(left.tradeDate) ||
         left.openTime.localeCompare(right.openTime) ||
         left.closeTime.localeCompare(right.closeTime) ||
         left.name.localeCompare(right.name)
     );
-  }, [databaseTrades, selectedTrade]);
+  }, [databaseTrades, matchesReviewSliceFilters, selectedPlaybookFilter, selectedSymbolFilter, selectedTrade]);
 
-  const relatedTradesDescription = selectedTrade?.setups[0]
-    ? `Other trades tagged ${selectedTrade.setups[0]}.`
-    : "No playbook tagged yet, showing other trades from this symbol and date.";
+  const relatedTradesDescription =
+    selectedPlaybookFilter !== "all"
+      ? `Other trades tagged ${selectedPlaybookFilter}.`
+      : selectedTrade?.setups[0]
+        ? `Other trades tagged ${selectedTrade.setups[0]}.`
+        : selectedTrade
+          ? "No playbook tagged yet, showing other trades from this symbol and date."
+          : selectedSymbolFilter !== "all"
+            ? `Other trades for ${selectedSymbolFilter} in the current slice.`
+            : "";
 
   return (
     <main className="page-shell">
       <PageHero
         eyebrow="Trades"
-        title="Trade Review Workspace"
-        description="Review saved trades, clean tags, and inspect chart context from the active slice."
+        title="Trade Review"
+        className="page-hero-trades"
+        content={
+          <section className="trade-view-filter-panel page-hero-review-slice-embedded">
+            <div className="trade-view-filter-header">
+              <div className="panel-header">
+                <WorkspaceIcon icon="filter" alt="Trade filters icon" className="panel-header-icon" />
+                <h2>Review Slice</h2>
+              </div>
+              <button type="button" className="mini-action" onClick={clearFilters}>
+                Clear All
+              </button>
+            </div>
+            <div className="trade-view-filter-grid trade-view-filter-grid-reports">
+              <label className="trade-filter-field">
+                <span>Date</span>
+                <DateFilterPopover
+                  mode="range"
+                  startValue={selectedTradeDateFilterStart}
+                  endValue={selectedTradeDateFilterEnd}
+                  onRangeChange={(startValue, endValue) => {
+                    setSelectedTradeDateFilterStart(startValue);
+                    setSelectedTradeDateFilterEnd(endValue);
+                  }}
+                  availableDates={tradeDateOptions}
+                  allLabel="All Dates"
+                />
+              </label>
+              <label className="trade-filter-field">
+                <span>Playbook</span>
+                <FilterSelect
+                  ariaLabel="Trade playbook filter"
+                  value={selectedPlaybookFilter}
+                  onChange={setSelectedPlaybookFilter}
+                  options={[
+                    { label: "All Playbooks", value: "all" },
+                    ...playbookOptions.map((playbook) => ({ label: playbook, value: playbook }))
+                  ]}
+                />
+              </label>
+              <label className="trade-filter-field">
+                <span>Symbol</span>
+                <FilterSelect
+                  ariaLabel="Trade symbol filter"
+                  value={selectedSymbolFilter}
+                  onChange={setSelectedSymbolFilter}
+                  options={[
+                    { label: "All Symbols", value: "all" },
+                    ...symbolOptions.map((symbol) => ({ label: symbol, value: symbol }))
+                  ]}
+                />
+              </label>
+              <label className="trade-filter-field">
+                <span>Status</span>
+                <FilterSelect
+                  ariaLabel="Trade status filter"
+                  value={selectedStatusFilter}
+                  onChange={setSelectedStatusFilter}
+                  options={[
+                    { label: "All Status", value: "all" },
+                    ...statusOptions.map((status) => ({ label: status, value: status }))
+                  ]}
+                />
+              </label>
+              <label className="trade-filter-field">
+                <span>Game</span>
+                <FilterSelect
+                  ariaLabel="Trade game filter"
+                  value={selectedGameFilter}
+                  onChange={setSelectedGameFilter}
+                  options={[
+                    { label: "All Games", value: "all" },
+                    ...gameOptions.map((game) => ({ label: game, value: game }))
+                  ]}
+                />
+              </label>
+              <label className="trade-filter-field">
+                <span>Execution</span>
+                <FilterSelect
+                  ariaLabel="Trade execution filter"
+                  value={selectedExecutionFilter}
+                  onChange={setSelectedExecutionFilter}
+                  options={[
+                    { label: "All Execution", value: "all" },
+                    ...executionOptions.map((execution) => ({ label: execution, value: execution }))
+                  ]}
+                />
+              </label>
+            </div>
+            <div className="active-filter-chip-row dashboard-review-chip-row" aria-label="Active trade slice">
+              {activeFilters.length > 0 ? (
+                activeFilters.map((filter) => (
+                  <span key={filter.key} className="active-filter-chip">
+                    <strong>{filter.label}</strong>
+                    <span>{filter.value}</span>
+                  </span>
+                ))
+              ) : (
+                <span className="active-filter-chip active-filter-chip-muted">
+                  <strong>Slice</strong>
+                  <span>All saved trades</span>
+                </span>
+              )}
+            </div>
+          </section>
+        }
       >
         <div className="page-hero-stat-grid">
           <div className="page-hero-stat-card">
@@ -536,108 +663,6 @@ export const TradesPage = ({
           </div>
         </div>
       </PageHero>
-      <section className="placeholder-panel trade-view-filter-panel">
-        <div className="trade-view-filter-header">
-          <div className="panel-header">
-            <WorkspaceIcon icon="filter" alt="Trade filters icon" className="panel-header-icon" />
-            <h2>Review Slice</h2>
-          </div>
-          <button type="button" className="mini-action" onClick={clearFilters}>
-            Clear All
-          </button>
-        </div>
-        <div className="trade-view-filter-grid trade-view-filter-grid-reports">
-          <label className="trade-filter-field">
-            <span>Date</span>
-            <DateFilterPopover
-              mode="range"
-              startValue={selectedTradeDateFilterStart}
-              endValue={selectedTradeDateFilterEnd}
-              onRangeChange={(startValue, endValue) => {
-                setSelectedTradeDateFilterStart(startValue);
-                setSelectedTradeDateFilterEnd(endValue);
-              }}
-              availableDates={tradeDateOptions}
-              allLabel="All Dates"
-            />
-          </label>
-          <label className="trade-filter-field">
-            <span>Playbook</span>
-            <FilterSelect
-              ariaLabel="Trade playbook filter"
-              value={selectedPlaybookFilter}
-              onChange={setSelectedPlaybookFilter}
-              options={[
-                { label: "All Playbooks", value: "all" },
-                ...playbookOptions.map((playbook) => ({ label: playbook, value: playbook }))
-              ]}
-            />
-          </label>
-          <label className="trade-filter-field">
-            <span>Symbol</span>
-            <FilterSelect
-              ariaLabel="Trade symbol filter"
-              value={selectedSymbolFilter}
-              onChange={setSelectedSymbolFilter}
-              options={[
-                { label: "All Symbols", value: "all" },
-                ...symbolOptions.map((symbol) => ({ label: symbol, value: symbol }))
-              ]}
-            />
-          </label>
-          <label className="trade-filter-field">
-            <span>Status</span>
-            <FilterSelect
-              ariaLabel="Trade status filter"
-              value={selectedStatusFilter}
-              onChange={setSelectedStatusFilter}
-              options={[
-                { label: "All Status", value: "all" },
-                ...statusOptions.map((status) => ({ label: status, value: status }))
-              ]}
-            />
-          </label>
-          <label className="trade-filter-field">
-            <span>Game</span>
-            <FilterSelect
-              ariaLabel="Trade game filter"
-              value={selectedGameFilter}
-              onChange={setSelectedGameFilter}
-              options={[
-                { label: "All Games", value: "all" },
-                ...gameOptions.map((game) => ({ label: game, value: game }))
-              ]}
-            />
-          </label>
-          <label className="trade-filter-field">
-            <span>Execution</span>
-            <FilterSelect
-              ariaLabel="Trade execution filter"
-              value={selectedExecutionFilter}
-              onChange={setSelectedExecutionFilter}
-              options={[
-                { label: "All Execution", value: "all" },
-                ...executionOptions.map((execution) => ({ label: execution, value: execution }))
-              ]}
-            />
-          </label>
-        </div>
-        <div className="active-filter-chip-row dashboard-review-chip-row" aria-label="Active trade slice">
-          {activeFilters.length > 0 ? (
-            activeFilters.map((filter) => (
-              <span key={filter.key} className="active-filter-chip">
-                <strong>{filter.label}</strong>
-                <span>{filter.value}</span>
-              </span>
-            ))
-          ) : (
-            <span className="active-filter-chip active-filter-chip-muted">
-              <strong>Slice</strong>
-              <span>All saved trades</span>
-            </span>
-          )}
-        </div>
-      </section>
       <section className="trades-review-grid trades-review-grid-advanced">
         <article className="placeholder-panel chart-panel chart-panel-wide">
           <div className="chart-panel-header">
@@ -694,6 +719,10 @@ export const TradesPage = ({
           {selectedTrade ? (
             <>
               <div className="trade-quick-tags" aria-label="Trade tag summary">
+                <div className="trade-quick-tag">
+                  <span className="trade-quick-tag-label">Symbol</span>
+                  <strong className="trade-quick-tag-value">{selectedTrade.symbol}</strong>
+                </div>
                 <button
                   type="button"
                   className={`trade-quick-tag trade-quick-tag-button ${selectedTrade.game ? "" : "trade-quick-tag-empty"}`}
@@ -721,7 +750,7 @@ export const TradesPage = ({
                   className={`trade-quick-tag trade-quick-tag-button ${selectedTrade.mistakes.length > 0 ? "" : "trade-quick-tag-empty"}`}
                   onClick={() => {
                     setQuickTagEditorField("mistake");
-                    setQuickTagEditorSearchQuery("");
+                    setQuickTagEditorSearchQuery(selectedTrade.mistakes.length === 1 ? selectedTrade.mistakes[0] ?? "" : "");
                   }}
                 >
                   <span className="trade-quick-tag-label">Mistakes</span>
@@ -734,6 +763,14 @@ export const TradesPage = ({
                 <div className={`trade-quick-tag ${selectedTrade.gateways.length > 0 ? "" : "trade-quick-tag-empty"}`}>
                   <span className="trade-quick-tag-label">Gateways</span>
                   <strong className="trade-quick-tag-value">{selectedTrade.gateways.join(", ") || "None"}</strong>
+                </div>
+                <div
+                  className={`trade-quick-tag trade-quick-tag-status ${
+                    selectedTrade.status === "Win" ? "trade-quick-tag-status-win" : "trade-quick-tag-status-loss"
+                  }`}
+                >
+                  <span className="trade-quick-tag-label">Win / Loss</span>
+                  <strong className="trade-quick-tag-value">{selectedTrade.status}</strong>
                 </div>
                 <button
                   type="button"
@@ -758,9 +795,12 @@ export const TradesPage = ({
                   <span>{selectedTrade.openTime} to {selectedTrade.closeTime}</span>
                 </div>
                 <div>
+                  <strong>Hold Time</strong>
+                  <span>{selectedTrade.holdTime}</span>
+                </div>
+                <div>
                   <strong>Short / Long</strong>
                   <span>{selectedTrade.side}</span>
-                  <span>{selectedTrade.status}</span>
                 </div>
                 <div>
                   <strong>Size</strong>
@@ -843,7 +883,7 @@ export const TradesPage = ({
                         <span className="trade-chart-pane-eyebrow">Context</span>
                         <strong>Day View</strong>
                       </div>
-                      <span>{selectedTrade.symbol} Â· {dayChartInterval}</span>
+                      <span>{selectedTrade.symbol} · {dayChartInterval}</span>
                     </div>
                     <TradeChart
                       bars={
@@ -921,26 +961,21 @@ export const TradesPage = ({
             <h2>Related Trades</h2>
           </div>
           {selectedTrade ? <span className="related-trades-context">{relatedTradesDescription}</span> : null}
-          {selectedTrade && relatedTrades.length > 0 ? (
-            <div className="related-trade-list">
-              {relatedTrades.map((trade) => (
-                <button
-                  key={trade.id}
-                  type="button"
-                  className="related-trade-item"
-                  onClick={() => selectTradeAndReveal(trade)}
-                >
-                  <strong>{trade.name}</strong>
-                  <span>{trade.tradeDate} · {trade.openTime} to {trade.closeTime}</span>
-                  <span>{trade.netPnlUsd >= 0 ? "+" : ""}${trade.netPnlUsd.toFixed(2)}</span>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <span className="empty-inline-state">
-              {selectedTrade ? "No other trades match this relationship yet." : "Select a trade to compare related setups."}
-            </span>
-          )}
+          <PreviewTable
+            trades={relatedTrades}
+            tagOptionsByField={tagOptionsByField}
+            selectedTradeId={selectedTradeId}
+            showSelection={false}
+            enableTagEditing
+            onSelectTrade={(trade) => selectTradeAndReveal(trade)}
+            onUpdateTradeTag={onUpdateTradeTag}
+            onCreateTradeTagOption={onCreateTradeTagOption}
+            emptyStateLabel={
+              selectedTrade
+                ? "No other trades match this relationship in the current slice."
+                : "Select a trade to compare related setups."
+            }
+          />
         </article>
         <article className="placeholder-panel trade-review-dock trade-review-bottom">
           <div className="panel-header">
@@ -1017,7 +1052,36 @@ export const TradesPage = ({
               <div className="inspector-card">
                 <WorkspaceIcon icon="checklist" alt="Mistakes icon" className="inspector-card-icon" />
                 <strong>Mistakes</strong>
-                <span>{selectedTrade.mistakes.join(", ") || "None"}</span>
+                {selectedTrade.mistakes.length > 0 ? (
+                  <div className="inspector-tag-row">
+                    {selectedTrade.mistakes.map((mistake) => (
+                      <button
+                        key={mistake}
+                        type="button"
+                        className="inspector-tag-pill"
+                        onClick={() => {
+                          setQuickTagEditorField("mistake");
+                          setQuickTagEditorSearchQuery(mistake);
+                        }}
+                      >
+                        <span className={`tag-option-pill tag-option-pill-${getToneIndex(mistake)}`}>
+                          {mistake}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="inspector-tag-empty-link"
+                    onClick={() => {
+                      setQuickTagEditorField("mistake");
+                      setQuickTagEditorSearchQuery("");
+                    }}
+                  >
+                    Add mistake
+                  </button>
+                )}
               </div>
             </div>
           ) : (

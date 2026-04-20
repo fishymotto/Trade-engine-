@@ -608,14 +608,115 @@ export const DashboardPage = ({
   return (
     <main className="page-shell">
       <PageHero
-        eyebrow="Dashboard"
-        title="Trading Workspace Overview"
-        description={`End-of-day review for ${getDashboardRangeLabel(
-          selectedTradeDateFilterStart,
-          selectedTradeDateFilterEnd
-        ).toLowerCase()}.`}
+        eyebrow="Overview"
+        title="Dashboard"
+        className="page-hero-dashboard"
+        content={
+          <section className="trade-view-filter-panel page-hero-review-slice-embedded">
+            <div className="trade-view-filter-header">
+              <div className="panel-header">
+                <WorkspaceIcon icon="filter" alt="Dashboard filters icon" className="panel-header-icon" />
+                <h2>Review Slice</h2>
+              </div>
+              <button type="button" className="mini-action" onClick={clearFilters}>
+                Clear All
+              </button>
+            </div>
+            <div className="trade-view-filter-grid trade-view-filter-grid-reports">
+              <label className="trade-filter-field">
+                <span>Date</span>
+                <DateFilterPopover
+                  mode="range"
+                  startValue={selectedTradeDateFilterStart}
+                  endValue={selectedTradeDateFilterEnd}
+                  onRangeChange={(startValue, endValue) => {
+                    setSelectedTradeDateFilterStart(startValue);
+                    setSelectedTradeDateFilterEnd(endValue);
+                  }}
+                  availableDates={tradeDateOptions}
+                  allLabel="All Dates"
+                />
+              </label>
+              <label className="trade-filter-field">
+                <span>Playbook</span>
+                <FilterSelect
+                  ariaLabel="Dashboard playbook filter"
+                  value={selectedPlaybookFilter}
+                  onChange={setSelectedPlaybookFilter}
+                  options={[
+                    { label: "All Playbooks", value: "all" },
+                    ...playbookOptions.map((playbook) => ({ label: playbook, value: playbook }))
+                  ]}
+                />
+              </label>
+              <label className="trade-filter-field">
+                <span>Symbol</span>
+                <FilterSelect
+                  ariaLabel="Dashboard symbol filter"
+                  value={selectedSymbolFilter}
+                  onChange={setSelectedSymbolFilter}
+                  options={[
+                    { label: "All Symbols", value: "all" },
+                    ...symbolOptions.map((symbol) => ({ label: symbol, value: symbol }))
+                  ]}
+                />
+              </label>
+              <label className="trade-filter-field">
+                <span>Status</span>
+                <FilterSelect
+                  ariaLabel="Dashboard status filter"
+                  value={selectedStatusFilter}
+                  onChange={setSelectedStatusFilter}
+                  options={[
+                    { label: "All Status", value: "all" },
+                    ...statusOptions.map((status) => ({ label: status, value: status }))
+                  ]}
+                />
+              </label>
+              <label className="trade-filter-field">
+                <span>Game</span>
+                <FilterSelect
+                  ariaLabel="Dashboard game filter"
+                  value={selectedGameFilter}
+                  onChange={setSelectedGameFilter}
+                  options={[
+                    { label: "All Games", value: "all" },
+                    ...gameOptions.map((game) => ({ label: game, value: game }))
+                  ]}
+                />
+              </label>
+              <label className="trade-filter-field">
+                <span>Execution</span>
+                <FilterSelect
+                  ariaLabel="Dashboard execution filter"
+                  value={selectedExecutionFilter}
+                  onChange={setSelectedExecutionFilter}
+                  options={[
+                    { label: "All Execution", value: "all" },
+                    ...executionOptions.map((execution) => ({ label: execution, value: execution }))
+                  ]}
+                />
+              </label>
+            </div>
+            <div className="active-filter-chip-row dashboard-review-chip-row" aria-label="Active review slice">
+              {activeFilters.length > 0 ? (
+                activeFilters.map((filter) => (
+                <span key={filter.key} className="active-filter-chip">
+                  <strong>{filter.label}</strong>
+                  <span>{filter.value}</span>
+                </span>
+                ))
+              ) : (
+                <span className="active-filter-chip active-filter-chip-muted">
+                  <strong>Slice</strong>
+                  <span>All saved trades</span>
+                </span>
+              )}
+            </div>
+          </section>
+        }
       >
-        <div className="page-hero-stat-grid">
+        <div className="page-hero-stat-grid page-hero-stat-grid-dashboard">
           <div className="page-hero-stat-card">
             <span>Range</span>
             <strong>{getDashboardRangeLabel(selectedTradeDateFilterStart, selectedTradeDateFilterEnd)}</strong>
@@ -629,113 +730,19 @@ export const DashboardPage = ({
             <strong>{formatSignedMoney(overallSummary.totalNetPnl)}</strong>
           </div>
           <div className="page-hero-stat-card">
+            <span>Gross P&L</span>
+            <strong>{formatSignedMoney(overallSummary.totalGrossPnl)}</strong>
+          </div>
+          <div className="page-hero-stat-card">
             <span>Win Rate</span>
             <strong>{overallSummary.winRate.toFixed(1)}%</strong>
           </div>
+          <div className="page-hero-stat-card">
+            <span>Shares Traded</span>
+            <strong>{overallSummary.totalSharesTraded.toLocaleString()}</strong>
+          </div>
         </div>
       </PageHero>
-      <section className="placeholder-panel trade-view-filter-panel">
-        <div className="trade-view-filter-header">
-          <div className="panel-header">
-            <WorkspaceIcon icon="filter" alt="Dashboard filters icon" className="panel-header-icon" />
-            <h2>Review Slice</h2>
-          </div>
-          <button type="button" className="mini-action" onClick={clearFilters}>
-            Clear All
-          </button>
-        </div>
-        <div className="trade-view-filter-grid trade-view-filter-grid-reports">
-          <label className="trade-filter-field">
-            <span>Date</span>
-            <DateFilterPopover
-              mode="range"
-              startValue={selectedTradeDateFilterStart}
-              endValue={selectedTradeDateFilterEnd}
-              onRangeChange={(startValue, endValue) => {
-                setSelectedTradeDateFilterStart(startValue);
-                setSelectedTradeDateFilterEnd(endValue);
-              }}
-              availableDates={tradeDateOptions}
-              allLabel="All Dates"
-            />
-          </label>
-          <label className="trade-filter-field">
-            <span>Playbook</span>
-            <FilterSelect
-              ariaLabel="Dashboard playbook filter"
-              value={selectedPlaybookFilter}
-              onChange={setSelectedPlaybookFilter}
-              options={[
-                { label: "All Playbooks", value: "all" },
-                ...playbookOptions.map((playbook) => ({ label: playbook, value: playbook }))
-              ]}
-            />
-          </label>
-          <label className="trade-filter-field">
-            <span>Symbol</span>
-            <FilterSelect
-              ariaLabel="Dashboard symbol filter"
-              value={selectedSymbolFilter}
-              onChange={setSelectedSymbolFilter}
-              options={[
-                { label: "All Symbols", value: "all" },
-                ...symbolOptions.map((symbol) => ({ label: symbol, value: symbol }))
-              ]}
-            />
-          </label>
-          <label className="trade-filter-field">
-            <span>Status</span>
-            <FilterSelect
-              ariaLabel="Dashboard status filter"
-              value={selectedStatusFilter}
-              onChange={setSelectedStatusFilter}
-              options={[
-                { label: "All Status", value: "all" },
-                ...statusOptions.map((status) => ({ label: status, value: status }))
-              ]}
-            />
-          </label>
-          <label className="trade-filter-field">
-            <span>Game</span>
-            <FilterSelect
-              ariaLabel="Dashboard game filter"
-              value={selectedGameFilter}
-              onChange={setSelectedGameFilter}
-              options={[
-                { label: "All Games", value: "all" },
-                ...gameOptions.map((game) => ({ label: game, value: game }))
-              ]}
-            />
-          </label>
-          <label className="trade-filter-field">
-            <span>Execution</span>
-            <FilterSelect
-              ariaLabel="Dashboard execution filter"
-              value={selectedExecutionFilter}
-              onChange={setSelectedExecutionFilter}
-              options={[
-                { label: "All Execution", value: "all" },
-                ...executionOptions.map((execution) => ({ label: execution, value: execution }))
-              ]}
-            />
-          </label>
-        </div>
-        <div className="active-filter-chip-row dashboard-review-chip-row" aria-label="Active review slice">
-          {activeFilters.length > 0 ? (
-            activeFilters.map((filter) => (
-            <span key={filter.key} className="active-filter-chip">
-              <strong>{filter.label}</strong>
-              <span>{filter.value}</span>
-            </span>
-            ))
-          ) : (
-            <span className="active-filter-chip active-filter-chip-muted">
-              <strong>Slice</strong>
-              <span>All saved trades</span>
-            </span>
-          )}
-        </div>
-      </section>
       <section className="dashboard-summary-grid">
         <DashboardSummaryCard
           title="Recent Session"

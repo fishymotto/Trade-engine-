@@ -3,6 +3,7 @@ import type { JSONContent } from "@tiptap/core";
 export type LibraryCollectionId =
   | "idea-inbox"
   | "book-club"
+  | "quotes"
   | "trading-notes"
   | "weekly-review"
   | "monthly-review"

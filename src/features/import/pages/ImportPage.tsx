@@ -16,7 +16,6 @@ interface ImportPageProps {
   onExport: () => Promise<void>;
   onImport: () => Promise<void>;
   onClear: () => void;
-  onSettings: () => void;
   tagOptionsByField: Record<EditableTradeTagField, string[]>;
   onUpdateTradeTag: (trade: EditableTradeRow, field: EditableTradeTagField, value: string | string[] | null) => void;
   onCreateTradeTagOption: (field: EditableTradeTagField, rawValue: string) => void;
@@ -32,7 +31,6 @@ export const ImportPage = ({
   onExport,
   onImport,
   onClear,
-  onSettings,
   tagOptionsByField,
   onUpdateTradeTag,
   onCreateTradeTagOption
@@ -74,9 +72,6 @@ export const ImportPage = ({
         </Button>
         <Button variant="ghost" disabled={busy} onClick={onClear}>
           Clear File
-        </Button>
-        <Button variant="ghost" disabled={busy} onClick={onSettings}>
-          Settings
         </Button>
       </div>
       <PreviewTable

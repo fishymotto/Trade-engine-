@@ -8,12 +8,16 @@ interface PreviewTableProps {
   trades: EditableTradeRow[];
   tagOptionsByField: Record<EditableTradeTagField, string[]>;
   selectedTradeId?: string;
-  selectedTradeIds: string[];
   onSelectTrade?: (trade: EditableTradeRow) => void;
-  onToggleTradeSelection: (tradeId: string) => void;
-  onToggleSelectAll: (tradeIds: string[]) => void;
-  onUpdateTradeTag: (trade: EditableTradeRow, field: EditableTradeTagField, value: string | string[] | null) => void;
-  onCreateTradeTagOption: (field: EditableTradeTagField, value: string) => void;
+  showSelection?: boolean;
+  selectedTradeIds?: string[];
+  onToggleTradeSelection?: (tradeId: string) => void;
+  onToggleSelectAll?: (tradeIds: string[]) => void;
+  enableTagEditing?: boolean;
+  onUpdateTradeTag?: (trade: EditableTradeRow, field: EditableTradeTagField, value: string | string[] | null) => void;
+  onCreateTradeTagOption?: (field: EditableTradeTagField, value: string) => void;
+  visibleColumnKeys?: PreviewSortKey[];
+  emptyStateLabel?: string;
 }
 
 type CellEditorState = {
@@ -188,23 +192,46 @@ export const PreviewTable = ({
   trades,
   tagOptionsByField,
   selectedTradeId,
-  selectedTradeIds,
   onSelectTrade,
+  showSelection = true,
+  selectedTradeIds,
   onToggleTradeSelection,
   onToggleSelectAll,
+  enableTagEditing = true,
   onUpdateTradeTag,
-  onCreateTradeTagOption
+  onCreateTradeTagOption,
+  visibleColumnKeys,
+  emptyStateLabel = "No trades match the current filters."
 }: PreviewTableProps) => {
   const [cellEditor, setCellEditor] = useState<CellEditorState | null>(null);
   const [cellEditorSearchQuery, setCellEditorSearchQuery] = useState("");
   const [sortConfig, setSortConfig] = useState<PreviewSortConfig>({ key: "tradeDate", direction: "desc" });
   const isTagFieldEnabled = (field: EditableTradeTagField) => tagOptionsByField[field].length > 0;
+  const resolvedSelectedTradeIds = selectedTradeIds ?? [];
+  const toggleTradeSelection = onToggleTradeSelection ?? (() => undefined);
+  const toggleSelectAll = onToggleSelectAll ?? (() => undefined);
+  const updateTradeTag = onUpdateTradeTag ?? (() => undefined);
+  const createTradeTagOption = onCreateTradeTagOption ?? (() => undefined);
+
   const visibleColumns = useMemo(
-    () => previewColumns.filter((column) => !isTagColumnKey(column.key) || isTagFieldEnabled(column.key)),
-    [tagOptionsByField]
+    () => {
+      const allowedKeys = visibleColumnKeys ? new Set(visibleColumnKeys) : null;
+      return previewColumns.filter((column) => {
+        if (allowedKeys && !allowedKeys.has(column.key)) {
+          return false;
+        }
+
+        if (isTagColumnKey(column.key) && !isTagFieldEnabled(column.key)) {
+          return false;
+        }
+
+        return true;
+      });
+    },
+    [tagOptionsByField, visibleColumnKeys]
   );
 
-  const selectedCount = selectedTradeIds.length;
+  const selectedCount = showSelection ? resolvedSelectedTradeIds.length : 0;
   const sortedTrades = useMemo(() => {
     const activeColumn = previewColumns.find((column) => column.key === sortConfig.key);
 
@@ -241,9 +268,9 @@ export const PreviewTable = ({
   }, [trades, sortConfig]);
 
   const selectableTradeIds = useMemo(() => sortedTrades.map((trade) => trade.id), [sortedTrades]);
-  const allVisibleSelected =
+  const allVisibleSelected = showSelection &&
     selectableTradeIds.length > 0 &&
-    selectableTradeIds.every((tradeId) => selectedTradeIds.includes(tradeId));
+    selectableTradeIds.every((tradeId) => resolvedSelectedTradeIds.includes(tradeId));
 
   const activeTrade = cellEditor
     ? trades.find((trade) => trade.id === cellEditor.tradeId) ?? null
@@ -261,6 +288,10 @@ export const PreviewTable = ({
 
   const renderCell = (trade: EditableTradeRow, column: PreviewColumn) => {
     if (isTagColumnKey(column.key)) {
+      if (!enableTagEditing) {
+        return getFieldDisplayValue(trade, column.key);
+      }
+
       return renderEditableCell(trade, column.key, (tradeId, field) => {
         setCellEditor({ tradeId, field });
         setCellEditorSearchQuery("");
@@ -317,14 +348,16 @@ export const PreviewTable = ({
       <table className="preview-table">
         <thead>
           <tr>
-            <th className="selection-column">
-              <input
-                type="checkbox"
-                checked={allVisibleSelected}
-                aria-label="Select all visible trades"
-                onChange={() => onToggleSelectAll(selectableTradeIds)}
-              />
-            </th>
+            {showSelection ? (
+              <th className="selection-column">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  aria-label="Select all visible trades"
+                  onChange={() => toggleSelectAll(selectableTradeIds)}
+                />
+              </th>
+            ) : null}
             {visibleColumns.map((column) => (
               <th key={column.key}>
                 <button type="button" className="sortable-header-button" onClick={() => toggleSort(column.key)}>
@@ -340,8 +373,8 @@ export const PreviewTable = ({
         <tbody>
           {trades.length === 0 ? (
             <tr>
-              <td colSpan={visibleColumns.length + 1} className="empty-state">
-                No trades match the current filters.
+              <td colSpan={visibleColumns.length + (showSelection ? 1 : 0)} className="empty-state">
+                {emptyStateLabel}
               </td>
             </tr>
           ) : (
@@ -352,15 +385,17 @@ export const PreviewTable = ({
                 className={trade.id === selectedTradeId ? "preview-row-selected" : ""}
                 onClick={onSelectTrade ? () => onSelectTrade(trade) : undefined}
               >
-                <td className="selection-column">
-                  <input
-                    type="checkbox"
-                    checked={selectedTradeIds.includes(trade.id)}
-                    aria-label={`Select ${trade.name}`}
-                    onClick={(event) => event.stopPropagation()}
-                    onChange={() => onToggleTradeSelection(trade.id)}
-                  />
-                </td>
+                {showSelection ? (
+                  <td className="selection-column">
+                    <input
+                      type="checkbox"
+                      checked={resolvedSelectedTradeIds.includes(trade.id)}
+                      aria-label={`Select ${trade.name}`}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={() => toggleTradeSelection(trade.id)}
+                    />
+                  </td>
+                ) : null}
                 {visibleColumns.map((column) => (
                   <td key={column.key}>{renderCell(trade, column)}</td>
                 ))}
@@ -370,7 +405,7 @@ export const PreviewTable = ({
           )}
         </tbody>
       </table>
-      {cellEditor && activeTrade ? (
+      {enableTagEditing && cellEditor && activeTrade ? (
         <TagDrawer
           isOpen={!!cellEditor}
           selectionMode={isMultiSelectField(cellEditor.field) ? "multi" : "single"}
@@ -389,20 +424,20 @@ export const PreviewTable = ({
           searchValue={cellEditorSearchQuery}
           onSearchChange={setCellEditorSearchQuery}
           onSelect={(value) => {
-            onUpdateTradeTag(activeTrade, cellEditor.field, value);
+            updateTradeTag(activeTrade, cellEditor.field, value);
             if (!isMultiSelectField(cellEditor.field)) {
               setCellEditor(null);
               setCellEditorSearchQuery("");
             }
           }}
           onCreateOption={(value) => {
-            onCreateTradeTagOption(cellEditor.field, value);
+            createTradeTagOption(cellEditor.field, value);
             if (isMultiSelectField(cellEditor.field)) {
               const currentValues = getFieldSelectedValues(activeTrade, cellEditor.field);
               const nextValues = currentValues.includes(value) ? currentValues : [...currentValues, value];
-              onUpdateTradeTag(activeTrade, cellEditor.field, nextValues);
+              updateTradeTag(activeTrade, cellEditor.field, nextValues);
             } else {
-              onUpdateTradeTag(activeTrade, cellEditor.field, value);
+              updateTradeTag(activeTrade, cellEditor.field, value);
               setCellEditor(null);
               setCellEditorSearchQuery("");
             }
@@ -413,7 +448,7 @@ export const PreviewTable = ({
           }}
         />
       ) : null}
-      {selectedCount > 0 ? (
+      {showSelection && selectedCount > 0 ? (
         <div className="table-selection-footer">
           <span>{selectedCount} trade{selectedCount === 1 ? "" : "s"} selected</span>
         </div>

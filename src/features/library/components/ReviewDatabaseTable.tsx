@@ -15,19 +15,9 @@ const renderTickers = (value: unknown) => {
     return <span className="review-empty">-</span>;
   }
 
-  const visible = tickers.slice(0, 4);
-  const remainder = tickers.length - visible.length;
-
   return (
-    <span className="review-ticker-pills">
-      {visible.map((ticker) => (
-        <span key={ticker} className="review-ticker-pill">
-          {ticker}
-        </span>
-      ))}
-      {remainder > 0 ? (
-        <span className="review-ticker-pill review-ticker-pill-more">+{remainder}</span>
-      ) : null}
+  <span className="review-ticker-pills">
+      <span className="review-ticker-pill">{tickers.length}</span>
     </span>
   );
 };

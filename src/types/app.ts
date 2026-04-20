@@ -8,7 +8,8 @@ export type AppRoute =
   | "playbooks"
   | "reports"
   | "import"
-  | "data";
+  | "data"
+  | "settings";
 
 export interface AppNavItem {
   id: AppRoute;

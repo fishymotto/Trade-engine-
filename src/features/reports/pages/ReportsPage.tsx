@@ -336,8 +336,112 @@ export const ReportsPage = ({
     <main className="page-shell">
       <PageHero
         eyebrow="Reports"
-        title="Performance Reports"
-        description="Compare the current review slice across symbols, setups, gateways, and time."
+        title="Reports"
+        className="page-hero-reports"
+        content={
+          <section className="trade-view-filter-panel page-hero-review-slice-embedded">
+            <div className="trade-view-filter-header">
+              <div className="panel-header">
+                <WorkspaceIcon icon="filter" alt="Report filters icon" className="panel-header-icon" />
+                <h2>Review Slice</h2>
+              </div>
+              <button type="button" className="mini-action" onClick={clearFilters}>
+                Clear All
+              </button>
+            </div>
+            <div className="trade-view-filter-grid trade-view-filter-grid-reports">
+              <label className="trade-filter-field">
+                <span>Date</span>
+                <DateFilterPopover
+                  mode="range"
+                  startValue={selectedTradeDateFilterStart}
+                  endValue={selectedTradeDateFilterEnd}
+                  onRangeChange={(startValue, endValue) => {
+                    setSelectedTradeDateFilterStart(startValue);
+                    setSelectedTradeDateFilterEnd(endValue);
+                  }}
+                  availableDates={tradeDateOptions}
+                  allLabel="All Dates"
+                />
+              </label>
+              <label className="trade-filter-field">
+                <span>Playbook</span>
+                <FilterSelect
+                  ariaLabel="Report playbook filter"
+                  value={selectedPlaybookFilter}
+                  onChange={setSelectedPlaybookFilter}
+                  options={[
+                    { label: "All Playbooks", value: "all" },
+                    ...playbookOptions.map((playbook) => ({ label: playbook, value: playbook }))
+                  ]}
+                />
+              </label>
+              <label className="trade-filter-field">
+                <span>Symbol</span>
+                <FilterSelect
+                  ariaLabel="Report symbol filter"
+                  value={selectedSymbolFilter}
+                  onChange={setSelectedSymbolFilter}
+                  options={[
+                    { label: "All Symbols", value: "all" },
+                    ...symbolOptions.map((symbol) => ({ label: symbol, value: symbol }))
+                  ]}
+                />
+              </label>
+              <label className="trade-filter-field">
+                <span>Status</span>
+                <FilterSelect
+                  ariaLabel="Report status filter"
+                  value={selectedStatusFilter}
+                  onChange={setSelectedStatusFilter}
+                  options={[
+                    { label: "All Status", value: "all" },
+                    ...statusOptions.map((status) => ({ label: status, value: status }))
+                  ]}
+                />
+              </label>
+              <label className="trade-filter-field">
+                <span>Game</span>
+                <FilterSelect
+                  ariaLabel="Report game filter"
+                  value={selectedGameFilter}
+                  onChange={setSelectedGameFilter}
+                  options={[
+                    { label: "All Games", value: "all" },
+                    ...gameOptions.map((game) => ({ label: game, value: game }))
+                  ]}
+                />
+              </label>
+              <label className="trade-filter-field">
+                <span>Execution</span>
+                <FilterSelect
+                  ariaLabel="Report execution filter"
+                  value={selectedExecutionFilter}
+                  onChange={setSelectedExecutionFilter}
+                  options={[
+                    { label: "All Execution", value: "all" },
+                    ...executionOptions.map((execution) => ({ label: execution, value: execution }))
+                  ]}
+                />
+              </label>
+            </div>
+            <div className="active-filter-chip-row dashboard-review-chip-row" aria-label="Active report slice">
+              {activeFilters.length > 0 ? (
+                activeFilters.map((filter) => (
+                  <span key={filter.key} className="active-filter-chip">
+                    <strong>{filter.label}</strong>
+                    <span>{filter.value}</span>
+                  </span>
+                ))
+              ) : (
+                <span className="active-filter-chip active-filter-chip-muted">
+                  <strong>Slice</strong>
+                  <span>All saved trades</span>
+                </span>
+              )}
+            </div>
+          </section>
+        }
       >
         <div className="page-hero-stat-grid">
           <div className="page-hero-stat-card">
@@ -358,108 +462,6 @@ export const ReportsPage = ({
           </div>
         </div>
       </PageHero>
-      <section className="placeholder-panel trade-view-filter-panel">
-        <div className="trade-view-filter-header">
-          <div className="panel-header">
-            <WorkspaceIcon icon="filter" alt="Report filters icon" className="panel-header-icon" />
-            <h2>Review Slice</h2>
-          </div>
-          <button type="button" className="mini-action" onClick={clearFilters}>
-            Clear All
-          </button>
-        </div>
-        <div className="trade-view-filter-grid trade-view-filter-grid-reports">
-          <label className="trade-filter-field">
-            <span>Date</span>
-            <DateFilterPopover
-              mode="range"
-              startValue={selectedTradeDateFilterStart}
-              endValue={selectedTradeDateFilterEnd}
-              onRangeChange={(startValue, endValue) => {
-                setSelectedTradeDateFilterStart(startValue);
-                setSelectedTradeDateFilterEnd(endValue);
-              }}
-              availableDates={tradeDateOptions}
-              allLabel="All Dates"
-            />
-          </label>
-          <label className="trade-filter-field">
-            <span>Playbook</span>
-            <FilterSelect
-              ariaLabel="Report playbook filter"
-              value={selectedPlaybookFilter}
-              onChange={setSelectedPlaybookFilter}
-              options={[
-                { label: "All Playbooks", value: "all" },
-                ...playbookOptions.map((playbook) => ({ label: playbook, value: playbook }))
-              ]}
-            />
-          </label>
-          <label className="trade-filter-field">
-            <span>Symbol</span>
-            <FilterSelect
-              ariaLabel="Report symbol filter"
-              value={selectedSymbolFilter}
-              onChange={setSelectedSymbolFilter}
-              options={[
-                { label: "All Symbols", value: "all" },
-                ...symbolOptions.map((symbol) => ({ label: symbol, value: symbol }))
-              ]}
-            />
-          </label>
-          <label className="trade-filter-field">
-            <span>Status</span>
-            <FilterSelect
-              ariaLabel="Report status filter"
-              value={selectedStatusFilter}
-              onChange={setSelectedStatusFilter}
-              options={[
-                { label: "All Status", value: "all" },
-                ...statusOptions.map((status) => ({ label: status, value: status }))
-              ]}
-            />
-          </label>
-          <label className="trade-filter-field">
-            <span>Game</span>
-            <FilterSelect
-              ariaLabel="Report game filter"
-              value={selectedGameFilter}
-              onChange={setSelectedGameFilter}
-              options={[
-                { label: "All Games", value: "all" },
-                ...gameOptions.map((game) => ({ label: game, value: game }))
-              ]}
-            />
-          </label>
-          <label className="trade-filter-field">
-            <span>Execution</span>
-            <FilterSelect
-              ariaLabel="Report execution filter"
-              value={selectedExecutionFilter}
-              onChange={setSelectedExecutionFilter}
-              options={[
-                { label: "All Execution", value: "all" },
-                ...executionOptions.map((execution) => ({ label: execution, value: execution }))
-              ]}
-            />
-          </label>
-        </div>
-        <div className="active-filter-chip-row dashboard-review-chip-row" aria-label="Active report slice">
-          {activeFilters.length > 0 ? (
-            activeFilters.map((filter) => (
-              <span key={filter.key} className="active-filter-chip">
-                <strong>{filter.label}</strong>
-                <span>{filter.value}</span>
-              </span>
-            ))
-          ) : (
-            <span className="active-filter-chip active-filter-chip-muted">
-              <strong>Slice</strong>
-              <span>All saved trades</span>
-            </span>
-          )}
-        </div>
-      </section>
       <section className="analytics-grid">
         <article className="placeholder-panel analytics-panel analytics-grid-full">
           <div className="panel-header">

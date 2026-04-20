@@ -10,6 +10,7 @@ import { getTickerIcon, resolveTickerGroupIcon } from "../../../lib/tickers/tick
 import {
   createLibraryBookRow,
   createLibraryPage,
+  createLibraryQuoteRow,
   libraryCollections,
   loadLibraryPages,
   saveLibraryPages
@@ -47,6 +48,23 @@ const formatUpdatedAt = (value: string): string => {
     day: "numeric",
     year: "numeric"
   });
+};
+
+const getDateOnlyIsoString = (value: string): string => {
+  if (!value) {
+    return "";
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+
+  return parsed.toISOString().slice(0, 10);
 };
 
 const parseTags = (value: string): string[] =>
@@ -114,10 +132,28 @@ const normalizeTickerToken = (value: string): string => value.trim().replace(/^\
 
 const isBookRow = (page: LibraryPageRecord): boolean => page.tags.includes("book-row");
 
+const isQuoteRow = (page: LibraryPageRecord): boolean => page.tags.includes("quote-row");
+
 const bookReadingStatusOptions = ["To Read", "In Progress", "Completed", "Abandoned", "Imported"];
 
 const getBookFieldValue = (page: LibraryPageRecord, propertyName: string): string =>
   renderPropertyValue(page, propertyName, "");
+
+const getQuoteFieldValue = (page: LibraryPageRecord, propertyName: string): string =>
+  renderPropertyValue(page, propertyName, "");
+
+const getQuoteUsedValue = (page: LibraryPageRecord): boolean => {
+  const value = page.properties?.Used;
+  return typeof value === "boolean" ? value : false;
+};
+
+const getQuoteDateUsedValue = (page: LibraryPageRecord): string => {
+  const value = page.properties?.["Date Used"];
+  return typeof value === "string" ? value : "";
+};
+
+const getQuoteDateUsedForInput = (page: LibraryPageRecord): string =>
+  getDateOnlyIsoString(getQuoteDateUsedValue(page));
 
 const getReadingStatusToneClass = (value: string): string => {
   switch (value) {
@@ -162,6 +198,11 @@ const formatSignedUsd = (value: number): string => {
 type BookCellEditorState = {
   pageId: string;
   field: "Reading Status" | "Genre";
+};
+
+type QuoteCellEditorState = {
+  pageId: string;
+  field: "Author" | "Source";
 };
 
 type BookSortKey = "title" | "author" | "rating" | "readingStatus";
@@ -214,6 +255,9 @@ export const LibraryPage = ({
   const [bookCellEditorSearchQuery, setBookCellEditorSearchQuery] = useState("");
   const [isBookGenreFilterOpen, setIsBookGenreFilterOpen] = useState(false);
   const [bookGenreFilterSearchQuery, setBookGenreFilterSearchQuery] = useState("");
+  const [quoteSearchQuery, setQuoteSearchQuery] = useState("");
+  const [quoteCellEditor, setQuoteCellEditor] = useState<QuoteCellEditorState | null>(null);
+  const [quoteCellEditorSearchQuery, setQuoteCellEditorSearchQuery] = useState("");
   const [reviewTemplates, setReviewTemplates] = useState(() => loadReviewTemplates());
   const [selectedWeeklyReviewTemplateId, setSelectedWeeklyReviewTemplateId] = useState(
     () => reviewTemplates.weeklyTemplates[0]?.id ?? ""
@@ -255,26 +299,7 @@ export const LibraryPage = ({
 
         const range = getReviewRange(page.properties);
         if (!range) {
-          const overall = computeOverallScore(page.properties);
-          if (
-            overall &&
-            typeof page.properties?.[REVIEW_PROPERTY_KEYS.overall] === "string" &&
-            page.properties?.[REVIEW_PROPERTY_KEYS.overall] === overall
-          ) {
-            return page;
-          }
-
-          const nextProperties = {
-            ...(page.properties ?? {}),
-            [REVIEW_PROPERTY_KEYS.overall]: overall
-          };
-
-          if (JSON.stringify(page.properties ?? {}) === JSON.stringify(nextProperties)) {
-            return page;
-          }
-
-          changed = true;
-          return { ...page, properties: nextProperties, updatedAt: now };
+          return page;
         }
 
         const metrics = computeReviewMetrics({
@@ -378,6 +403,7 @@ export const LibraryPage = ({
   );
 
   const isBookClub = selectedCollectionId === "book-club";
+  const isQuotes = selectedCollectionId === "quotes";
   const isTickerGroups = selectedCollectionId === "ticker-groups";
   const selectedReviewPeriod = getReviewPeriodForCollection(selectedCollectionId);
   const isReviewCollection = selectedReviewPeriod !== null;
@@ -400,6 +426,39 @@ export const LibraryPage = ({
     () => collectionPages.filter(isBookRow),
     [collectionPages]
   );
+
+  const quoteRows = useMemo(
+    () => (isQuotes ? collectionPages : collectionPages.filter(isQuoteRow)),
+    [collectionPages, isQuotes]
+  );
+
+  const filteredQuoteRows = useMemo(() => {
+    const normalizedQuery = normalizeForSearch(quoteSearchQuery);
+
+    if (!normalizedQuery) {
+      return quoteRows;
+    }
+
+    return quoteRows.filter((page) =>
+      normalizeForSearch(getQuoteFieldValue(page, "Author")).includes(normalizedQuery)
+    );
+  }, [quoteRows, quoteSearchQuery]);
+
+  const quoteAuthorOptions = useMemo(() => {
+    const authors = quoteRows
+      .map((page) => getQuoteFieldValue(page, "Author").trim())
+      .filter(Boolean);
+
+    return Array.from(new Set(authors)).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }, [quoteRows]);
+
+  const quoteSourceOptions = useMemo(() => {
+    const sources = quoteRows
+      .map((page) => getQuoteFieldValue(page, "Source").trim())
+      .filter(Boolean);
+
+    return Array.from(new Set(sources)).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }, [quoteRows]);
 
   const bookStatusFilterOptions = useMemo(
     () => [
@@ -611,6 +670,14 @@ export const LibraryPage = ({
     return pages.find((page) => page.id === bookCellEditor.pageId) ?? null;
   }, [bookCellEditor, pages]);
 
+  const quoteCellEditorPage = useMemo(() => {
+    if (!quoteCellEditor) {
+      return null;
+    }
+
+    return pages.find((page) => page.id === quoteCellEditor.pageId) ?? null;
+  }, [pages, quoteCellEditor]);
+
   useEffect(() => {
     if (collectionView !== "page") {
       return;
@@ -655,6 +722,35 @@ export const LibraryPage = ({
       properties: {
         ...page.properties,
         [propertyName]: value
+      }
+    });
+  };
+
+  const updateQuoteUsed = (page: LibraryPageRecord, nextUsed: boolean) => {
+    const dateUsed = nextUsed ? getQuoteDateUsedForInput(page) || new Date().toISOString().slice(0, 10) : "";
+
+    updatePage(page.id, {
+      properties: {
+        ...page.properties,
+        Used: nextUsed,
+        "Date Used": dateUsed
+      }
+    });
+  };
+
+  const updateQuoteDateUsed = (page: LibraryPageRecord, nextDateUsed: string) => {
+    const normalized = getDateOnlyIsoString(nextDateUsed);
+
+    if (!normalized) {
+      updateQuoteUsed(page, false);
+      return;
+    }
+
+    updatePage(page.id, {
+      properties: {
+        ...page.properties,
+        Used: true,
+        "Date Used": normalized
       }
     });
   };
@@ -746,6 +842,16 @@ export const LibraryPage = ({
     setBookGenreFilter([]);
   };
 
+  const handleCreateQuoteRow = () => {
+    const newPage = createLibraryQuoteRow();
+    setPages((current) => [newPage, ...current]);
+    setSelectedPageId(newPage.id);
+    setCollectionView("list");
+    setQuoteSearchQuery("");
+    setQuoteCellEditor(null);
+    setQuoteCellEditorSearchQuery("");
+  };
+
   const handleDeletePage = (pageId: string) => {
     const targetPage = pages.find((page) => page.id === pageId);
     if (!targetPage) {
@@ -766,6 +872,8 @@ export const LibraryPage = ({
     setCollectionView("page");
     setBookCellEditor(null);
     setBookCellEditorSearchQuery("");
+    setQuoteCellEditor(null);
+    setQuoteCellEditorSearchQuery("");
   };
 
   const toggleBookSort = (key: BookSortKey) => {
@@ -849,6 +957,9 @@ export const LibraryPage = ({
                     setBookCellEditorSearchQuery("");
                     setIsBookGenreFilterOpen(false);
                     setBookGenreFilterSearchQuery("");
+                    setQuoteSearchQuery("");
+                    setQuoteCellEditor(null);
+                    setQuoteCellEditorSearchQuery("");
                   }}
                 >
                   <span>{collection.accent}</span>
@@ -871,6 +982,9 @@ export const LibraryPage = ({
                 setBookCellEditorSearchQuery("");
                 setIsBookGenreFilterOpen(false);
                 setBookGenreFilterSearchQuery("");
+                setQuoteSearchQuery("");
+                setQuoteCellEditor(null);
+                setQuoteCellEditorSearchQuery("");
               }}
             >
               <span>Setup</span>
@@ -898,13 +1012,19 @@ export const LibraryPage = ({
                   <h2>{selectedCollection.name}</h2>
                   <p>{selectedCollection.description}</p>
                 </div>
-                <button className="button button-primary" type="button" onClick={handleCreatePage}>
+                <button
+                  className="button button-primary"
+                  type="button"
+                  onClick={isQuotes ? handleCreateQuoteRow : handleCreatePage}
+                >
                   {isReviewCollection
                     ? selectedReviewPeriod === "weekly"
                       ? "New Weekly Review"
                       : "New Monthly Review"
                     : isTickerGroups
                       ? "New Group"
+                      : isQuotes
+                        ? "New Quote"
                       : "New Page"}
                 </button>
               </div>
@@ -1157,6 +1277,125 @@ export const LibraryPage = ({
                     <tr>
                       <td colSpan={5} className="empty-state">
                         No books match the current filters.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          ) : isQuotes ? (
+            <div className="library-table-wrap library-quotes-table-wrap" aria-label="Quotes database">
+              <div className="library-quotes-table-title">
+                <WorkspaceIcon icon="text" alt="" className="panel-header-icon" />
+                <div>
+                  <h3>Quotes</h3>
+                  <span>
+                    {filteredQuoteRows.length}
+                    {quoteSearchQuery.trim() ? ` of ${quoteRows.length}` : ""} quotes
+                  </span>
+                </div>
+              </div>
+              <div className="library-quotes-controls" aria-label="Quotes database controls">
+                <input
+                  className="library-quotes-search"
+                  value={quoteSearchQuery}
+                  onChange={(event) => setQuoteSearchQuery(event.target.value)}
+                  placeholder="Search by author"
+                />
+                <button className="button button-primary" type="button" onClick={handleCreateQuoteRow}>
+                  New Quote
+                </button>
+              </div>
+              <table className="library-table library-quotes-table">
+                <thead>
+                  <tr>
+                    <th>Quote</th>
+                    <th>Author</th>
+                    <th>Source</th>
+                    <th>Used</th>
+                    <th>Date Used</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredQuoteRows.length > 0 ? (
+                    filteredQuoteRows.map((page) => (
+                      <tr
+                        key={page.id}
+                        className={selectedPage?.id === page.id ? "library-table-row-active" : ""}
+                        onClick={() => setSelectedPageId(page.id)}
+                      >
+                        <td>
+                          <textarea
+                            className="library-cell-input library-cell-textarea"
+                            value={getQuoteFieldValue(page, "Quote")}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedPageId(page.id);
+                            }}
+                            onChange={(event) => updatePageProperty(page, "Quote", event.target.value)}
+                            placeholder="Type a quote..."
+                            rows={2}
+                          />
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="library-status-pill library-quotes-pill"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedPageId(page.id);
+                              setQuoteCellEditor({ pageId: page.id, field: "Author" });
+                              setQuoteCellEditorSearchQuery("");
+                            }}
+                          >
+                            {getQuoteFieldValue(page, "Author") || "Set author"}
+                          </button>
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="library-status-pill library-quotes-pill"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedPageId(page.id);
+                              setQuoteCellEditor({ pageId: page.id, field: "Source" });
+                              setQuoteCellEditorSearchQuery("");
+                            }}
+                          >
+                            {getQuoteFieldValue(page, "Source") || "Set source"}
+                          </button>
+                        </td>
+                        <td>
+                          <label className="library-quotes-used">
+                            <input
+                              type="checkbox"
+                              checked={getQuoteUsedValue(page)}
+                              aria-label="Used"
+                              onClick={(event) => event.stopPropagation()}
+                              onChange={(event) => updateQuoteUsed(page, event.target.checked)}
+                            />
+                          </label>
+                        </td>
+                        <td className="library-quotes-date-used">
+                          <input
+                            className="library-cell-input library-cell-date"
+                            type="date"
+                            value={getQuoteDateUsedForInput(page)}
+                            disabled={!getQuoteUsedValue(page)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedPageId(page.id);
+                            }}
+                            onChange={(event) => updateQuoteDateUsed(page, event.target.value)}
+                            aria-label="Date used"
+                          />
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={5} className="empty-state">
+                        {quoteRows.length > 0 ? "No quotes match the current search." : "No quotes yet. Create the first quote."}
                       </td>
                     </tr>
                   )}
@@ -1421,11 +1660,11 @@ export const LibraryPage = ({
                       <span>Gross</span>
                       <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.gross, "-")} />
                     </label>
-                    <label className="library-open-page-property">
+                    <label className="library-open-page-property library-open-page-property-red-days">
                       <span>Red Days</span>
                       <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.redDays, "-")} />
                     </label>
-                    <label className="library-open-page-property">
+                    <label className="library-open-page-property library-open-page-property-green-days">
                       <span>Green Days</span>
                       <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.greenDays, "-")} />
                     </label>
@@ -1470,14 +1709,28 @@ export const LibraryPage = ({
                       </select>
                     </label>
                     <label className="library-open-page-property">
-                      <span>Overall (Avg)</span>
-                      <input
-                        type="text"
-                        readOnly
-                        value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.overall, "-")}
-                        onFocus={(event) => event.currentTarget.select()}
-                        onClick={(event) => event.currentTarget.select()}
-                      />
+                      <span>Overall (1-5)</span>
+                      {(() => {
+                        const raw = renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.overall, "");
+                        const parsed = raw ? Number(raw) : Number.NaN;
+                        const normalized =
+                          Number.isFinite(parsed) && Math.abs(parsed - Math.round(parsed)) < 1e-6 && parsed >= 1 && parsed <= 5
+                            ? String(Math.round(parsed))
+                            : raw;
+
+                        return (
+                          <select
+                            value={normalized}
+                            onChange={(event) => updatePageProperty(selectedPage, REVIEW_PROPERTY_KEYS.overall, event.target.value)}
+                          >
+                            {scoreOptions.map((score) => (
+                              <option key={score || "empty"} value={score}>
+                                {score || "\u2014"}
+                              </option>
+                            ))}
+                          </select>
+                        );
+                      })()}
                     </label>
                   </div>
 
@@ -1787,6 +2040,38 @@ export const LibraryPage = ({
           onClose={() => {
             setIsBookGenreFilterOpen(false);
             setBookGenreFilterSearchQuery("");
+          }}
+        />
+      ) : null}
+      {quoteCellEditor && quoteCellEditorPage ? (
+        <TagDrawer
+          isOpen={!!quoteCellEditor}
+          title={`${quoteCellEditor.field} - Quotes`}
+          options={quoteCellEditor.field === "Author" ? quoteAuthorOptions : quoteSourceOptions}
+          selectionMode="single"
+          currentValue={getQuoteFieldValue(quoteCellEditorPage, quoteCellEditor.field)}
+          allowClear
+          clearLabel={`Clear ${quoteCellEditor.field.toLowerCase()}`}
+          searchValue={quoteCellEditorSearchQuery}
+          onSearchChange={setQuoteCellEditorSearchQuery}
+          onSelect={(value) => {
+            if (typeof value === "string") {
+              updatePageProperty(quoteCellEditorPage, quoteCellEditor.field, value);
+            } else if (value === null) {
+              updatePageProperty(quoteCellEditorPage, quoteCellEditor.field, "");
+            }
+
+            setQuoteCellEditor(null);
+            setQuoteCellEditorSearchQuery("");
+          }}
+          onCreateOption={(value) => {
+            updatePageProperty(quoteCellEditorPage, quoteCellEditor.field, value);
+            setQuoteCellEditor(null);
+            setQuoteCellEditorSearchQuery("");
+          }}
+          onClose={() => {
+            setQuoteCellEditor(null);
+            setQuoteCellEditorSearchQuery("");
           }}
         />
       ) : null}

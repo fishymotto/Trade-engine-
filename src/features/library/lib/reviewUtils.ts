@@ -222,9 +222,6 @@ export const buildReviewPropertiesPatch = ({
   next[REVIEW_PROPERTY_KEYS.redDays] = toWholeNumberString(metrics.redDays);
   next[REVIEW_PROPERTY_KEYS.greenDays] = toWholeNumberString(metrics.greenDays);
 
-  const overall = computeOverallScore(next);
-  next[REVIEW_PROPERTY_KEYS.overall] = overall;
-
   return next;
 };
 

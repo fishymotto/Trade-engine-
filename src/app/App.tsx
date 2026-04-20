@@ -67,7 +67,8 @@ const navItems: AppNavItem[] = [
   { id: "library", label: "Library", icon: "library" },
   { id: "reports", label: "Reports", icon: "reports" },
   { id: "import", label: "Import", icon: "import" },
-  { id: "data", label: "Data", icon: "data" }
+  { id: "data", label: "Data", icon: "data" },
+  { id: "settings", label: "Settings", icon: "filter" }
 ];
 
 const DashboardPage = lazy(() =>
@@ -91,8 +92,8 @@ const ImportPage = lazy(() =>
 const DataPage = lazy(() =>
   import("../features/data/pages/DataPage").then((module) => ({ default: module.DataPage }))
 );
-const SettingsModal = lazy(() =>
-  import("../components/SettingsModal").then((module) => ({ default: module.SettingsModal }))
+const SettingsPage = lazy(() =>
+  import("../features/settings/pages/SettingsPage").then((module) => ({ default: module.SettingsPage }))
 );
 
 const buildJournalTemplate = (checklistTemplates: JournalChecklistTemplates) => ({
@@ -165,7 +166,6 @@ function App() {
   const [activeRoute, setActiveRoute] = useState<AppRoute>("dashboard");
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [allowedSymbols, setAllowedSymbols] = useState<string[]>([]);
   const [hasExecutionProperty, setHasExecutionProperty] = useState(false);
   const [fileName, setFileName] = useState("");
@@ -1196,7 +1196,6 @@ function App() {
             onExport={handleExport}
             onImport={handleImport}
             onClear={handleClear}
-            onSettings={() => setSettingsOpen(true)}
             tagOptionsByField={activeTradeTagOptionsByField}
             onUpdateTradeTag={updateTradeTag}
             onCreateTradeTagOption={createTradeTagOption}
@@ -1209,6 +1208,15 @@ function App() {
             sessions={resolvedTradeSessions}
             onLoadSession={loadStoredSession}
             onDeleteSession={deleteStoredSession}
+          />
+        );
+      case "settings":
+        return (
+          <SettingsPage
+            settings={settings}
+            onChange={setSettings}
+            onBrowse={handleBrowseFolder}
+            onTestConnection={runConnectionTest}
           />
         );
       default:
@@ -1301,18 +1309,6 @@ function App() {
         ) : null}
       </Suspense>
       {user ? <footer className="status-bar">{message}</footer> : null}
-      <Suspense fallback={null}>
-        {user ? (
-          <SettingsModal
-            isOpen={settingsOpen}
-            settings={settings}
-            onClose={() => setSettingsOpen(false)}
-            onChange={setSettings}
-            onBrowse={handleBrowseFolder}
-            onTestConnection={runConnectionTest}
-          />
-        ) : null}
-      </Suspense>
     </>
   );
 }

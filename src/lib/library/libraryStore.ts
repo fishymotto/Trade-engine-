@@ -26,6 +26,12 @@ export const libraryCollections: LibraryCollectionDefinition[] = [
     accent: "Reading"
   },
   {
+    id: "quotes",
+    name: "Quotes",
+    description: "Short lines you want to remember, revisit, and reuse.",
+    accent: "Quotes"
+  },
+  {
     id: "trading-notes",
     name: "Book Club Notes",
     description: "Long-form notes, lessons, mental game work, and observations that are bigger than one day.",
@@ -881,6 +887,20 @@ const normalizeLibraryPage = (page: Partial<LibraryPageRecord>): LibraryPageReco
     };
   }
 
+  if (normalizedPage.collectionId === "quotes" || normalizedPage.tags.includes("quote-row")) {
+    if (!normalizedPage.tags.includes("quote-row")) {
+      normalizedPage.tags = [...normalizedPage.tags, "quote-row"];
+    }
+
+    normalizedPage.properties = {
+      ...normalizedPage.properties,
+      Quote: typeof normalizedPage.properties?.Quote === "string" ? normalizedPage.properties.Quote : "",
+      Author: typeof normalizedPage.properties?.Author === "string" ? normalizedPage.properties.Author : "",
+      Source: typeof normalizedPage.properties?.Source === "string" ? normalizedPage.properties.Source : "",
+      Used: typeof normalizedPage.properties?.Used === "boolean" ? normalizedPage.properties.Used : false
+    };
+  }
+
   return normalizedPage;
 };
 
@@ -1068,6 +1088,22 @@ export const createLibraryBookRow = (): LibraryPageRecord => {
       Genre: [],
       Review: "",
       Summary: ""
+    }
+  };
+};
+
+export const createLibraryQuoteRow = (): LibraryPageRecord => {
+  const page = createStarterPage("quotes", "Quote", ["quote-row"]);
+
+  return {
+    ...page,
+    status: "Active",
+    properties: {
+      Quote: "",
+      Author: "",
+      Source: "",
+      Used: false,
+      "Date Used": ""
     }
   };
 };
