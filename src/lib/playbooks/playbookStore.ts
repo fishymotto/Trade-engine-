@@ -3,7 +3,6 @@ import { hasJournalDocContent } from "../journal/journalContent";
 import type { PlaybookExampleRating, PlaybookRecord } from "../../types/playbook";
 import { syncStores } from "../sync/syncStore";
 
-const PLAYBOOKS_STORAGE_KEY = "trade-engine-playbooks";
 const DEFAULT_PLAYBOOK_ID = "wide-spread-open-drive";
 const SEEDED_PLAYBOOK_NAMES = [
   "Earning",
@@ -680,12 +679,11 @@ export const loadPlaybooks = (): PlaybookRecord[] => {
   }
 
   try {
-    const rawValue = window.localStorage.getItem(PLAYBOOKS_STORAGE_KEY);
-    if (!rawValue) {
+    const parsed = syncStores.playbooks.load<unknown>(null);
+    if (!parsed) {
       return [createDefaultWideSpreadOpenDrive()];
     }
 
-    const parsed = JSON.parse(rawValue);
     if (!Array.isArray(parsed)) {
       return [createDefaultWideSpreadOpenDrive()];
     }

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { syncStores } from "../sync/syncStore";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SYNC_HYDRATED_EVENT, syncStores } from "../sync/syncStore";
 
 const normalizeOption = (value: string) => value.trim().replace(/\s+/g, " ");
 
@@ -50,8 +50,14 @@ export const useEditableSelectOptions = (storageKey: string, defaultOptions: str
   const [additions, setAdditions] = useState<string[]>(() =>
     dedupeByLower(loadStoredAdditions(storageKey)).filter((value) => !defaultLookup.has(value.toLowerCase()))
   );
+  const skipNextSaveRef = useRef(true);
 
   useEffect(() => {
+    if (skipNextSaveRef.current) {
+      skipNextSaveRef.current = false;
+      return;
+    }
+
     try {
       const current = syncStores.selectOptionAdditions.load<Record<string, string[]>>({});
       void syncStores.selectOptionAdditions.save({
@@ -62,6 +68,18 @@ export const useEditableSelectOptions = (storageKey: string, defaultOptions: str
       // ignore
     }
   }, [additions, storageKey]);
+
+  useEffect(() => {
+    const handleHydrated = () => {
+      skipNextSaveRef.current = true;
+      setAdditions(
+        dedupeByLower(loadStoredAdditions(storageKey)).filter((value) => !defaultLookup.has(value.toLowerCase()))
+      );
+    };
+
+    window.addEventListener(SYNC_HYDRATED_EVENT, handleHydrated);
+    return () => window.removeEventListener(SYNC_HYDRATED_EVENT, handleHydrated);
+  }, [defaultLookup, storageKey]);
 
   const options = useMemo(() => {
     const merged = [...normalizedDefaults, ...additions.filter((value) => !defaultLookup.has(value.toLowerCase()))];

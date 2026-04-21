@@ -11,6 +11,26 @@ export interface SyncFromSupabaseOptions {
   preferCloud?: boolean;
 }
 
+interface SyncMetadata {
+  dirty: boolean;
+  localUpdatedAt?: string;
+  lastSyncedAt?: string;
+  lastSyncedUserId?: string;
+  lastSyncedHash?: string;
+  lastError?: string;
+}
+
+export interface SyncHydrationResult {
+  tableName: string;
+  storageKey: string;
+  source: 'local' | 'cloud' | 'merged' | 'seeded-cloud' | 'forced-local' | 'error';
+  pushed: boolean;
+  dirty: boolean;
+  error?: string;
+}
+
+export const SYNC_HYDRATED_EVENT = 'trade-engine-sync-hydrated';
+
 const stableStringify = (value: unknown): string => {
   if (value === null || value === undefined) {
     return JSON.stringify(value);
@@ -28,6 +48,13 @@ const stableStringify = (value: unknown): string => {
   const keys = Object.keys(record).sort();
   return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`;
 };
+
+const hashValue = (value: unknown): string => stableStringify(value);
+
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : typeof error === 'string' ? error : JSON.stringify(error);
+
+const hasLocalStorage = (): boolean => typeof window !== 'undefined' && Boolean(window.localStorage);
 
 const isProbablyDefaultValue = <T>(value: T, defaultValue: T): boolean => {
   try {
@@ -90,9 +117,37 @@ const getMergeKey = (value: unknown): string | null => {
   return typeof key === 'string' && key.trim() ? key : null;
 };
 
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
 const mergeSyncedValues = <T>(localValue: T, cloudValue: T): T => {
+  if (isPlainRecord(localValue) && isPlainRecord(cloudValue)) {
+    const merged: Record<string, unknown> = { ...cloudValue };
+
+    for (const [key, localEntry] of Object.entries(localValue)) {
+      const cloudEntry = cloudValue[key];
+
+      if (cloudEntry === undefined) {
+        merged[key] = localEntry;
+        continue;
+      }
+
+      if (
+        (Array.isArray(localEntry) && Array.isArray(cloudEntry)) ||
+        (isPlainRecord(localEntry) && isPlainRecord(cloudEntry))
+      ) {
+        merged[key] = mergeSyncedValues(localEntry, cloudEntry);
+        continue;
+      }
+
+      merged[key] = localEntry;
+    }
+
+    return merged as T;
+  }
+
   if (!Array.isArray(localValue) || !Array.isArray(cloudValue)) {
-    return cloudValue;
+    return localValue;
   }
 
   const merged: unknown[] = [];
@@ -187,6 +242,7 @@ const shouldPreferLocalOverCloud = <T>(
  */
 export class HybridSyncStore {
   private config: SyncStoreConfig;
+  private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(config: SyncStoreConfig) {
     this.config = config;
@@ -211,41 +267,177 @@ export class HybridSyncStore {
     }
   }
 
+  private getMetaKey(): string {
+    return `${this.config.storageKey}::sync-meta`;
+  }
+
+  private loadMetadata(): SyncMetadata {
+    if (!hasLocalStorage()) {
+      return { dirty: false };
+    }
+
+    try {
+      const raw = localStorage.getItem(this.getMetaKey());
+      if (!raw) {
+        return { dirty: false };
+      }
+
+      const parsed = JSON.parse(raw) as Partial<SyncMetadata>;
+      return {
+        dirty: Boolean(parsed.dirty),
+        localUpdatedAt: typeof parsed.localUpdatedAt === 'string' ? parsed.localUpdatedAt : undefined,
+        lastSyncedAt: typeof parsed.lastSyncedAt === 'string' ? parsed.lastSyncedAt : undefined,
+        lastSyncedUserId: typeof parsed.lastSyncedUserId === 'string' ? parsed.lastSyncedUserId : undefined,
+        lastSyncedHash: typeof parsed.lastSyncedHash === 'string' ? parsed.lastSyncedHash : undefined,
+        lastError: typeof parsed.lastError === 'string' ? parsed.lastError : undefined,
+      };
+    } catch (err) {
+      console.warn(`[sync] Failed to read sync metadata for ${this.config.tableName}:`, err);
+      return { dirty: false };
+    }
+  }
+
+  private saveMetadata(metadata: SyncMetadata): void {
+    if (!hasLocalStorage()) {
+      return;
+    }
+
+    localStorage.setItem(this.getMetaKey(), JSON.stringify(metadata));
+  }
+
+  private writeLocalCache<T>(data: T, metadata: SyncMetadata): void {
+    localStorage.setItem(this.config.storageKey, JSON.stringify(data));
+    this.saveMetadata(metadata);
+  }
+
+  private cacheSyncedValue<T>(data: T, userId: string, syncedAt = new Date().toISOString()): void {
+    this.writeLocalCache(data, {
+      dirty: false,
+      localUpdatedAt: syncedAt,
+      lastSyncedAt: syncedAt,
+      lastSyncedUserId: userId,
+      lastSyncedHash: hashValue(data),
+    });
+  }
+
+  private markRemoteFailure(error: unknown): void {
+    const metadata = this.loadMetadata();
+    const message = getErrorMessage(error);
+    this.saveMetadata({
+      ...metadata,
+      dirty: true,
+      lastError: message,
+    });
+  }
+
+  private markRemoteSuccess<T>(data: T, userId: string, syncedAt = new Date().toISOString()): void {
+    const metadata = this.loadMetadata();
+    this.saveMetadata({
+      ...metadata,
+      dirty: false,
+      lastSyncedAt: syncedAt,
+      lastSyncedUserId: userId,
+      lastSyncedHash: hashValue(data),
+      lastError: undefined,
+    });
+  }
+
+  private enqueue(task: () => Promise<void>): Promise<void> {
+    const run = this.writeQueue.then(task, task);
+    this.writeQueue = run.catch(() => undefined);
+    return run;
+  }
+
   /**
    * Save data to both localStorage and Supabase
    * Prioritizes localStorage success; Supabase save is async (fire and forget if needed)
    */
   async save<T>(data: T, userId?: string): Promise<void> {
     const user = userId || this.config.userId;
+    const now = new Date().toISOString();
+    const dataHash = hashValue(data);
+    const currentMetadata = this.loadMetadata();
+    const isAlreadySynced =
+      Boolean(user) &&
+      currentMetadata.lastSyncedUserId === user &&
+      currentMetadata.lastSyncedHash === dataHash &&
+      !currentMetadata.dirty;
+
+    // Always save to localStorage first so the UI remains offline-first.
+    this.writeLocalCache(data, {
+      ...currentMetadata,
+      dirty: !isAlreadySynced,
+      localUpdatedAt: now,
+      lastError: isAlreadySynced ? undefined : currentMetadata.lastError,
+    });
+
     if (!user) {
-      // If no user, just save to localStorage
-      localStorage.setItem(this.config.storageKey, JSON.stringify(data));
+      console.debug(`[sync] ${this.config.tableName}: saved locally; no user session for remote push`);
       return;
     }
 
-    try {
-      // Always save to localStorage first (sync)
-      localStorage.setItem(this.config.storageKey, JSON.stringify(data));
-
-      // Then sync to Supabase (async, non-blocking)
-      await this.syncToSupabase(data, user);
-    } catch (err) {
-      console.error(`Failed to save ${this.config.storageKey}:`, err);
-      throw err;
+    if (isAlreadySynced) {
+      return;
     }
+
+    await this.enqueue(async () => {
+      try {
+        console.debug(`[sync] ${this.config.tableName}: pushing local changes`);
+        await this.syncToSupabase(data, user);
+        this.markRemoteSuccess(data, user);
+      } catch (err) {
+        console.warn(`[sync] ${this.config.tableName}: remote push failed; keeping dirty local cache`, err);
+        this.markRemoteFailure(err);
+      }
+    });
   }
 
   /**
    * Sync data from Supabase to localStorage
    * Used after login to pull cloud data
    */
-  async syncFromSupabase<T>(userId: string, defaultValue: T, options: SyncFromSupabaseOptions = {}): Promise<T> {
+  async syncFromSupabase<T>(
+    userId: string,
+    defaultValue: T,
+    options: SyncFromSupabaseOptions = {}
+  ): Promise<T> {
+    return (await this.hydrateFromSupabase<T>(userId, defaultValue, options)).value;
+  }
+
+  async hydrateFromSupabase<T>(
+    userId: string,
+    defaultValue: T,
+    options: SyncFromSupabaseOptions = {}
+  ): Promise<{ value: T; result: SyncHydrationResult }> {
     if (!userId) {
-      return this.load(defaultValue);
+      const localValue = this.load(defaultValue);
+      return {
+        value: localValue,
+        result: {
+          tableName: this.config.tableName,
+          storageKey: this.config.storageKey,
+          source: 'local',
+          pushed: false,
+          dirty: this.loadMetadata().dirty,
+        },
+      };
     }
 
     try {
       const localValue = this.load(defaultValue);
+      const metadata = this.loadMetadata();
+      const localHash = hashValue(localValue);
+      const hasLocalValue = !isProbablyDefaultValue(localValue, defaultValue);
+      const localIsSyncedCloudCache =
+        metadata.lastSyncedUserId === userId && metadata.lastSyncedHash === localHash && !metadata.dirty;
+      const hasLegacyLocalValue = hasLocalValue && !metadata.lastSyncedHash;
+      const shouldPushLocal =
+        options.forcePushLocal || metadata.dirty || (hasLegacyLocalValue && options.preferCloud === false);
+
+      if (metadata.dirty) {
+        console.debug(`[sync] ${this.config.tableName}: dirty local cache found during hydration`);
+      }
+
       const { data, error } = await supabase
         .from(this.config.tableName)
         .select('data, updated_at')
@@ -254,56 +446,185 @@ export class HybridSyncStore {
 
       if (error) {
         console.warn(`Failed to sync from Supabase (${this.config.tableName}):`, error);
-        return localValue;
+        return {
+          value: localValue,
+          result: {
+            tableName: this.config.tableName,
+            storageKey: this.config.storageKey,
+            source: 'error',
+            pushed: false,
+            dirty: metadata.dirty,
+            error: getErrorMessage(error),
+          },
+        };
       }
 
       if (!data) {
-        if (!isProbablyDefaultValue(localValue, defaultValue)) {
+        if (hasLocalValue) {
           // Seed cloud on first login for accounts that have only local data.
           // This avoids a "blank on new device" experience when users had data before signing in.
           try {
+            console.debug(`[sync] ${this.config.tableName}: seeding cloud from local cache`);
             await this.syncToSupabase(localValue, userId);
+            this.markRemoteSuccess(localValue, userId);
+            return {
+              value: localValue,
+              result: {
+                tableName: this.config.tableName,
+                storageKey: this.config.storageKey,
+                source: 'seeded-cloud',
+                pushed: true,
+                dirty: false,
+              },
+            };
           } catch (seedError) {
             console.warn(`Failed to seed Supabase (${this.config.tableName}):`, seedError);
+            this.markRemoteFailure(seedError);
           }
         }
 
-        return localValue;
+        return {
+          value: localValue,
+          result: {
+            tableName: this.config.tableName,
+            storageKey: this.config.storageKey,
+            source: 'local',
+            pushed: false,
+            dirty: this.loadMetadata().dirty,
+          },
+        };
       }
 
       // Parse and cache the data locally
       const parsed = JSON.parse(data.data) as T;
+      const cloudHash = hashValue(parsed);
 
-      const merged = mergeSyncedValues(localValue, parsed);
+      if (options.forcePushLocal && hasLocalValue) {
+        console.debug(`[sync] ${this.config.tableName}: force-pushing local cache over cloud`);
+        await this.syncToSupabase(localValue, userId);
+        this.markRemoteSuccess(localValue, userId);
+        return {
+          value: localValue,
+          result: {
+            tableName: this.config.tableName,
+            storageKey: this.config.storageKey,
+            source: 'forced-local',
+            pushed: true,
+            dirty: false,
+          },
+        };
+      }
 
-      if (
-        !isProbablyDefaultValue(localValue, defaultValue) &&
-        (options.forcePushLocal ||
-          (options.preferCloud === false && shouldPreferLocalOverCloud(localValue, parsed, defaultValue, data.updated_at)))
-      ) {
+      if (!shouldPushLocal || localIsSyncedCloudCache || localHash === cloudHash) {
+        console.debug(`[sync] ${this.config.tableName}: hydrated from cloud`);
+        this.cacheSyncedValue(parsed, userId, data.updated_at ?? new Date().toISOString());
+        return {
+          value: parsed,
+          result: {
+            tableName: this.config.tableName,
+            storageKey: this.config.storageKey,
+            source: 'cloud',
+            pushed: false,
+            dirty: false,
+          },
+        };
+      }
+
+      const shouldUseLocalWholeValue =
+        !Array.isArray(localValue) &&
+        !Array.isArray(parsed) &&
+        (!isPlainRecord(localValue) || !isPlainRecord(parsed)) &&
+        (metadata.dirty ||
+          shouldPreferLocalOverCloud(localValue, parsed, defaultValue, data.updated_at));
+
+      if (shouldUseLocalWholeValue) {
         try {
+          console.debug(`[sync] ${this.config.tableName}: pushing newer local value`);
           await this.syncToSupabase(localValue, userId);
+          this.markRemoteSuccess(localValue, userId);
         } catch (mergeError) {
           console.warn(`Failed to sync newer local data to Supabase (${this.config.tableName}):`, mergeError);
+          this.markRemoteFailure(mergeError);
         }
 
-        localStorage.setItem(this.config.storageKey, JSON.stringify(localValue));
-        return localValue;
+        return {
+          value: localValue,
+          result: {
+            tableName: this.config.tableName,
+            storageKey: this.config.storageKey,
+            source: 'merged',
+            pushed: !this.loadMetadata().dirty,
+            dirty: this.loadMetadata().dirty,
+          },
+        };
       }
 
-      if (!isProbablyDefaultValue(localValue, defaultValue) && !isProbablyDefaultValue(merged, parsed)) {
+      const merged = mergeSyncedValues(localValue, parsed);
+      const mergedHash = hashValue(merged);
+
+      if (mergedHash !== cloudHash) {
         try {
+          console.debug(`[sync] ${this.config.tableName}: pushing merged local/cloud value`);
           await this.syncToSupabase(merged, userId);
+          this.markRemoteSuccess(merged, userId);
         } catch (mergeError) {
           console.warn(`Failed to sync merged data to Supabase (${this.config.tableName}):`, mergeError);
+          this.markRemoteFailure(mergeError);
+          this.writeLocalCache(merged, {
+            ...this.loadMetadata(),
+            dirty: true,
+            localUpdatedAt: new Date().toISOString(),
+          });
+          return {
+            value: merged,
+            result: {
+              tableName: this.config.tableName,
+              storageKey: this.config.storageKey,
+              source: 'merged',
+              pushed: false,
+              dirty: true,
+            },
+          };
         }
+
+        this.cacheSyncedValue(merged, userId);
+        return {
+          value: merged,
+          result: {
+            tableName: this.config.tableName,
+            storageKey: this.config.storageKey,
+            source: 'merged',
+            pushed: true,
+            dirty: false,
+          },
+        };
       }
 
-      localStorage.setItem(this.config.storageKey, JSON.stringify(merged));
-      return merged;
+      this.cacheSyncedValue(parsed, userId, data.updated_at ?? new Date().toISOString());
+      return {
+        value: parsed,
+        result: {
+          tableName: this.config.tableName,
+          storageKey: this.config.storageKey,
+          source: 'cloud',
+          pushed: false,
+          dirty: false,
+        },
+      };
     } catch (err) {
       console.warn(`Failed to parse Supabase data (${this.config.tableName}):`, err);
-      return this.load(defaultValue);
+      const localValue = this.load(defaultValue);
+      return {
+        value: localValue,
+        result: {
+          tableName: this.config.tableName,
+          storageKey: this.config.storageKey,
+          source: 'error',
+          pushed: false,
+          dirty: this.loadMetadata().dirty,
+          error: getErrorMessage(err),
+        },
+      };
     }
   }
 
@@ -326,9 +647,34 @@ export class HybridSyncStore {
       );
 
     if (error) {
-      console.warn(`Failed to sync to Supabase (${this.config.tableName}):`, error);
-      // Don't throw - we still have localStorage backup
+      throw new Error(error.message);
     }
+  }
+
+  async retryDirty<T>(defaultValue: T, userId?: string): Promise<boolean> {
+    const user = userId || this.config.userId;
+    if (!user) {
+      return false;
+    }
+
+    const metadata = this.loadMetadata();
+    if (!metadata.dirty) {
+      return false;
+    }
+
+    const data = this.load(defaultValue);
+    await this.enqueue(async () => {
+      try {
+        console.debug(`[sync] ${this.config.tableName}: retrying dirty local cache`);
+        await this.syncToSupabase(data, user);
+        this.markRemoteSuccess(data, user);
+      } catch (err) {
+        console.warn(`[sync] ${this.config.tableName}: retry failed`, err);
+        this.markRemoteFailure(err);
+      }
+    });
+
+    return !this.loadMetadata().dirty;
   }
 
   /**
@@ -336,6 +682,7 @@ export class HybridSyncStore {
    */
   async clear(userId?: string): Promise<void> {
     localStorage.removeItem(this.config.storageKey);
+    localStorage.removeItem(this.getMetaKey());
 
     const user = userId || this.config.userId;
     if (user) {

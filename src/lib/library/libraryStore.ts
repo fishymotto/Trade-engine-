@@ -8,7 +8,6 @@ import type {
 } from "../../types/library";
 import { syncStores } from "../sync/syncStore";
 
-const STORAGE_KEY = "trade-engine-library-pages";
 const SEED_VERSION_KEY = "trade-engine-library-seed-version";
 const CURRENT_SEED_VERSION = "notion-book-club-v6";
 
@@ -905,14 +904,13 @@ const normalizeLibraryPage = (page: Partial<LibraryPageRecord>): LibraryPageReco
 };
 
 export const loadLibraryPages = (): LibraryPageRecord[] => {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
+  const parsed = syncStores.libraryPages.load<unknown>(null);
+  if (!parsed) {
     localStorage.setItem(SEED_VERSION_KEY, CURRENT_SEED_VERSION);
     return createDefaultLibraryPages();
   }
 
   try {
-    const parsed = JSON.parse(raw) as Partial<LibraryPageRecord>[];
     if (!Array.isArray(parsed)) {
       return createDefaultLibraryPages();
     }

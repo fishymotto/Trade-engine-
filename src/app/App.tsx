@@ -198,6 +198,45 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("Load one PPro8 Trade Detail CSV file, then export the cleaned CSV.");
 
+  const hydrateWorkspaceFromStores = async () => {
+    const loadedSettings = await loadSettings();
+    const loadedOptions = await loadTradeTagOptions();
+    const loadedOverrides = await loadTradeTagOverrides();
+    const loadedSessions = await loadTradeSessions();
+
+    setSettings(loadedSettings);
+    setSettingsLoaded(true);
+
+    setTradeTagOptions(loadedOptions);
+    setTradeTagOptionsLoaded(true);
+
+    setTradeTagOverrides(loadedOverrides);
+    setTradeTagOverridesLoaded(true);
+
+    setTradeSessions(loadedSessions);
+    setTradeSessionsLoaded(true);
+
+    const workspaceState = loadWorkspaceState();
+    setActiveRoute(workspaceState.activeRoute);
+    setReviewChartInterval(workspaceState.reviewChartInterval);
+    setDayChartInterval(workspaceState.dayChartInterval);
+    setFileName(workspaceState.fileName);
+    setIsCurrentImportSaved(workspaceState.isCurrentImportSaved);
+    setWorkspaceLoaded(true);
+
+    setHistoricalBarSets(loadHistoricalBarSets());
+    setHistoricalBarSetsLoaded(true);
+
+    setJournalPages(loadJournalPages());
+    setJournalPagesLoaded(true);
+
+    setJournalChecklistTemplates(loadJournalChecklistTemplates());
+    setJournalChecklistTemplatesLoaded(true);
+
+    setTradeReviews(loadTradeReviews());
+    setTradeReviewsLoaded(true);
+  };
+
   useEffect(() => {
     let cancelled = false;
 
@@ -210,6 +249,11 @@ function App() {
         }
 
         if (!existingUser) {
+          setUserIdForSync(undefined);
+          await hydrateWorkspaceFromStores();
+          if (cancelled) {
+            return;
+          }
           setUser(null);
           setAuthChecked(true);
           return;
@@ -220,48 +264,10 @@ function App() {
           return;
         }
 
-        setUserIdForSync(existingUser.id);
-
-        const loadedSettings = await loadSettings();
-        const loadedOptions = await loadTradeTagOptions();
-        const loadedOverrides = await loadTradeTagOverrides();
-        const loadedSessions = await loadTradeSessions();
-
+        await hydrateWorkspaceFromStores();
         if (cancelled) {
           return;
         }
-
-        setSettings(loadedSettings);
-        setSettingsLoaded(true);
-
-        setTradeTagOptions(loadedOptions);
-        setTradeTagOptionsLoaded(true);
-
-        setTradeTagOverrides(loadedOverrides);
-        setTradeTagOverridesLoaded(true);
-
-        setTradeSessions(loadedSessions);
-        setTradeSessionsLoaded(true);
-
-        const workspaceState = loadWorkspaceState();
-        setActiveRoute(workspaceState.activeRoute);
-        setReviewChartInterval(workspaceState.reviewChartInterval);
-        setDayChartInterval(workspaceState.dayChartInterval);
-        setFileName(workspaceState.fileName);
-        setIsCurrentImportSaved(workspaceState.isCurrentImportSaved);
-        setWorkspaceLoaded(true);
-
-        setHistoricalBarSets(loadHistoricalBarSets());
-        setHistoricalBarSetsLoaded(true);
-
-        setJournalPages(loadJournalPages());
-        setJournalPagesLoaded(true);
-
-        setJournalChecklistTemplates(loadJournalChecklistTemplates());
-        setJournalChecklistTemplatesLoaded(true);
-
-        setTradeReviews(loadTradeReviews());
-        setTradeReviewsLoaded(true);
 
         setUser(existingUser);
         setAuthChecked(true);
@@ -1261,45 +1267,7 @@ function App() {
             setSyncing(true);
             try {
               await syncUserDataOnLogin(authenticatedUser.id);
-              setUserIdForSync(authenticatedUser.id);
-
-              const loadedSettings = await loadSettings();
-              const loadedOptions = await loadTradeTagOptions();
-              const loadedOverrides = await loadTradeTagOverrides();
-              const loadedSessions = await loadTradeSessions();
-
-              setSettings(loadedSettings);
-              setSettingsLoaded(true);
-
-              setTradeTagOptions(loadedOptions);
-              setTradeTagOptionsLoaded(true);
-
-              setTradeTagOverrides(loadedOverrides);
-              setTradeTagOverridesLoaded(true);
-
-              setTradeSessions(loadedSessions);
-              setTradeSessionsLoaded(true);
-
-              const workspaceState = loadWorkspaceState();
-              setActiveRoute(workspaceState.activeRoute);
-              setReviewChartInterval(workspaceState.reviewChartInterval);
-              setDayChartInterval(workspaceState.dayChartInterval);
-              setFileName(workspaceState.fileName);
-              setIsCurrentImportSaved(workspaceState.isCurrentImportSaved);
-              setWorkspaceLoaded(true);
-
-              setHistoricalBarSets(loadHistoricalBarSets());
-              setHistoricalBarSetsLoaded(true);
-
-              setJournalPages(loadJournalPages());
-              setJournalPagesLoaded(true);
-
-              setJournalChecklistTemplates(loadJournalChecklistTemplates());
-              setJournalChecklistTemplatesLoaded(true);
-
-              setTradeReviews(loadTradeReviews());
-              setTradeReviewsLoaded(true);
-
+              await hydrateWorkspaceFromStores();
               setUser(authenticatedUser);
             } finally {
               setSyncing(false);

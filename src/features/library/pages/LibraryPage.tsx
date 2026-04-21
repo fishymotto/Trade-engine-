@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { JournalRichTextEditor } from "../../journal/components/JournalRichTextEditor";
 import { PlaybooksPage } from "../../playbooks/pages/PlaybooksPage";
 import { PageHero } from "../../../components/PageHero";
@@ -22,6 +22,7 @@ import { ReviewDatabaseTable } from "../components/ReviewDatabaseTable";
 import { TickerGroupIconPicker } from "../components/TickerGroupIconPicker";
 import { ReviewReflectionPanel } from "../components/review/ReviewReflectionPanel";
 import { coerceReviewReflectionState, loadReviewTemplates, saveReviewTemplates } from "../../../lib/review/reviewTemplateStore";
+import { SYNC_HYDRATED_EVENT } from "../../../lib/sync/syncStore";
 import {
   buildReviewPropertiesPatch,
   computeOverallScore,
@@ -266,6 +267,8 @@ export const LibraryPage = ({
     () => reviewTemplates.monthlyTemplates[0]?.id ?? ""
   );
   const [showLegacyReviewNotes, setShowLegacyReviewNotes] = useState(false);
+  const skipNextPagesSaveRef = useRef(true);
+  const skipNextReviewTemplatesSaveRef = useRef(true);
 
   const handleImageInsert = async (file: File): Promise<string> => {
     return readFileAsDataUrl(file);
@@ -277,12 +280,39 @@ export const LibraryPage = ({
   }, [initialSection]);
 
   useEffect(() => {
+    if (skipNextPagesSaveRef.current) {
+      skipNextPagesSaveRef.current = false;
+      return;
+    }
+
     saveLibraryPages(pages);
   }, [pages]);
 
   useEffect(() => {
+    if (skipNextReviewTemplatesSaveRef.current) {
+      skipNextReviewTemplatesSaveRef.current = false;
+      return;
+    }
+
     saveReviewTemplates(reviewTemplates);
   }, [reviewTemplates]);
+
+  useEffect(() => {
+    const handleHydrated = () => {
+      const nextPages = loadLibraryPages();
+      const nextTemplates = loadReviewTemplates();
+
+      skipNextPagesSaveRef.current = true;
+      skipNextReviewTemplatesSaveRef.current = true;
+      setPages(nextPages);
+      setReviewTemplates(nextTemplates);
+      setSelectedWeeklyReviewTemplateId(nextTemplates.weeklyTemplates[0]?.id ?? "");
+      setSelectedMonthlyReviewTemplateId(nextTemplates.monthlyTemplates[0]?.id ?? "");
+    };
+
+    window.addEventListener(SYNC_HYDRATED_EVENT, handleHydrated);
+    return () => window.removeEventListener(SYNC_HYDRATED_EVENT, handleHydrated);
+  }, []);
 
   useEffect(() => {
     const shutdownRiskUsd = getDailyShutdownRiskFromSettings(settings);

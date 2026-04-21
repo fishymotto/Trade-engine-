@@ -7,6 +7,7 @@ import {
 } from "../../../lib/headlines/headlineStore";
 import { canOpenExternalUrl, openExternalUrl } from "../../../lib/links/openExternalUrl";
 import { useEditableSelectOptions } from "../../../lib/select/useEditableSelectOptions";
+import { SYNC_HYDRATED_EVENT } from "../../../lib/sync/syncStore";
 import { TagDrawer } from "../../../components/TagDrawer";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
 import { formatTickerList, parseTickerList } from "../../../lib/tickers/tickerList";
@@ -123,6 +124,16 @@ export const HeadlinesBar = ({ className = "", journalDate }: HeadlinesBarProps)
         setHeadlines(migrated);
       }
     })();
+  }, [journalDate]);
+
+  useEffect(() => {
+    const handleHydrated = () => {
+      skipNextSaveRef.current = true;
+      setHeadlines(loadHeadlinesForTradeDate(journalDate));
+    };
+
+    window.addEventListener(SYNC_HYDRATED_EVENT, handleHydrated);
+    return () => window.removeEventListener(SYNC_HYDRATED_EVENT, handleHydrated);
   }, [journalDate]);
 
   const activeHeadlines = useMemo(() => {

@@ -3,6 +3,7 @@ import type { Settings } from "../../types/trade";
 import { syncStores } from "../sync/syncStore";
 
 const STORAGE_KEY = "trade-engine-settings";
+const MACHINE_SETTINGS_KEY = "trade-engine-machine-settings";
 
 export const DEFAULT_BRL_TICKER_LIST = [
   "BBAS3",
@@ -44,6 +45,71 @@ export const defaultSettings: Settings = {
   }
 };
 
+export type SyncedSettings = Omit<Settings, "exportFolder">;
+
+interface MachineSettings {
+  exportFolder: string;
+}
+
+const toSyncedSettings = (settings: Settings): SyncedSettings => {
+  const { exportFolder: _exportFolder, ...syncedSettings } = settings;
+  return syncedSettings;
+};
+
+export const defaultSyncedSettings: SyncedSettings = toSyncedSettings(defaultSettings);
+
+const loadMachineSettings = (): MachineSettings => {
+  const fallback: MachineSettings = { exportFolder: "" };
+
+  try {
+    const raw = localStorage.getItem(MACHINE_SETTINGS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<MachineSettings>;
+      return {
+        exportFolder: typeof parsed.exportFolder === "string" ? parsed.exportFolder : ""
+      };
+    }
+
+    const legacyRaw = localStorage.getItem(STORAGE_KEY);
+    if (legacyRaw) {
+      const legacy = JSON.parse(legacyRaw) as Partial<Settings>;
+      return {
+        exportFolder: typeof legacy.exportFolder === "string" ? legacy.exportFolder : ""
+      };
+    }
+  } catch {
+    return fallback;
+  }
+
+  return fallback;
+};
+
+const saveMachineSettings = (settings: MachineSettings): void => {
+  localStorage.setItem(MACHINE_SETTINGS_KEY, JSON.stringify(settings));
+};
+
+export const migrateSettingsCacheToSyncedShape = (): void => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      return;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<Settings>;
+    if (!("exportFolder" in parsed)) {
+      return;
+    }
+
+    if (typeof parsed.exportFolder === "string" && parsed.exportFolder.trim()) {
+      saveMachineSettings({ exportFolder: parsed.exportFolder });
+    }
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSyncedSettings(normalizeSettings(parsed))));
+  } catch {
+    // Leave the cache alone if it cannot be parsed; normal loading will fall back safely.
+  }
+};
+
 const normalizeSettings = (settings: Partial<Settings>): Settings => ({
   ...defaultSettings,
   ...settings,
@@ -69,27 +135,44 @@ const loadSettingsFromLocalStorage = (): Settings => {
 };
 
 export const loadSettings = async (): Promise<Settings> => {
+  const machineSettings = loadMachineSettings();
   const localRaw = localStorage.getItem(STORAGE_KEY);
   if (localRaw) {
-    return loadSettingsFromLocalStorage();
+    return {
+      ...loadSettingsFromLocalStorage(),
+      exportFolder: machineSettings.exportFolder
+    };
   }
 
   if (!isTauri()) {
-    return loadSettingsFromLocalStorage();
+    return {
+      ...loadSettingsFromLocalStorage(),
+      exportFolder: machineSettings.exportFolder
+    };
   }
 
   try {
     const settings = await invoke<Partial<Settings>>("load_app_settings");
     const normalized = normalizeSettings(settings);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
-    return normalized;
+    if (normalized.exportFolder) {
+      saveMachineSettings({ exportFolder: normalized.exportFolder });
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSyncedSettings(normalized)));
+    return {
+      ...normalized,
+      exportFolder: normalized.exportFolder || machineSettings.exportFolder
+    };
   } catch {
-    return loadSettingsFromLocalStorage();
+    return {
+      ...loadSettingsFromLocalStorage(),
+      exportFolder: machineSettings.exportFolder
+    };
   }
 };
 
 export const saveSettings = async (settings: Settings): Promise<void> => {
-  await syncStores.settings.save(settings);
+  saveMachineSettings({ exportFolder: settings.exportFolder });
+  await syncStores.settings.save(toSyncedSettings(settings));
 
   if (isTauri()) {
     await invoke("save_app_settings", { settings });

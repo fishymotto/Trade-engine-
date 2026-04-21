@@ -11,6 +11,7 @@ import {
   updatePlaybookSectionContent,
   updatePlaybookScreenshotUrls
 } from "../../../lib/playbooks/playbookStore";
+import { SYNC_HYDRATED_EVENT } from "../../../lib/sync/syncStore";
 import type { PlaybookRecord } from "../../../types/playbook";
 import type { GroupedTrade } from "../../../types/trade";
 
@@ -159,14 +160,30 @@ export const PlaybooksPage = ({
   const [expandedScreenshotUrl, setExpandedScreenshotUrl] = useState("");
   const [pendingScreenshotSlotIndex, setPendingScreenshotSlotIndex] = useState<number | null>(null);
   const screenshotInputRef = useRef<HTMLInputElement | null>(null);
+  const skipNextSaveRef = useRef(true);
 
   const handleImageInsert = async (file: File): Promise<string> => {
     return readFileAsDataUrl(file);
   };
 
   useEffect(() => {
+    if (skipNextSaveRef.current) {
+      skipNextSaveRef.current = false;
+      return;
+    }
+
     savePlaybooks(playbooks);
   }, [playbooks]);
+
+  useEffect(() => {
+    const handleHydrated = () => {
+      skipNextSaveRef.current = true;
+      setPlaybooks(loadPlaybooks());
+    };
+
+    window.addEventListener(SYNC_HYDRATED_EVENT, handleHydrated);
+    return () => window.removeEventListener(SYNC_HYDRATED_EVENT, handleHydrated);
+  }, []);
 
   const playbookCards = useMemo<PlaybookCardData[]>(
     () =>

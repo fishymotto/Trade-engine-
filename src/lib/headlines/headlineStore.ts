@@ -1,8 +1,6 @@
 import type { HeadlineItem } from "../../types/headline";
 import { syncStores } from "../sync/syncStore";
 
-const STORAGE_KEY = "trade-engine-headlines";
-
 export type HeadlinesByTradeDate = Record<string, HeadlineItem[]>;
 
 const sanitizeHeadlineUrl = (rawUrl: string): string | null => {
@@ -59,16 +57,7 @@ const normalizeHeadlineList = (items: unknown[], fallbackTradeDate: string): Hea
   items.filter(isHeadlineItem).map((item) => normalizeHeadlineItem(item, fallbackTradeDate));
 
 const loadRawHeadlines = (): unknown => {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    return null;
-  }
+  return syncStores.headlines.load<unknown>(null);
 };
 
 export const loadHeadlinesForTradeDate = (tradeDate: string): HeadlineItem[] => {
