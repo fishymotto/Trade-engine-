@@ -266,9 +266,16 @@ const shouldPreferLocalOverCloud = <T>(
 export class HybridSyncStore {
   private config: SyncStoreConfig;
   private writeQueue: Promise<void> = Promise.resolve();
+  private memoryValue: unknown = undefined;
+  private hasMemoryValue = false;
 
   constructor(config: SyncStoreConfig) {
     this.config = config;
+  }
+
+  private setMemoryValue<T>(value: T): void {
+    this.memoryValue = value;
+    this.hasMemoryValue = true;
   }
 
   setUserId(userId?: string): void {
@@ -280,12 +287,28 @@ export class HybridSyncStore {
    * Fast, works offline
    */
   load<T>(defaultValue: T): T {
+    if (this.hasMemoryValue) {
+      return this.memoryValue as T;
+    }
+
+    if (!hasLocalStorage()) {
+      this.setMemoryValue(defaultValue);
+      return defaultValue;
+    }
+
     try {
       const raw = localStorage.getItem(this.config.storageKey);
-      if (!raw) return defaultValue;
-      return JSON.parse(raw) as T;
+      if (!raw) {
+        this.setMemoryValue(defaultValue);
+        return defaultValue;
+      }
+
+      const parsed = JSON.parse(raw) as T;
+      this.setMemoryValue(parsed);
+      return parsed;
     } catch (err) {
       console.warn(`Failed to load ${this.config.storageKey}:`, err);
+      this.setMemoryValue(defaultValue);
       return defaultValue;
     }
   }
@@ -340,6 +363,8 @@ export class HybridSyncStore {
   }
 
   private writeLocalCache<T>(data: T, metadata: SyncMetadata): void {
+    this.setMemoryValue(data);
+
     if (!hasLocalStorage()) {
       return;
     }
@@ -709,6 +734,7 @@ export class HybridSyncStore {
 
     await this.enqueue(async () => {
       await this.syncToSupabase(data, userId);
+      this.setMemoryValue(data);
       this.markRemoteSuccess(data, userId);
     });
   }
