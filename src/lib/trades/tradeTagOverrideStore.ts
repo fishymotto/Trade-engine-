@@ -18,10 +18,9 @@ const loadTradeTagOverridesFromLocalStorage = (): TradeTagOverrideRecord[] => {
   }
 };
 
-export const loadTradeTagOverrides = async (): Promise<TradeTagOverrideRecord[]> => {
-  const localRaw = localStorage.getItem(STORAGE_KEY);
-  if (localRaw || !isTauri()) {
-    return loadTradeTagOverridesFromLocalStorage();
+const loadTradeTagOverridesFromDesktopBackup = async (): Promise<TradeTagOverrideRecord[] | null> => {
+  if (!isTauri()) {
+    return null;
   }
 
   try {
@@ -30,8 +29,25 @@ export const loadTradeTagOverrides = async (): Promise<TradeTagOverrideRecord[]>
     localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
     return normalized;
   } catch {
-    return loadTradeTagOverridesFromLocalStorage();
+    return null;
   }
+};
+
+export const loadTradeTagOverrides = async (): Promise<TradeTagOverrideRecord[]> => {
+  const localOverrides = loadTradeTagOverridesFromLocalStorage();
+  if (!isTauri()) {
+    return localOverrides;
+  }
+
+  const localRaw = localStorage.getItem(STORAGE_KEY);
+  if (!localRaw || localOverrides.length === 0) {
+    const desktopOverrides = await loadTradeTagOverridesFromDesktopBackup();
+    if (desktopOverrides && desktopOverrides.length > 0) {
+      return desktopOverrides;
+    }
+  }
+
+  return localOverrides;
 };
 
 export const saveTradeTagOverrides = async (

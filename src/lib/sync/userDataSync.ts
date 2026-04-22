@@ -21,6 +21,11 @@ export interface UserDataSyncSummary {
   results: SyncHydrationResult[];
 }
 
+const getSyncErrors = (summary: UserDataSyncSummary): string[] =>
+  summary.results
+    .filter((result) => result.source === 'error')
+    .map((result) => `${result.tableName}: ${result.error || 'Unknown sync error'}`);
+
 const dispatchHydrationEvent = (summary: UserDataSyncSummary): void => {
   if (typeof window === 'undefined') {
     return;
@@ -45,7 +50,9 @@ export const syncUserDataOnLogin = async (userId: string): Promise<UserDataSyncS
 
   try {
     console.log('[sync] Hydrating user data from Supabase...');
-    const syncOptions = { forcePushLocal };
+    const syncOptions = forcePushLocal
+      ? { forcePushLocal, preferCloud: false }
+      : { forcePushLocal };
 
     // Sync all data types in parallel
     const hydrated = await Promise.all([
@@ -95,7 +102,11 @@ export const forcePushLocalDataToCloud = async (userId: string): Promise<void> =
     window.localStorage.setItem(FORCE_LOCAL_TO_CLOUD_KEY, '1');
   }
 
-  await syncUserDataOnLogin(userId);
+  const summary = await syncUserDataOnLogin(userId);
+  const syncErrors = getSyncErrors(summary);
+  if (syncErrors.length > 0) {
+    throw new Error(`Cloud sync failed: ${syncErrors.join(' | ')}`);
+  }
 };
 
 export const retryDirtyUserData = async (userId: string): Promise<void> => {

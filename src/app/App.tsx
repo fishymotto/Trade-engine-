@@ -46,6 +46,7 @@ import {
 } from "../lib/trades/tradeTagOverrides";
 import { loadWorkspaceState, saveWorkspaceState } from "../lib/workspace/workspaceStore";
 import { defaultSettings, loadSettings, saveSettings } from "../lib/settings/settingsStore";
+import { syncStores } from "../lib/sync/syncStore";
 import { forcePushLocalDataToCloud, setUserIdForSync, syncUserDataOnLogin } from "../lib/sync/userDataSync";
 import type { AppNavItem, AppRoute } from "../types/app";
 import type { ChartInterval, HistoricalBarSet } from "../types/chart";
@@ -421,6 +422,28 @@ function App() {
 
     setSyncing(true);
     try {
+      // Flush in-memory workspace state to local sync cache first so force-seed
+      // pushes what the user currently sees, not stale/empty cache values.
+      const loadedTradeDates = Array.from(new Set(trades.map((trade) => trade.tradeDate))).sort();
+      await Promise.all([
+        saveSettings(settings),
+        saveTradeTagOptions(tradeTagOptions),
+        saveTradeTagOverrides(tradeTagOverrides),
+        saveTradeSessions(tradeSessions),
+        syncStores.journalPages.save(dedupeJournalPages(journalPages)),
+        syncStores.journalChecklistTemplates.save(journalChecklistTemplates),
+        syncStores.tradeReviews.save(tradeReviews),
+        syncStores.historicalBars.save(historicalBarSets),
+        syncStores.workspaceState.save({
+          activeRoute,
+          loadedTradeDates,
+          fileName,
+          isCurrentImportSaved,
+          reviewChartInterval,
+          dayChartInterval
+        })
+      ]);
+
       await forcePushLocalDataToCloud(user.id);
       setUserIdForSync(user.id);
       return "This computer's saved workspace was pushed to cloud. Pull from the other computer after signing in.";

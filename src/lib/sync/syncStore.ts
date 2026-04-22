@@ -51,8 +51,31 @@ const stableStringify = (value: unknown): string => {
 
 const hashValue = (value: unknown): string => stableStringify(value);
 
-const getErrorMessage = (error: unknown): string =>
-  error instanceof Error ? error.message : typeof error === 'string' ? error : JSON.stringify(error);
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === 'string') {
+    return error;
+  }
+
+  try {
+    const serialized = JSON.stringify(error);
+    return typeof serialized === 'string' ? serialized : String(error);
+  } catch {
+    return String(error);
+  }
+};
+
+const isStorageQuotaExceededError = (error: unknown): boolean => {
+  if (typeof DOMException !== 'undefined' && error instanceof DOMException) {
+    return error.name === 'QuotaExceededError' || error.name === 'NS_ERROR_DOM_QUOTA_REACHED';
+  }
+
+  const message = getErrorMessage(error).toLowerCase();
+  return message.includes('quota') && (message.includes('exceeded') || message.includes('full'));
+};
 
 const hasLocalStorage = (): boolean => typeof window !== 'undefined' && Boolean(window.localStorage);
 
@@ -302,11 +325,39 @@ export class HybridSyncStore {
       return;
     }
 
-    localStorage.setItem(this.getMetaKey(), JSON.stringify(metadata));
+    try {
+      localStorage.setItem(this.getMetaKey(), JSON.stringify(metadata));
+    } catch (err) {
+      if (isStorageQuotaExceededError(err)) {
+        console.warn(
+          `[sync] ${this.config.tableName}: local metadata cache skipped because storage quota is full.`
+        );
+        return;
+      }
+
+      console.warn(`[sync] ${this.config.tableName}: failed to write local metadata cache.`, err);
+    }
   }
 
   private writeLocalCache<T>(data: T, metadata: SyncMetadata): void {
-    localStorage.setItem(this.config.storageKey, JSON.stringify(data));
+    if (!hasLocalStorage()) {
+      return;
+    }
+
+    try {
+      localStorage.setItem(this.config.storageKey, JSON.stringify(data));
+    } catch (err) {
+      if (isStorageQuotaExceededError(err)) {
+        console.warn(
+          `[sync] ${this.config.tableName}: local cache skipped because storage quota is full; continuing with cloud sync.`
+        );
+        return;
+      }
+
+      console.warn(`[sync] ${this.config.tableName}: failed to write local cache.`, err);
+      return;
+    }
+
     this.saveMetadata(metadata);
   }
 
@@ -681,8 +732,19 @@ export class HybridSyncStore {
    * Clear data from both localStorage and Supabase (for logout)
    */
   async clear(userId?: string): Promise<void> {
-    localStorage.removeItem(this.config.storageKey);
-    localStorage.removeItem(this.getMetaKey());
+    if (hasLocalStorage()) {
+      try {
+        localStorage.removeItem(this.config.storageKey);
+      } catch (err) {
+        console.warn(`[sync] ${this.config.tableName}: failed clearing local cache key.`, err);
+      }
+
+      try {
+        localStorage.removeItem(this.getMetaKey());
+      } catch (err) {
+        console.warn(`[sync] ${this.config.tableName}: failed clearing local metadata key.`, err);
+      }
+    }
 
     const user = userId || this.config.userId;
     if (user) {

@@ -115,6 +115,126 @@ const ensureContent = (
   return parsedBlocks.length > 0 ? journalBlocksToDoc(parsedBlocks) : createEmptyJournalDoc();
 };
 
+const stableStringify = (value: unknown): string => {
+  if (value === null || value === undefined) {
+    return JSON.stringify(value);
+  }
+
+  if (typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
+};
+
+const readDocText = (content?: JSONContent): string => {
+  if (!content || typeof content !== "object") {
+    return "";
+  }
+
+  const nodes = Array.isArray(content.content) ? content.content : [];
+  const collect = (node: JSONContent): string => {
+    const ownText = "text" in node && typeof node.text === "string" ? node.text : "";
+    const children = Array.isArray(node.content) ? node.content.map((child) => collect(child)).join(" ") : "";
+    return `${ownText} ${children}`.trim();
+  };
+
+  return nodes
+    .map((node) => collect(node))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+};
+
+const countCheckedItems = (content?: JSONContent): number => {
+  if (!content || typeof content !== "object") {
+    return 0;
+  }
+
+  let checkedCount = 0;
+
+  const visit = (node: JSONContent) => {
+    const attrs = "attrs" in node && typeof node.attrs === "object" && node.attrs ? node.attrs : undefined;
+    if (attrs && "checked" in attrs && attrs.checked === true) {
+      checkedCount += 1;
+    }
+
+    const children = Array.isArray(node.content) ? node.content : [];
+    children.forEach((child) => visit(child));
+  };
+
+  visit(content);
+  return checkedCount;
+};
+
+const isDefaultMorningChecklist = (content: JSONContent): boolean =>
+  stableStringify(content) === stableStringify(createMorningChecklistDoc());
+
+const isDefaultClosingChecklist = (content: JSONContent): boolean =>
+  stableStringify(content) === stableStringify(createClosingChecklistDoc());
+
+const isEmptyJournalDoc = (content: JSONContent): boolean =>
+  stableStringify(content) === stableStringify(createEmptyJournalDoc());
+
+const getJournalContentScore = (page: JournalPageRecord): number => {
+  let score = 0;
+
+  if (!isEmptyJournalDoc(page.morningContent) && readDocText(page.morningContent).length > 0) {
+    score += 10;
+  }
+
+  if (!isEmptyJournalDoc(page.closingContent) && readDocText(page.closingContent).length > 0) {
+    score += 10;
+  }
+
+  if (!isDefaultMorningChecklist(page.morningChecklistContent)) {
+    score += 4;
+  }
+
+  if (!isDefaultClosingChecklist(page.closingChecklistContent)) {
+    score += 4;
+  }
+
+  score += Math.min(8, countCheckedItems(page.morningChecklistContent) + countCheckedItems(page.closingChecklistContent));
+  score += Math.min(6, page.screenshotUrls.length * 2);
+
+  if (page.dayGrade.trim().length > 0) {
+    score += 2;
+  }
+
+  if (page.marketRegime.trim().length > 0) {
+    score += 2;
+  }
+
+  if (page.mpp.trim().length > 0) {
+    score += 2;
+  }
+
+  return score;
+};
+
+const getTimestamp = (value: string): number => {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const shouldReplacePage = (existing: JournalPageRecord, candidate: JournalPageRecord): boolean => {
+  const existingScore = getJournalContentScore(existing);
+  const candidateScore = getJournalContentScore(candidate);
+
+  if (candidateScore !== existingScore) {
+    return candidateScore > existingScore;
+  }
+
+  return getTimestamp(candidate.updatedAt) >= getTimestamp(existing.updatedAt);
+};
+
 const normalizeJournalPage = (
   page: JournalPageRecord & {
     content?: string;
@@ -188,7 +308,7 @@ export const dedupeJournalPages = (pages: JournalPageRecord[]): JournalPageRecor
       continue;
     }
 
-    if (new Date(page.updatedAt).getTime() >= new Date(existing.updatedAt).getTime()) {
+    if (shouldReplacePage(existing, page)) {
       dedupedByDate.set(page.tradeDate, page);
     }
   }

@@ -41,10 +41,12 @@ const loadTradeTagOptionsFromLocalStorage = (): TradeTagOptionsRecord => {
   }
 };
 
-export const loadTradeTagOptions = async (): Promise<TradeTagOptionsRecord> => {
-  const localRaw = localStorage.getItem(STORAGE_KEY);
-  if (localRaw || !isTauri()) {
-    return loadTradeTagOptionsFromLocalStorage();
+const hasTradeTagOptions = (options: TradeTagOptionsRecord): boolean =>
+  Object.values(options).some((fieldOptions) => Array.isArray(fieldOptions) && fieldOptions.length > 0);
+
+const loadTradeTagOptionsFromDesktopBackup = async (): Promise<TradeTagOptionsRecord | null> => {
+  if (!isTauri()) {
+    return null;
   }
 
   try {
@@ -53,8 +55,25 @@ export const loadTradeTagOptions = async (): Promise<TradeTagOptionsRecord> => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
     return normalized;
   } catch {
-    return loadTradeTagOptionsFromLocalStorage();
+    return null;
   }
+};
+
+export const loadTradeTagOptions = async (): Promise<TradeTagOptionsRecord> => {
+  const localOptions = loadTradeTagOptionsFromLocalStorage();
+  if (!isTauri()) {
+    return localOptions;
+  }
+
+  const localRaw = localStorage.getItem(STORAGE_KEY);
+  if (!localRaw || !hasTradeTagOptions(localOptions)) {
+    const desktopOptions = await loadTradeTagOptionsFromDesktopBackup();
+    if (desktopOptions && hasTradeTagOptions(desktopOptions)) {
+      return desktopOptions;
+    }
+  }
+
+  return localOptions;
 };
 
 export const saveTradeTagOptions = async (options: TradeTagOptionsRecord): Promise<void> => {

@@ -5,20 +5,39 @@ import { syncStores } from "../sync/syncStore";
 
 const STORAGE_KEY = "trade-engine-trade-sessions";
 
-export const loadTradeSessions = async (): Promise<TradeSessionRecord[]> => {
-  const localRaw = localStorage.getItem(STORAGE_KEY);
-  if (localRaw || !isTauri()) {
-    return syncStores.tradeSessions.load<TradeSessionRecord[]>([]);
+const normalizeSessions = (value: unknown): TradeSessionRecord[] =>
+  Array.isArray(value) ? (value as TradeSessionRecord[]) : [];
+
+const loadTradeSessionsFromDesktopBackup = async (): Promise<TradeSessionRecord[] | null> => {
+  if (!isTauri()) {
+    return null;
   }
 
   try {
     const sessions = await invoke<TradeSessionRecord[]>("load_trade_sessions");
-    const normalized = Array.isArray(sessions) ? sessions : [];
+    const normalized = normalizeSessions(sessions);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
     return normalized;
   } catch {
-    return syncStores.tradeSessions.load<TradeSessionRecord[]>([]);
+    return null;
   }
+};
+
+export const loadTradeSessions = async (): Promise<TradeSessionRecord[]> => {
+  const localSessions = syncStores.tradeSessions.load<TradeSessionRecord[]>([]);
+  if (!isTauri()) {
+    return localSessions;
+  }
+
+  const localRaw = localStorage.getItem(STORAGE_KEY);
+  if (!localRaw || localSessions.length === 0) {
+    const desktopSessions = await loadTradeSessionsFromDesktopBackup();
+    if (desktopSessions && desktopSessions.length > 0) {
+      return desktopSessions;
+    }
+  }
+
+  return localSessions;
 };
 
 export const saveTradeSessions = async (sessions: TradeSessionRecord[]): Promise<void> => {

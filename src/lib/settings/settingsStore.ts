@@ -134,21 +134,9 @@ const loadSettingsFromLocalStorage = (): Settings => {
   }
 };
 
-export const loadSettings = async (): Promise<Settings> => {
-  const machineSettings = loadMachineSettings();
-  const localRaw = localStorage.getItem(STORAGE_KEY);
-  if (localRaw) {
-    return {
-      ...loadSettingsFromLocalStorage(),
-      exportFolder: machineSettings.exportFolder
-    };
-  }
-
+const loadSettingsFromDesktopBackup = async (): Promise<Settings | null> => {
   if (!isTauri()) {
-    return {
-      ...loadSettingsFromLocalStorage(),
-      exportFolder: machineSettings.exportFolder
-    };
+    return null;
   }
 
   try {
@@ -158,16 +146,51 @@ export const loadSettings = async (): Promise<Settings> => {
       saveMachineSettings({ exportFolder: normalized.exportFolder });
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(toSyncedSettings(normalized)));
-    return {
-      ...normalized,
-      exportFolder: normalized.exportFolder || machineSettings.exportFolder
-    };
+    return normalized;
   } catch {
+    return null;
+  }
+};
+
+const hasMeaningfulLocalSettings = (settings: Settings, machineSettings: MachineSettings): boolean => {
+  if (machineSettings.exportFolder.trim().length > 0) {
+    return true;
+  }
+
+  const localSynced = toSyncedSettings(settings);
+  return JSON.stringify(localSynced) !== JSON.stringify(defaultSyncedSettings);
+};
+
+export const loadSettings = async (): Promise<Settings> => {
+  const machineSettings = loadMachineSettings();
+  const localSettings = loadSettingsFromLocalStorage();
+  const localRaw = localStorage.getItem(STORAGE_KEY);
+  if (!isTauri()) {
     return {
-      ...loadSettingsFromLocalStorage(),
+      ...localSettings,
       exportFolder: machineSettings.exportFolder
     };
   }
+
+  if (localRaw && hasMeaningfulLocalSettings(localSettings, machineSettings)) {
+    return {
+      ...localSettings,
+      exportFolder: machineSettings.exportFolder
+    };
+  }
+
+  const desktopSettings = await loadSettingsFromDesktopBackup();
+  if (desktopSettings) {
+    return {
+      ...desktopSettings,
+      exportFolder: desktopSettings.exportFolder || machineSettings.exportFolder
+    };
+  }
+
+  return {
+    ...localSettings,
+    exportFolder: machineSettings.exportFolder
+  };
 };
 
 export const saveSettings = async (settings: Settings): Promise<void> => {
