@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { FLUSH_DEBOUNCED_SAVES_EVENT } from "../sync/pendingSaveFlush";
 
 export const useDebouncedSave = <T,>(
   value: T,
@@ -14,13 +15,17 @@ export const useDebouncedSave = <T,>(
   latestValueRef.current = value;
   latestOnSaveRef.current = onSave;
 
+  const flushPendingSave = () => {
+    if (timeoutRef.current !== null) {
+      window.clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+      latestOnSaveRef.current(latestValueRef.current);
+    }
+  };
+
   useEffect(() => {
     if (!enabled) {
-      if (timeoutRef.current !== null) {
-        window.clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
-        latestOnSaveRef.current(latestValueRef.current);
-      }
+      flushPendingSave();
       return;
     }
 
@@ -39,13 +44,31 @@ export const useDebouncedSave = <T,>(
     }, delayMs);
   }, [delayMs, enabled, value]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const handleFlushRequest = () => {
+      flushPendingSave();
+    };
+
+    const handleBeforeUnload = () => {
+      flushPendingSave();
+    };
+
+    window.addEventListener(FLUSH_DEBOUNCED_SAVES_EVENT, handleFlushRequest);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener(FLUSH_DEBOUNCED_SAVES_EVENT, handleFlushRequest);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, []);
+
   useEffect(
     () => () => {
-      if (timeoutRef.current !== null) {
-        window.clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
-        latestOnSaveRef.current(latestValueRef.current);
-      }
+      flushPendingSave();
     },
     []
   );

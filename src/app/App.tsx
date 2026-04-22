@@ -47,6 +47,7 @@ import {
 import { loadWorkspaceState, saveWorkspaceState } from "../lib/workspace/workspaceStore";
 import { defaultSettings, loadSettings, saveSettings } from "../lib/settings/settingsStore";
 import { syncStores } from "../lib/sync/syncStore";
+import { requestFlushDebouncedSaves } from "../lib/sync/pendingSaveFlush";
 import { retryDirtyUserData, setUserIdForSync, syncUserDataOnLogin } from "../lib/sync/userDataSync";
 import type { AppNavItem, AppRoute } from "../types/app";
 import type { ChartInterval, HistoricalBarSet } from "../types/chart";
@@ -422,6 +423,9 @@ function App() {
 
     setSyncing(true);
     try {
+      // Ensure all debounced editor writes are committed before collecting state.
+      await requestFlushDebouncedSaves();
+
       // Flush in-memory workspace state to local sync cache first so force-seed
       // pushes what the user currently sees, not stale/empty cache values.
       const loadedTradeDates = Array.from(new Set(trades.map((trade) => trade.tradeDate))).sort();
