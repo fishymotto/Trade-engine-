@@ -22,6 +22,60 @@ function Find-CommandPath {
   return $null
 }
 
+function Get-ListeningProcessIdsForPort {
+  param(
+    [int]$Port
+  )
+
+  $processIds = @()
+
+  try {
+    $processIds = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
+      Select-Object -ExpandProperty OwningProcess -Unique
+  } catch {
+    $processIds = @()
+  }
+
+  if ($processIds -and $processIds.Count -gt 0) {
+    return $processIds | Sort-Object -Unique
+  }
+
+  $netstatOutput = netstat -ano | Select-String -Pattern "LISTENING\s+(\d+)$"
+  $matchedIds = @()
+
+  foreach ($line in $netstatOutput) {
+    $text = $line.Line
+    if ($text -match "[:\.]$Port\s+.*LISTENING\s+(\d+)$") {
+      $matchedIds += [int]$Matches[1]
+    }
+  }
+
+  return $matchedIds | Sort-Object -Unique
+}
+
+function Stop-ListenersOnPort {
+  param(
+    [int]$Port
+  )
+
+  $processIds = Get-ListeningProcessIdsForPort -Port $Port
+  if (-not $processIds -or $processIds.Count -eq 0) {
+    return
+  }
+
+  Write-Host "Port $Port is already in use. Stopping stale process(es): $($processIds -join ', ')" -ForegroundColor Yellow
+
+  foreach ($processId in $processIds) {
+    try {
+      Stop-Process -Id $processId -Force -ErrorAction Stop
+    } catch {
+      Write-Warning "Could not stop process $processId on port $Port. Please close it manually and retry."
+    }
+  }
+
+  Start-Sleep -Milliseconds 250
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectPath = Split-Path -Parent $scriptDir
 
@@ -51,6 +105,8 @@ if (-not $cargoBinaryPath) {
 
 $nodePath = Split-Path -Parent $npmPath
 $cargoPath = Split-Path -Parent $cargoBinaryPath
+
+Stop-ListenersOnPort -Port 1420
 
 $command = "`"$vcvarsPath`" && set `"PATH=$nodePath;$cargoPath;%PATH%`" && cd /d `"$projectPath`" && npm.cmd run tauri -- dev --no-watch"
 
