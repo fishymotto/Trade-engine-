@@ -7,9 +7,20 @@ export const useDebouncedSave = <T,>(
   enabled: boolean
 ) => {
   const isFirstRunRef = useRef(true);
+  const timeoutRef = useRef<number | null>(null);
+  const latestValueRef = useRef(value);
+  const latestOnSaveRef = useRef(onSave);
+
+  latestValueRef.current = value;
+  latestOnSaveRef.current = onSave;
 
   useEffect(() => {
     if (!enabled) {
+      if (timeoutRef.current !== null) {
+        window.clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+        latestOnSaveRef.current(latestValueRef.current);
+      }
       return;
     }
 
@@ -18,10 +29,24 @@ export const useDebouncedSave = <T,>(
       return;
     }
 
-    const timeoutId = window.setTimeout(() => {
-      onSave(value);
-    }, delayMs);
+    if (timeoutRef.current !== null) {
+      window.clearTimeout(timeoutRef.current);
+    }
 
-    return () => window.clearTimeout(timeoutId);
-  }, [delayMs, enabled, onSave, value]);
+    timeoutRef.current = window.setTimeout(() => {
+      timeoutRef.current = null;
+      latestOnSaveRef.current(latestValueRef.current);
+    }, delayMs);
+  }, [delayMs, enabled, value]);
+
+  useEffect(
+    () => () => {
+      if (timeoutRef.current !== null) {
+        window.clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+        latestOnSaveRef.current(latestValueRef.current);
+      }
+    },
+    []
+  );
 };
