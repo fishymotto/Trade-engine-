@@ -143,6 +143,42 @@ const normalizeJournalTradeDate = (value: string) => {
   return parsed.toISOString().slice(0, 10);
 };
 
+const createJournalPageRecord = (
+  tradeDate: string,
+  checklistTemplates: JournalChecklistTemplates,
+  timestamp: string
+): JournalPageRecord => {
+  const templateContent = buildJournalTemplate(checklistTemplates);
+
+  return {
+    id: `journal-${tradeDate}-${timestamp}`,
+    title: templateContent.title,
+    tradeDate,
+    dayGrade: templateContent.dayGrade,
+    marketRegime: templateContent.marketRegime,
+    mpp: templateContent.mpp,
+    sleepHours: templateContent.sleepHours,
+    sleepScore: templateContent.sleepScore,
+    morningMood: templateContent.morningMood,
+    openMood: templateContent.openMood,
+    afternoonMood: templateContent.afternoonMood,
+    closeMood: templateContent.closeMood,
+    screenshotUrls: templateContent.screenshotUrls,
+    closingChecklistContent: templateContent.closingChecklistContent,
+    morningChecklistContent: templateContent.morningChecklistContent,
+    morningContent: templateContent.morningContent,
+    closingContent: templateContent.closingContent,
+    mppPlanContent: templateContent.mppPlanContent,
+    notesContent: templateContent.notesContent,
+    morningBlocks: [],
+    closingBlocks: [],
+    mppPlanBlocks: [],
+    blocks: [],
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+};
+
 const downloadCsvInBrowser = (fileName: string, contents: string): void => {
   const blob = new Blob([contents], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -402,6 +438,44 @@ function App() {
       setSelectedJournalPageId(journalPages[0].id);
     }
   }, [journalPages, selectedJournalPageId]);
+
+  useEffect(() => {
+    if (!tradeSessionsLoaded || !journalPagesLoaded || !journalChecklistTemplatesLoaded) {
+      return;
+    }
+
+    const tradeDates = Array.from(
+      new Set(
+        tradeSessions
+          .map((session) => normalizeJournalTradeDate(session.tradeDate))
+          .filter((tradeDate) => tradeDate.length > 0)
+      )
+    );
+
+    if (tradeDates.length === 0) {
+      return;
+    }
+
+    setJournalPages((current) => {
+      const existingDates = new Set(current.map((page) => normalizeJournalTradeDate(page.tradeDate)));
+      const missingDates = tradeDates.filter((tradeDate) => !existingDates.has(tradeDate));
+
+      if (missingDates.length === 0) {
+        return current;
+      }
+
+      const startMs = Date.now();
+      const missingPages = missingDates.map((tradeDate, index) =>
+        createJournalPageRecord(
+          tradeDate,
+          journalChecklistTemplates,
+          new Date(startMs + index).toISOString()
+        )
+      );
+
+      return [...current, ...missingPages].sort((left, right) => right.tradeDate.localeCompare(left.tradeDate));
+    });
+  }, [tradeSessions, tradeSessionsLoaded, journalPagesLoaded, journalChecklistTemplates, journalChecklistTemplatesLoaded]);
 
   const runConnectionTest = async (): Promise<string> => {
     try {
@@ -773,34 +847,7 @@ function App() {
     }
 
     const timestamp = new Date().toISOString();
-    const templateContent = buildJournalTemplate(journalChecklistTemplates);
-    const newPage: JournalPageRecord = {
-      id: `journal-${timestamp}`,
-      title: templateContent.title,
-      tradeDate: normalizedTradeDate,
-      dayGrade: templateContent.dayGrade,
-      marketRegime: templateContent.marketRegime,
-      mpp: templateContent.mpp,
-      sleepHours: templateContent.sleepHours,
-      sleepScore: templateContent.sleepScore,
-      morningMood: templateContent.morningMood,
-      openMood: templateContent.openMood,
-      afternoonMood: templateContent.afternoonMood,
-      closeMood: templateContent.closeMood,
-      screenshotUrls: templateContent.screenshotUrls,
-      closingChecklistContent: templateContent.closingChecklistContent,
-      morningChecklistContent: templateContent.morningChecklistContent,
-      morningContent: templateContent.morningContent,
-      closingContent: templateContent.closingContent,
-      mppPlanContent: templateContent.mppPlanContent,
-      notesContent: templateContent.notesContent,
-      morningBlocks: [],
-      closingBlocks: [],
-      mppPlanBlocks: [],
-      blocks: [],
-      createdAt: timestamp,
-      updatedAt: timestamp
-    };
+    const newPage = createJournalPageRecord(normalizedTradeDate, journalChecklistTemplates, timestamp);
 
     setJournalPages((current) =>
       [newPage, ...current].sort((left, right) => right.tradeDate.localeCompare(left.tradeDate))

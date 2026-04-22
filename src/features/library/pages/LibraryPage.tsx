@@ -1690,6 +1690,14 @@ export const LibraryPage = ({
                       <span>Gross</span>
                       <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.gross, "-")} />
                     </label>
+                    <label className="library-open-page-property">
+                      <span>MPP</span>
+                      <input
+                        value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.mpp, "")}
+                        onChange={(event) => updatePageProperty(selectedPage, REVIEW_PROPERTY_KEYS.mpp, event.target.value)}
+                        placeholder="Enter MPP notes"
+                      />
+                    </label>
                     <label className="library-open-page-property library-open-page-property-red-days">
                       <span>Red Days</span>
                       <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.redDays, "-")} />
@@ -1835,12 +1843,25 @@ export const LibraryPage = ({
                         : setSelectedWeeklyReviewTemplateId
                     }
                     onChangeReflection={(next) =>
-                      updatePage(selectedPage.id, {
-                        properties: {
-                          ...(selectedPage.properties ?? {}),
-                          [REVIEW_REFLECTION_KEY]: next
-                        }
-                      })
+                      setPages((current) =>
+                        current.map((page) => {
+                          if (page.id !== selectedPage.id) {
+                            return page;
+                          }
+
+                          const currentReflection = coerceReviewReflectionState(page.properties?.[REVIEW_REFLECTION_KEY]);
+                          const nextReflection = typeof next === "function" ? next(currentReflection) : next;
+
+                          return {
+                            ...page,
+                            properties: {
+                              ...(page.properties ?? {}),
+                              [REVIEW_REFLECTION_KEY]: nextReflection
+                            },
+                            updatedAt: new Date().toISOString()
+                          };
+                        })
+                      )
                     }
                     onSaveTemplate={(templateId, content) =>
                       handleSaveReviewTemplate(selectedReviewPeriod === "monthly" ? "monthly" : "weekly", templateId, content)

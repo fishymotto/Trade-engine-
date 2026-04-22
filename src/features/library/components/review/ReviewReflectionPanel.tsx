@@ -30,7 +30,9 @@ type ReviewReflectionPanelProps = {
   defaultBookOptions: string[];
   defaultAuthorOptions: string[];
   onSelectTemplateId: (templateId: string) => void;
-  onChangeReflection: (next: ReviewReflectionState) => void;
+  onChangeReflection: (
+    next: ReviewReflectionState | ((current: ReviewReflectionState) => ReviewReflectionState)
+  ) => void;
   onSaveTemplate: (templateId: string, content: ReviewReflectionState) => void;
   onSaveTemplateAs: (name: string, content: ReviewReflectionState) => void;
   onDeleteTemplate: (templateId: string) => void;
@@ -79,40 +81,49 @@ export const ReviewReflectionPanel = ({
 
   const [pendingTemplateName, setPendingTemplateName] = useState("");
 
-  const setTakeaway = (takeaway: JSONContent) => onChangeReflection({ ...reflection, takeaway });
-  const setImprovementGoals = (improvementGoals: JSONContent) => onChangeReflection({ ...reflection, improvementGoals });
+  const setTakeaway = (takeaway: JSONContent) =>
+    onChangeReflection((current) => ({ ...current, takeaway }));
+  const setImprovementGoals = (improvementGoals: JSONContent) =>
+    onChangeReflection((current) => ({ ...current, improvementGoals }));
 
   const setReadingRow = (index: number, updates: Partial<ReviewReflectionState["reading"][number]>) => {
-    const rows = ensureTwoRows(reflection.reading);
-    const next = rows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...updates } : row));
-    onChangeReflection({ ...reflection, reading: next });
+    onChangeReflection((current) => {
+      const rows = ensureTwoRows(current.reading);
+      const next = rows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...updates } : row));
+      return { ...current, reading: next };
+    });
   };
 
   const removeReadingRow = (index: number) => {
-    const rows = ensureTwoRows(reflection.reading);
-    if (rows.length <= 2) {
-      return;
-    }
+    onChangeReflection((current) => {
+      const rows = ensureTwoRows(current.reading);
+      if (rows.length <= 2) {
+        return current;
+      }
 
-    onChangeReflection({ ...reflection, reading: rows.filter((_, rowIndex) => rowIndex !== index) });
+      return { ...current, reading: rows.filter((_, rowIndex) => rowIndex !== index) };
+    });
   };
 
-  const addReadingRow = () => {
-    const rows = ensureTwoRows(reflection.reading);
-    onChangeReflection({ ...reflection, reading: [...rows, { book: "", author: "", pages: "" }] });
-  };
+  const addReadingRow = () =>
+    onChangeReflection((current) => {
+      const rows = ensureTwoRows(current.reading);
+      return { ...current, reading: [...rows, { book: "", author: "", pages: "" }] };
+    });
 
   const toggleChecklistCell = (groupKey: keyof ReviewReflectionState["checklist"], index: number) => {
-    const current = Array.isArray(reflection.checklist[groupKey]) ? reflection.checklist[groupKey] : [];
-    const nextRow = Array.from({ length: 5 }, (_, idx) => Boolean(current[idx]));
-    nextRow[index] = !nextRow[index];
+    onChangeReflection((current) => {
+      const row = Array.isArray(current.checklist[groupKey]) ? current.checklist[groupKey] : [];
+      const nextRow = Array.from({ length: 5 }, (_, idx) => Boolean(row[idx]));
+      nextRow[index] = !nextRow[index];
 
-    onChangeReflection({
-      ...reflection,
-      checklist: {
-        ...reflection.checklist,
-        [groupKey]: nextRow
-      }
+      return {
+        ...current,
+        checklist: {
+          ...current.checklist,
+          [groupKey]: nextRow
+        }
+      };
     });
   };
 
