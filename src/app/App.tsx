@@ -47,7 +47,7 @@ import {
 import { loadWorkspaceState, saveWorkspaceState } from "../lib/workspace/workspaceStore";
 import { defaultSettings, loadSettings, saveSettings } from "../lib/settings/settingsStore";
 import { syncStores } from "../lib/sync/syncStore";
-import { forcePushLocalDataToCloud, setUserIdForSync, syncUserDataOnLogin } from "../lib/sync/userDataSync";
+import { retryDirtyUserData, setUserIdForSync, syncUserDataOnLogin } from "../lib/sync/userDataSync";
 import type { AppNavItem, AppRoute } from "../types/app";
 import type { ChartInterval, HistoricalBarSet } from "../types/chart";
 import type { JournalContentField, JournalPageRecord } from "../types/journal";
@@ -425,12 +425,13 @@ function App() {
       // Flush in-memory workspace state to local sync cache first so force-seed
       // pushes what the user currently sees, not stale/empty cache values.
       const loadedTradeDates = Array.from(new Set(trades.map((trade) => trade.tradeDate))).sort();
+      const dedupedJournalPages = dedupeJournalPages(journalPages);
       await Promise.all([
         saveSettings(settings),
         saveTradeTagOptions(tradeTagOptions),
         saveTradeTagOverrides(tradeTagOverrides),
         saveTradeSessions(tradeSessions),
-        syncStores.journalPages.save(dedupeJournalPages(journalPages)),
+        syncStores.journalPages.save(dedupedJournalPages),
         syncStores.journalChecklistTemplates.save(journalChecklistTemplates),
         syncStores.tradeReviews.save(tradeReviews),
         syncStores.historicalBars.save(historicalBarSets),
@@ -444,7 +445,13 @@ function App() {
         })
       ]);
 
-      await forcePushLocalDataToCloud(user.id);
+      // Journal pages are the largest and most likely to be stale when local cache
+      // hits quota limits, so force-push them from in-memory state directly.
+      await syncStores.journalPages.forcePushRemote(dedupedJournalPages, user.id);
+
+      // Best-effort push for any other dirty stores, then rehydrate from cloud.
+      await retryDirtyUserData(user.id);
+      await syncUserDataOnLogin(user.id);
       setUserIdForSync(user.id);
       return "This computer's saved workspace was pushed to cloud. Pull from the other computer after signing in.";
     } catch (error) {

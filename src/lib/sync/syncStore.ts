@@ -702,6 +702,17 @@ export class HybridSyncStore {
     }
   }
 
+  async forcePushRemote<T>(data: T, userId: string): Promise<void> {
+    if (!userId) {
+      throw new Error(`Cannot force-push ${this.config.tableName} without a user id.`);
+    }
+
+    await this.enqueue(async () => {
+      await this.syncToSupabase(data, userId);
+      this.markRemoteSuccess(data, userId);
+    });
+  }
+
   async retryDirty<T>(defaultValue: T, userId?: string): Promise<boolean> {
     const user = userId || this.config.userId;
     if (!user) {
