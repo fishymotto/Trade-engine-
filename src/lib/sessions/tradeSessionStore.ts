@@ -1,7 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { TradeSessionRecord } from "../../types/session";
 import type { GroupedTrade } from "../../types/trade";
-import { syncStores } from "../sync/syncStore";
+import { canUseMachineLegacyData, syncStores } from "../sync/syncStore";
 
 const STORAGE_KEY = "trade-engine-trade-sessions";
 
@@ -25,12 +25,15 @@ const loadTradeSessionsFromDesktopBackup = async (): Promise<TradeSessionRecord[
 
 export const loadTradeSessions = async (): Promise<TradeSessionRecord[]> => {
   const localSessions = syncStores.tradeSessions.load<TradeSessionRecord[]>([]);
+  const activeUserId = syncStores.tradeSessions.getUserId();
+  const allowLegacyDesktopBackup = canUseMachineLegacyData(activeUserId);
+
   if (!isTauri()) {
     return localSessions;
   }
 
   const localRaw = localStorage.getItem(STORAGE_KEY);
-  if (!localRaw || localSessions.length === 0) {
+  if (allowLegacyDesktopBackup && (!localRaw || localSessions.length === 0)) {
     const desktopSessions = await loadTradeSessionsFromDesktopBackup();
     if (desktopSessions && desktopSessions.length > 0) {
       return desktopSessions;

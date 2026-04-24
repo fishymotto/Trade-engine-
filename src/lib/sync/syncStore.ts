@@ -30,6 +30,7 @@ export interface SyncHydrationResult {
 }
 
 export const SYNC_HYDRATED_EVENT = 'trade-engine-sync-hydrated';
+const MACHINE_OWNER_USER_ID_KEY = 'trade-engine-machine-owner-user-id';
 
 const stableStringify = (value: unknown): string => {
   if (value === null || value === undefined) {
@@ -78,6 +79,51 @@ const isStorageQuotaExceededError = (error: unknown): boolean => {
 };
 
 const hasLocalStorage = (): boolean => typeof window !== 'undefined' && Boolean(window.localStorage);
+
+const getMachineOwnerUserIdUnsafe = (): string | null => {
+  if (!hasLocalStorage()) {
+    return null;
+  }
+
+  try {
+    const raw = localStorage.getItem(MACHINE_OWNER_USER_ID_KEY);
+    if (!raw || !raw.trim()) {
+      return null;
+    }
+
+    return raw;
+  } catch {
+    return null;
+  }
+};
+
+const setMachineOwnerUserIdUnsafe = (userId: string): void => {
+  if (!hasLocalStorage() || !userId.trim()) {
+    return;
+  }
+
+  try {
+    localStorage.setItem(MACHINE_OWNER_USER_ID_KEY, userId);
+  } catch (err) {
+    console.warn('[sync] Failed to persist machine owner user id.', err);
+  }
+};
+
+export const getMachineOwnerUserId = (): string | null => getMachineOwnerUserIdUnsafe();
+
+export const canUseMachineLegacyData = (userId?: string): boolean => {
+  if (!userId) {
+    return true;
+  }
+
+  const ownerId = getMachineOwnerUserIdUnsafe();
+  if (!ownerId) {
+    setMachineOwnerUserIdUnsafe(userId);
+    return true;
+  }
+
+  return ownerId === userId;
+};
 
 const isProbablyDefaultValue = <T>(value: T, defaultValue: T): boolean => {
   try {
@@ -278,8 +324,20 @@ export class HybridSyncStore {
     this.hasMemoryValue = true;
   }
 
+  private clearMemoryValue(): void {
+    this.memoryValue = undefined;
+    this.hasMemoryValue = false;
+  }
+
   setUserId(userId?: string): void {
+    if (this.config.userId !== userId) {
+      this.clearMemoryValue();
+    }
     this.config.userId = userId;
+  }
+
+  getUserId(): string | undefined {
+    return this.config.userId;
   }
 
   /**
@@ -502,13 +560,22 @@ export class HybridSyncStore {
     try {
       const localValue = this.load(defaultValue);
       const metadata = this.loadMetadata();
-      const localHash = hashValue(localValue);
-      const hasLocalValue = !isProbablyDefaultValue(localValue, defaultValue);
+      const localBelongsToCurrentUser =
+        metadata.lastSyncedUserId === userId || canUseMachineLegacyData(userId);
+      const effectiveLocalValue = localBelongsToCurrentUser ? localValue : defaultValue;
+      const localHash = hashValue(effectiveLocalValue);
+      const hasLocalValue = !isProbablyDefaultValue(effectiveLocalValue, defaultValue);
       const localIsSyncedCloudCache =
         metadata.lastSyncedUserId === userId && metadata.lastSyncedHash === localHash && !metadata.dirty;
       const hasLegacyLocalValue = hasLocalValue && !metadata.lastSyncedHash;
       const shouldPushLocal =
         options.forcePushLocal || metadata.dirty || (hasLegacyLocalValue && options.preferCloud === false);
+
+      if (!localBelongsToCurrentUser && !isProbablyDefaultValue(localValue, defaultValue)) {
+        console.info(
+          `[sync] ${this.config.tableName}: ignoring local cache because it belongs to a different user.`
+        );
+      }
 
       if (metadata.dirty) {
         console.debug(`[sync] ${this.config.tableName}: dirty local cache found during hydration`);
@@ -523,7 +590,7 @@ export class HybridSyncStore {
       if (error) {
         console.warn(`Failed to sync from Supabase (${this.config.tableName}):`, error);
         return {
-          value: localValue,
+          value: effectiveLocalValue,
           result: {
             tableName: this.config.tableName,
             storageKey: this.config.storageKey,
@@ -541,10 +608,10 @@ export class HybridSyncStore {
           // This avoids a "blank on new device" experience when users had data before signing in.
           try {
             console.debug(`[sync] ${this.config.tableName}: seeding cloud from local cache`);
-            await this.syncToSupabase(localValue, userId);
-            this.markRemoteSuccess(localValue, userId);
+            await this.syncToSupabase(effectiveLocalValue, userId);
+            this.markRemoteSuccess(effectiveLocalValue, userId);
             return {
-              value: localValue,
+              value: effectiveLocalValue,
               result: {
                 tableName: this.config.tableName,
                 storageKey: this.config.storageKey,
@@ -559,8 +626,28 @@ export class HybridSyncStore {
           }
         }
 
+        try {
+          console.debug(`[sync] ${this.config.tableName}: initializing blank workspace defaults`);
+          await this.syncToSupabase(defaultValue, userId);
+          this.cacheSyncedValue(defaultValue, userId);
+          return {
+            value: defaultValue,
+            result: {
+              tableName: this.config.tableName,
+              storageKey: this.config.storageKey,
+              source: 'seeded-cloud',
+              pushed: true,
+              dirty: false,
+            },
+          };
+        } catch (seedDefaultError) {
+          console.warn(`Failed to initialize defaults in Supabase (${this.config.tableName}):`, seedDefaultError);
+          this.markRemoteFailure(seedDefaultError);
+        }
+
+        this.cacheSyncedValue(defaultValue, userId);
         return {
-          value: localValue,
+          value: defaultValue,
           result: {
             tableName: this.config.tableName,
             storageKey: this.config.storageKey,
@@ -577,10 +664,10 @@ export class HybridSyncStore {
 
       if (options.forcePushLocal && hasLocalValue) {
         console.debug(`[sync] ${this.config.tableName}: force-pushing local cache over cloud`);
-        await this.syncToSupabase(localValue, userId);
-        this.markRemoteSuccess(localValue, userId);
+        await this.syncToSupabase(effectiveLocalValue, userId);
+        this.markRemoteSuccess(effectiveLocalValue, userId);
         return {
-          value: localValue,
+          value: effectiveLocalValue,
           result: {
             tableName: this.config.tableName,
             storageKey: this.config.storageKey,
@@ -607,24 +694,24 @@ export class HybridSyncStore {
       }
 
       const shouldUseLocalWholeValue =
-        !Array.isArray(localValue) &&
+        !Array.isArray(effectiveLocalValue) &&
         !Array.isArray(parsed) &&
-        (!isPlainRecord(localValue) || !isPlainRecord(parsed)) &&
+        (!isPlainRecord(effectiveLocalValue) || !isPlainRecord(parsed)) &&
         (metadata.dirty ||
-          shouldPreferLocalOverCloud(localValue, parsed, defaultValue, data.updated_at));
+          shouldPreferLocalOverCloud(effectiveLocalValue, parsed, defaultValue, data.updated_at));
 
       if (shouldUseLocalWholeValue) {
         try {
           console.debug(`[sync] ${this.config.tableName}: pushing newer local value`);
-          await this.syncToSupabase(localValue, userId);
-          this.markRemoteSuccess(localValue, userId);
+          await this.syncToSupabase(effectiveLocalValue, userId);
+          this.markRemoteSuccess(effectiveLocalValue, userId);
         } catch (mergeError) {
           console.warn(`Failed to sync newer local data to Supabase (${this.config.tableName}):`, mergeError);
           this.markRemoteFailure(mergeError);
         }
 
         return {
-          value: localValue,
+          value: effectiveLocalValue,
           result: {
             tableName: this.config.tableName,
             storageKey: this.config.storageKey,
@@ -635,7 +722,7 @@ export class HybridSyncStore {
         };
       }
 
-      const merged = mergeSyncedValues(localValue, parsed);
+      const merged = mergeSyncedValues(effectiveLocalValue, parsed);
       const mergedHash = hashValue(merged);
 
       if (mergedHash !== cloudHash) {
@@ -690,8 +777,12 @@ export class HybridSyncStore {
     } catch (err) {
       console.warn(`Failed to parse Supabase data (${this.config.tableName}):`, err);
       const localValue = this.load(defaultValue);
+      const metadata = this.loadMetadata();
+      const localBelongsToCurrentUser =
+        metadata.lastSyncedUserId === userId || canUseMachineLegacyData(userId);
+      const effectiveLocalValue = localBelongsToCurrentUser ? localValue : defaultValue;
       return {
-        value: localValue,
+        value: effectiveLocalValue,
         result: {
           tableName: this.config.tableName,
           storageKey: this.config.storageKey,

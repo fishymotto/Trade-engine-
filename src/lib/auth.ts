@@ -17,6 +17,7 @@ export type AuthUser = {
   id: string;
   email: string;
   username?: string;
+  isAdmin?: boolean;
 };
 
 export type User = AuthUser;
@@ -56,6 +57,7 @@ export class AuthService {
       id: data.user.id,
       email: data.user.email || email,
       username: username || email.split('@')[0],
+      isAdmin: false,
     };
   }
 
@@ -81,6 +83,7 @@ export class AuthService {
       id: data.user.id,
       email: profile?.email || data.user.email || email,
       username: profile?.username || email.split('@')[0],
+      isAdmin: Boolean(profile?.is_admin),
     };
   }
 
@@ -110,6 +113,7 @@ export class AuthService {
         id: user.id,
         email: user.email || '',
         username: user.user_metadata?.username,
+        isAdmin: false,
       };
     }
 
@@ -117,6 +121,7 @@ export class AuthService {
       id: profile.id,
       email: profile.email,
       username: profile.username,
+      isAdmin: Boolean(profile.is_admin),
     };
   }
 

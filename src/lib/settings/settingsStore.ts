@@ -1,6 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { Settings } from "../../types/trade";
-import { syncStores } from "../sync/syncStore";
+import { canUseMachineLegacyData, syncStores } from "../sync/syncStore";
 
 const STORAGE_KEY = "trade-engine-settings";
 const MACHINE_SETTINGS_KEY = "trade-engine-machine-settings";
@@ -165,6 +165,9 @@ export const loadSettings = async (): Promise<Settings> => {
   const machineSettings = loadMachineSettings();
   const localSettings = loadSettingsFromLocalStorage();
   const localRaw = localStorage.getItem(STORAGE_KEY);
+  const activeUserId = syncStores.settings.getUserId();
+  const allowLegacyDesktopBackup = canUseMachineLegacyData(activeUserId);
+
   if (!isTauri()) {
     return {
       ...localSettings,
@@ -173,6 +176,13 @@ export const loadSettings = async (): Promise<Settings> => {
   }
 
   if (localRaw && hasMeaningfulLocalSettings(localSettings, machineSettings)) {
+    return {
+      ...localSettings,
+      exportFolder: machineSettings.exportFolder
+    };
+  }
+
+  if (!allowLegacyDesktopBackup) {
     return {
       ...localSettings,
       exportFolder: machineSettings.exportFolder

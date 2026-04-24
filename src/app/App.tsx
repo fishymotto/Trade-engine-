@@ -14,6 +14,7 @@ import {
 } from "../lib/journal/journalTemplateStore";
 import { buildCsvContent, toExportRows } from "../features/export/lib/csvExporter";
 import { dedupeJournalPages, loadJournalPages, saveJournalPages } from "../lib/journal/journalStore";
+import { loadAdminWorkspaceUsers } from "../lib/admin/adminUsers";
 import {
   findNotionDuplicates,
   importTradesToNotion,
@@ -288,10 +289,6 @@ function App() {
 
         if (!existingUser) {
           setUserIdForSync(undefined);
-          await hydrateWorkspaceFromStores();
-          if (cancelled) {
-            return;
-          }
           setUser(null);
           setAuthChecked(true);
           return;
@@ -487,6 +484,29 @@ function App() {
       return result.message;
     } catch (error) {
       return error instanceof Error ? error.message : "The Notion connection test failed.";
+    }
+  };
+
+  const loadAdminUsers = async () => {
+    if (!user?.isAdmin) {
+      return [];
+    }
+
+    return loadAdminWorkspaceUsers();
+  };
+
+  const handleSignOut = async (): Promise<void> => {
+    setSyncing(true);
+    try {
+      await requestFlushDebouncedSaves();
+      await authService.logout();
+      setUserIdForSync(undefined);
+      setUser(null);
+      setMessage("Signed out. Sign in to open your private workspace.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Sign out failed.");
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -1318,10 +1338,12 @@ function App() {
         return (
           <SettingsPage
             settings={settings}
+            isAdmin={Boolean(user?.isAdmin)}
             onChange={setSettings}
             onBrowse={handleBrowseFolder}
             onTestConnection={runConnectionTest}
             onForceCloudSeed={handleForceCloudSeed}
+            onLoadAdminUsers={loadAdminUsers}
           />
         );
       default:
@@ -1370,7 +1392,15 @@ function App() {
         }
       >
         {user ? (
-          <AppLayout activeRoute={activeRoute} navItems={navItems} onNavigate={setActiveRoute}>
+          <AppLayout
+            activeRoute={activeRoute}
+            navItems={navItems}
+            onNavigate={setActiveRoute}
+            accountLabel={user.email || user.username || "Signed in"}
+            onSignOut={() => {
+              void handleSignOut();
+            }}
+          >
             {renderActivePage()}
           </AppLayout>
         ) : null}

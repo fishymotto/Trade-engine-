@@ -846,9 +846,131 @@ const tickerGroupSeedPages: LibraryPageRecord[] = [
 
 const librarySeedPages: LibraryPageRecord[] = [...tickerGroupSeedPages, ...notionSeedPages];
 
+const WORKSPACE_TEMPLATE_TIMESTAMP = "2026-04-24T00:00:00.000Z";
+
+const createWorkspaceTemplatePage = (
+  id: string,
+  collectionId: LibraryCollectionId,
+  title: string,
+  placeholder: string,
+  properties: LibraryPageRecord["properties"] = undefined
+): LibraryPageRecord => ({
+  id,
+  collectionId,
+  title,
+  status: "Template",
+  tags: ["workspace-template"],
+  sourceUrl: "",
+  properties,
+  content: doc([heading(1, title), paragraph(placeholder)]),
+  createdAt: WORKSPACE_TEMPLATE_TIMESTAMP,
+  updatedAt: WORKSPACE_TEMPLATE_TIMESTAMP
+});
+
+const createReviewTemplateProperties = (): NonNullable<LibraryPageRecord["properties"]> => ({
+  "Range Start": "",
+  "Range End": "",
+  "Tickers Traded": [],
+  Trades: "",
+  Shares: "",
+  "Win Rate": "",
+  Net: "",
+  Gross: "",
+  MPP: "",
+  "Closed Orders": "",
+  "Breach Days": [],
+  Overall: "",
+  "Risk Management": "",
+  Psychology: "",
+  "Trading Plans": "",
+  "Red Days": "",
+  "Green Days": "",
+  __review_reflection_v1: defaultReviewReflectionState()
+});
+
 export const createDefaultLibraryPages = (): LibraryPageRecord[] => [
-  createStarterPage("idea-inbox", "New trading idea", ["idea"]),
-  ...librarySeedPages
+  createWorkspaceTemplatePage(
+    "workspace-template-idea-inbox",
+    "idea-inbox",
+    "Trading Notes Template",
+    "Add your notes here."
+  ),
+  createWorkspaceTemplatePage(
+    "workspace-template-trading-notes",
+    "trading-notes",
+    "Book Club Notes Template",
+    "Add your notes here."
+  ),
+  createWorkspaceTemplatePage(
+    "workspace-template-replay",
+    "replay",
+    "Replay Review Template",
+    "Add your trade review here."
+  ),
+  createWorkspaceTemplatePage(
+    "workspace-template-signal-mapping",
+    "signal-mapping",
+    "Signal Mapping Template",
+    "Add your setup rules here."
+  ),
+  createWorkspaceTemplatePage(
+    "workspace-template-book-club",
+    "book-club",
+    "Trading Books Template",
+    "Add your notes here."
+  ),
+  createWorkspaceTemplatePage(
+    "workspace-template-book-row",
+    "book-club",
+    "Book Row Template",
+    "Add your notes here.",
+    {
+      Author: "",
+      "Reading Status": "To Read",
+      Rating: "",
+      Genre: [],
+      Review: "",
+      Summary: ""
+    }
+  ),
+  createWorkspaceTemplatePage(
+    "workspace-template-quote-row",
+    "quotes",
+    "Quote Template",
+    "Add your notes here.",
+    {
+      Quote: "",
+      Author: "",
+      Source: "",
+      Used: false,
+      "Date Used": ""
+    }
+  ),
+  createWorkspaceTemplatePage(
+    "workspace-template-weekly-review",
+    "weekly-review",
+    "Weekly Review Template",
+    "Add your trade review here.",
+    createReviewTemplateProperties()
+  ),
+  createWorkspaceTemplatePage(
+    "workspace-template-monthly-review",
+    "monthly-review",
+    "Monthly Review Template",
+    "Add your trade review here.",
+    createReviewTemplateProperties()
+  ),
+  createWorkspaceTemplatePage(
+    "workspace-template-ticker-group",
+    "ticker-groups",
+    "Ticker Group Template",
+    "Add your setup rules here.",
+    {
+      [TICKER_GROUP_PROPERTY_KEYS.icon]: "",
+      [TICKER_GROUP_PROPERTY_KEYS.description]: "",
+      [TICKER_GROUP_PROPERTY_KEYS.tickers]: []
+    }
+  )
 ];
 
 const normalizeLibraryPage = (page: Partial<LibraryPageRecord>): LibraryPageRecord => {
@@ -916,35 +1038,13 @@ export const loadLibraryPages = (): LibraryPageRecord[] => {
     }
 
     const normalizedPages = parsed.map(normalizeLibraryPage);
-    const seedVersion = localStorage.getItem(SEED_VERSION_KEY);
-    const pagesWithSeedRefresh =
-      seedVersion === CURRENT_SEED_VERSION
-        ? normalizedPages
-        : normalizedPages.map((page) => {
-            const seedPage = notionSeedPageMap.get(page.id);
-            if (seedPage && page.tags.includes("notion-import") && page.updatedAt === SEED_TIMESTAMP) {
-              return seedPage;
-            }
+    localStorage.setItem(SEED_VERSION_KEY, CURRENT_SEED_VERSION);
 
-            return page;
-          });
-
-    const seededPages =
-      seedVersion === CURRENT_SEED_VERSION
-        ? pagesWithSeedRefresh
-        : [
-            ...librarySeedPages.filter((seedPage) =>
-              pagesWithSeedRefresh.every((page) => page.id !== seedPage.id)
-            ),
-            ...pagesWithSeedRefresh
-          ];
-
-    if (seedVersion !== CURRENT_SEED_VERSION) {
-      localStorage.setItem(SEED_VERSION_KEY, CURRENT_SEED_VERSION);
-      saveLibraryPages(seededPages);
+    if (normalizedPages.length === 0) {
+      return createDefaultLibraryPages();
     }
 
-    return seededPages.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    return normalizedPages.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   } catch {
     localStorage.setItem(SEED_VERSION_KEY, CURRENT_SEED_VERSION);
     return createDefaultLibraryPages();

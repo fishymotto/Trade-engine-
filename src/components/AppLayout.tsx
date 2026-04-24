@@ -6,10 +6,12 @@ interface AppLayoutProps {
   activeRoute: AppRoute;
   navItems: AppNavItem[];
   onNavigate: (route: AppRoute) => void;
+  accountLabel?: string;
+  onSignOut?: () => void;
   children: ReactNode;
 }
 
-export const AppLayout = ({ activeRoute, navItems, onNavigate, children }: AppLayoutProps) => {
+export const AppLayout = ({ activeRoute, navItems, onNavigate, accountLabel, onSignOut, children }: AppLayoutProps) => {
   const highlightedRoute: AppRoute = activeRoute === "playbooks" ? "library" : activeRoute;
 
   return (
@@ -32,6 +34,16 @@ export const AppLayout = ({ activeRoute, navItems, onNavigate, children }: AppLa
             </button>
           ))}
         </nav>
+        {accountLabel ? (
+          <div className="top-nav-account">
+            <span className="top-nav-account-label">{accountLabel}</span>
+            {onSignOut ? (
+              <button type="button" className="top-nav-link top-nav-signout" onClick={onSignOut}>
+                Sign Out
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </header>
       <div className="workspace-content">{children}</div>
     </div>

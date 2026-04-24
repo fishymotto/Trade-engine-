@@ -148,6 +148,36 @@ const createPlaceholderPlaybook = (name: string): PlaybookRecord => {
   };
 };
 
+const createWorkspaceTemplatePlaybook = (name: string): PlaybookRecord => ({
+  ...createPlaceholderPlaybook(name),
+  createdAt: "2026-04-24T00:00:00.000Z",
+  updatedAt: "2026-04-24T00:00:00.000Z"
+});
+
+const DEFAULT_WORKSPACE_PLAYBOOK_NAMES = [
+  "Wide Spread Open Drive",
+  "Imbalance number NY/NQ Scalping",
+  "6/12 EMA Cross",
+  ...SEEDED_PLAYBOOK_NAMES
+] as const;
+
+export const createDefaultWorkspacePlaybooks = (): PlaybookRecord[] => {
+  const seen = new Set<string>();
+  const templates: PlaybookRecord[] = [];
+
+  for (const name of DEFAULT_WORKSPACE_PLAYBOOK_NAMES) {
+    const normalized = normalizeName(name);
+    if (seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    templates.push(createWorkspaceTemplatePlaybook(name));
+  }
+
+  return templates;
+};
+
 const createDefaultWideSpreadOpenDrive = (): PlaybookRecord => {
   const timestamp = new Date().toISOString();
 
@@ -675,17 +705,17 @@ const hydrateSeededPlaybooks = (playbooks: PlaybookRecord[]): PlaybookRecord[] =
 
 export const loadPlaybooks = (): PlaybookRecord[] => {
   if (typeof window === "undefined") {
-    return [createDefaultWideSpreadOpenDrive()];
+    return createDefaultWorkspacePlaybooks();
   }
 
   try {
     const parsed = syncStores.playbooks.load<unknown>(null);
     if (!parsed) {
-      return [createDefaultWideSpreadOpenDrive()];
+      return createDefaultWorkspacePlaybooks();
     }
 
     if (!Array.isArray(parsed)) {
-      return [createDefaultWideSpreadOpenDrive()];
+      return createDefaultWorkspacePlaybooks();
     }
 
     const playbooks = parsed
@@ -730,9 +760,9 @@ export const loadPlaybooks = (): PlaybookRecord[] => {
           }))
       }));
 
-    return hydrateSeededPlaybooks(ensureDefaultPlaybook(playbooks));
+    return playbooks.length > 0 ? playbooks : createDefaultWorkspacePlaybooks();
   } catch {
-    return [createDefaultWideSpreadOpenDrive()];
+    return createDefaultWorkspacePlaybooks();
   }
 };
 

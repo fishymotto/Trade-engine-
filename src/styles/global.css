@@ -87,6 +87,25 @@ body {
   gap: 8px;
 }
 
+.top-nav-account {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.top-nav-account-label {
+  color: var(--text-soft);
+  font-size: 0.84rem;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.top-nav-signout {
+  padding: 8px 12px;
+}
+
 .top-nav-link {
   border: 1px solid transparent;
   background: transparent;
@@ -7715,8 +7734,9 @@ body {
 }
 
 .settings-page-layout {
-  display: flex;
-  justify-content: center;
+  display: grid;
+  gap: 16px;
+  justify-items: center;
 }
 
 .settings-page-card {
@@ -7728,6 +7748,8 @@ body {
 .settings-page-actions {
   display: flex;
   justify-content: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .modal-header {
@@ -7819,6 +7841,61 @@ body {
   gap: 10px;
 }
 
+.settings-admin-card {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-admin-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-admin-header h3 {
+  margin: 0 0 4px;
+}
+
+.settings-admin-header p {
+  margin: 0;
+  color: var(--text-soft);
+}
+
+.settings-admin-table-wrap {
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+}
+
+.settings-admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 520px;
+}
+
+.settings-admin-table th,
+.settings-admin-table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.9rem;
+}
+
+.settings-admin-table th {
+  color: var(--text-soft);
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.settings-admin-table tr:last-child td {
+  border-bottom: none;
+}
+
+.settings-admin-empty {
+  color: var(--text-soft);
+}
+
 @media (max-width: 760px) {
   .top-nav {
     height: auto;
@@ -7829,6 +7906,11 @@ body {
 
   .top-nav-links {
     justify-content: flex-start;
+  }
+
+  .top-nav-account {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .workspace-content {

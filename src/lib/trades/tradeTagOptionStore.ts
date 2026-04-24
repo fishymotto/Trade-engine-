@@ -1,6 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { EditableTradeTagField, TradeTagOptionsRecord } from "../../types/tradeTags";
-import { syncStores } from "../sync/syncStore";
+import { canUseMachineLegacyData, syncStores } from "../sync/syncStore";
 
 const STORAGE_KEY = "trade-engine-trade-tag-options";
 
@@ -61,12 +61,15 @@ const loadTradeTagOptionsFromDesktopBackup = async (): Promise<TradeTagOptionsRe
 
 export const loadTradeTagOptions = async (): Promise<TradeTagOptionsRecord> => {
   const localOptions = loadTradeTagOptionsFromLocalStorage();
+  const activeUserId = syncStores.tradeTagOptions.getUserId();
+  const allowLegacyDesktopBackup = canUseMachineLegacyData(activeUserId);
+
   if (!isTauri()) {
     return localOptions;
   }
 
   const localRaw = localStorage.getItem(STORAGE_KEY);
-  if (!localRaw || !hasTradeTagOptions(localOptions)) {
+  if (allowLegacyDesktopBackup && (!localRaw || !hasTradeTagOptions(localOptions))) {
     const desktopOptions = await loadTradeTagOptionsFromDesktopBackup();
     if (desktopOptions && hasTradeTagOptions(desktopOptions)) {
       return desktopOptions;

@@ -1,6 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { TradeTagOverrideRecord } from "../../types/tradeTags";
-import { syncStores } from "../sync/syncStore";
+import { canUseMachineLegacyData, syncStores } from "../sync/syncStore";
 
 const STORAGE_KEY = "trade-engine-trade-tag-overrides";
 
@@ -35,12 +35,15 @@ const loadTradeTagOverridesFromDesktopBackup = async (): Promise<TradeTagOverrid
 
 export const loadTradeTagOverrides = async (): Promise<TradeTagOverrideRecord[]> => {
   const localOverrides = loadTradeTagOverridesFromLocalStorage();
+  const activeUserId = syncStores.tradeTagOverrides.getUserId();
+  const allowLegacyDesktopBackup = canUseMachineLegacyData(activeUserId);
+
   if (!isTauri()) {
     return localOverrides;
   }
 
   const localRaw = localStorage.getItem(STORAGE_KEY);
-  if (!localRaw || localOverrides.length === 0) {
+  if (allowLegacyDesktopBackup && (!localRaw || localOverrides.length === 0)) {
     const desktopOverrides = await loadTradeTagOverridesFromDesktopBackup();
     if (desktopOverrides && desktopOverrides.length > 0) {
       return desktopOverrides;

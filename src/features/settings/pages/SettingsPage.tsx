@@ -1,19 +1,42 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "../../../components/Button";
 import { PageHero } from "../../../components/PageHero";
 import { tradeTagFieldLabels, tradeTagFields } from "../../../lib/trades/tradeTagCatalog";
+import type { AdminWorkspaceUserRecord } from "../../../lib/admin/adminUsers";
 import type { Settings } from "../../../types/trade";
 
 interface SettingsPageProps {
   settings: Settings;
+  isAdmin: boolean;
   onChange: (settings: Settings) => void;
   onBrowse: () => Promise<void>;
   onTestConnection: () => Promise<string>;
   onForceCloudSeed: () => Promise<string>;
+  onLoadAdminUsers: () => Promise<AdminWorkspaceUserRecord[]>;
 }
 
-export const SettingsPage = ({ settings, onChange, onBrowse, onTestConnection, onForceCloudSeed }: SettingsPageProps) => {
+const formatDate = (value: string): string => {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return parsed.toLocaleString();
+};
+
+export const SettingsPage = ({
+  settings,
+  isAdmin,
+  onChange,
+  onBrowse,
+  onTestConnection,
+  onForceCloudSeed,
+  onLoadAdminUsers
+}: SettingsPageProps) => {
   const [message, setMessage] = useState("");
+  const [adminUsers, setAdminUsers] = useState<AdminWorkspaceUserRecord[]>([]);
+  const [adminUsersLoading, setAdminUsersLoading] = useState(false);
+  const [adminUsersError, setAdminUsersError] = useState("");
 
   const update = (patch: Partial<Settings>) => onChange({ ...settings, ...patch });
   const updateTagVisibility = (field: keyof Settings["tradeTagVisibility"], enabled: boolean) =>
@@ -33,6 +56,27 @@ export const SettingsPage = ({ settings, onChange, onBrowse, onTestConnection, o
     setMessage("Pushing this computer to cloud...");
     setMessage(await onForceCloudSeed());
   };
+
+  const refreshAdminUsers = async () => {
+    if (!isAdmin) {
+      return;
+    }
+
+    setAdminUsersLoading(true);
+    setAdminUsersError("");
+    try {
+      const users = await onLoadAdminUsers();
+      setAdminUsers(users);
+    } catch (error) {
+      setAdminUsersError(error instanceof Error ? error.message : "Could not load users.");
+    } finally {
+      setAdminUsersLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshAdminUsers();
+  }, [isAdmin]);
 
   return (
     <main className="page-shell settings-page">
@@ -147,6 +191,53 @@ export const SettingsPage = ({ settings, onChange, onBrowse, onTestConnection, o
           </div>
           <p className="settings-message">{message}</p>
         </div>
+
+        {isAdmin ? (
+          <div className="modal settings-page-card settings-admin-card">
+            <div className="settings-admin-header">
+              <div>
+                <h3>Admin Panel</h3>
+                <p>Read-only user list for workspace administration.</p>
+              </div>
+              <Button variant="secondary" onClick={refreshAdminUsers} disabled={adminUsersLoading}>
+                {adminUsersLoading ? "Refreshing..." : "Refresh Users"}
+              </Button>
+            </div>
+
+            {adminUsersError ? <p className="settings-message">{adminUsersError}</p> : null}
+
+            <div className="settings-admin-table-wrap">
+              <table className="settings-admin-table">
+                <thead>
+                  <tr>
+                    <th>Email</th>
+                    <th>Username</th>
+                    <th>Role</th>
+                    <th>Created</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {adminUsers.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="settings-admin-empty">
+                        {adminUsersLoading ? "Loading users..." : "No users found yet."}
+                      </td>
+                    </tr>
+                  ) : (
+                    adminUsers.map((record) => (
+                      <tr key={record.id}>
+                        <td>{record.email || "(no email)"}</td>
+                        <td>{record.username || "(no username)"}</td>
+                        <td>{record.is_admin ? "Admin" : "User"}</td>
+                        <td>{formatDate(record.created_at)}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : null}
       </section>
     </main>
   );
