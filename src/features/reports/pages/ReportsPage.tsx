@@ -5,6 +5,7 @@ import { FilterSelect } from "../../../components/FilterSelect";
 import { PageHero } from "../../../components/PageHero";
 import { ReportBarChart } from "../../../components/ReportBarChart";
 import { ReportLineChart } from "../../../components/ReportLineChart";
+import { SymbolPills } from "../../../components/SymbolPills";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
 import {
   getCumulativeNetPnlByDate,
@@ -44,6 +45,9 @@ interface ReportsPageProps {
 
 const formatSignedMoney = (value: number): string => `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`;
 
+const getSignedValueClassName = (value: number): "positive-value" | "negative-value" =>
+  value >= 0 ? "positive-value" : "negative-value";
+
 const formatReportDate = (value: string): string => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return value;
@@ -57,16 +61,90 @@ const formatReportDate = (value: string): string => {
   });
 };
 
+type ActiveReportFilterKey = "date" | "playbook" | "symbol" | "status" | "game" | "execution";
+type ComparisonTone = "positive" | "negative" | "neutral";
+
+interface DateRangePreset {
+  key: "all" | "last5" | "last20" | "last60";
+  label: string;
+  sessionCount?: number;
+}
+
+interface PeriodComparisonMetric {
+  key: string;
+  label: string;
+  currentValue: string;
+  previousValue: string;
+  deltaValue: string;
+  tone: ComparisonTone;
+}
+
+const DATE_RANGE_PRESETS: DateRangePreset[] = [
+  { key: "all", label: "All Dates" },
+  { key: "last5", label: "Last 5 Sessions", sessionCount: 5 },
+  { key: "last20", label: "Last 20 Sessions", sessionCount: 20 },
+  { key: "last60", label: "Last 60 Sessions", sessionCount: 60 }
+];
+
 const formatActiveDateRange = (startValue: string, endValue: string): string => {
   if (startValue && endValue) {
     if (startValue === endValue) {
-      return startValue;
+      return formatReportDate(startValue);
     }
 
-    return `${startValue} to ${endValue}`;
+    return `${formatReportDate(startValue)} to ${formatReportDate(endValue)}`;
+  }
+
+  if (startValue) {
+    return `From ${formatReportDate(startValue)}`;
+  }
+
+  if (endValue) {
+    return `Through ${formatReportDate(endValue)}`;
   }
 
   return "All saved sessions";
+};
+
+const formatDateWindow = (datesAsc: string[]): string => {
+  if (datesAsc.length === 0) {
+    return "No sessions";
+  }
+
+  const startValue = datesAsc[0];
+  const endValue = datesAsc[datesAsc.length - 1];
+  if (startValue === endValue) {
+    return formatReportDate(startValue);
+  }
+
+  return `${formatReportDate(startValue)} to ${formatReportDate(endValue)}`;
+};
+
+const formatSignedCount = (value: number): string => `${value >= 0 ? "+" : "-"}${Math.abs(value).toLocaleString()}`;
+
+const getDeltaTone = (value: number): ComparisonTone => {
+  if (value > 0) {
+    return "positive";
+  }
+
+  if (value < 0) {
+    return "negative";
+  }
+
+  return "neutral";
+};
+
+const formatRelativeDelta = (delta: number, previousValue: number): string => {
+  if (previousValue === 0) {
+    if (delta === 0) {
+      return "0.0%";
+    }
+
+    return "new";
+  }
+
+  const relative = (delta / Math.abs(previousValue)) * 100;
+  return `${relative >= 0 ? "+" : ""}${relative.toFixed(1)}%`;
 };
 
 export const ReportsPage = ({
@@ -141,6 +219,46 @@ export const ReportsPage = ({
     () => Array.from(new Set(trades.map((trade) => trade.tradeDate))).sort((left, right) => right.localeCompare(left)),
     [trades]
   );
+  const resolveRecentSessionRange = (sessionCount: number): { startValue: string; endValue: string } | null => {
+    const selectedDates = tradeDateOptions.slice(0, sessionCount);
+    if (selectedDates.length === 0) {
+      return null;
+    }
+
+    return {
+      startValue: selectedDates[selectedDates.length - 1],
+      endValue: selectedDates[0]
+    };
+  };
+  const applyDatePreset = (preset: DateRangePreset) => {
+    if (!preset.sessionCount) {
+      setSelectedTradeDateFilterStart("");
+      setSelectedTradeDateFilterEnd("");
+      return;
+    }
+
+    const range = resolveRecentSessionRange(preset.sessionCount);
+    if (!range) {
+      setSelectedTradeDateFilterStart("");
+      setSelectedTradeDateFilterEnd("");
+      return;
+    }
+
+    setSelectedTradeDateFilterStart(range.startValue);
+    setSelectedTradeDateFilterEnd(range.endValue);
+  };
+  const isDatePresetActive = (preset: DateRangePreset): boolean => {
+    if (!preset.sessionCount) {
+      return !selectedTradeDateFilterStart && !selectedTradeDateFilterEnd;
+    }
+
+    const range = resolveRecentSessionRange(preset.sessionCount);
+    if (!range) {
+      return false;
+    }
+
+    return selectedTradeDateFilterStart === range.startValue && selectedTradeDateFilterEnd === range.endValue;
+  };
 
   const playbookOptions = useMemo(
     () =>
@@ -152,6 +270,23 @@ export const ReportsPage = ({
         )
       ).sort((left, right) => left.localeCompare(right)),
     [trades]
+  );
+  const playbookFilterOptions = useMemo(
+    () => {
+      const merged = new Set(playbookOptions);
+      const trimmedSelectedPlaybook = selectedPlaybookFilter.trim();
+      if (trimmedSelectedPlaybook && trimmedSelectedPlaybook !== "all") {
+        merged.add(trimmedSelectedPlaybook);
+      }
+
+      return [
+        { label: "All Playbooks", value: "all" },
+        ...Array.from(merged)
+          .sort((left, right) => left.localeCompare(right))
+          .map((playbook) => ({ label: playbook, value: playbook }))
+      ];
+    },
+    [playbookOptions, selectedPlaybookFilter]
   );
 
   const symbolOptions = useMemo(
@@ -184,17 +319,9 @@ export const ReportsPage = ({
     [trades]
   );
 
-  const filteredTrades = useMemo(
+  const attributeFilteredTrades = useMemo(
     () =>
       trades.filter((trade) => {
-        if (selectedTradeDateFilterStart && trade.tradeDate < selectedTradeDateFilterStart) {
-          return false;
-        }
-
-        if (selectedTradeDateFilterEnd && trade.tradeDate > selectedTradeDateFilterEnd) {
-          return false;
-        }
-
         if (selectedPlaybookFilter !== "all" && (trade.setups[0] ?? "") !== selectedPlaybookFilter) {
           return false;
         }
@@ -226,7 +353,25 @@ export const ReportsPage = ({
       selectedGameFilter,
       selectedPlaybookFilter,
       selectedStatusFilter,
-      selectedSymbolFilter,
+      selectedSymbolFilter
+    ]
+  );
+
+  const filteredTrades = useMemo(
+    () =>
+      attributeFilteredTrades.filter((trade) => {
+        if (selectedTradeDateFilterStart && trade.tradeDate < selectedTradeDateFilterStart) {
+          return false;
+        }
+
+        if (selectedTradeDateFilterEnd && trade.tradeDate > selectedTradeDateFilterEnd) {
+          return false;
+        }
+
+        return true;
+      }),
+    [
+      attributeFilteredTrades,
       selectedTradeDateFilterEnd,
       selectedTradeDateFilterStart
     ]
@@ -297,30 +442,124 @@ export const ReportsPage = ({
   const costliestMistake = [...mistakePerformanceRows]
     .filter((row) => row.label !== "No Mistakes" && row.netPnl < 0)
     .sort((left, right) => left.netPnl - right.netPnl || right.trades - left.trades)[0];
+  const topSymbolLabel = symbolRows[0]?.label ?? "--";
+  const comparisonWindow = useMemo(() => {
+    const currentDatesDesc = Array.from(new Set(filteredTrades.map((trade) => trade.tradeDate))).sort((left, right) =>
+      right.localeCompare(left)
+    );
+    const allFilteredDatesDesc = Array.from(new Set(attributeFilteredTrades.map((trade) => trade.tradeDate))).sort((left, right) =>
+      right.localeCompare(left)
+    );
+    const currentDatesAsc = [...currentDatesDesc].reverse();
+
+    if (currentDatesDesc.length === 0 || allFilteredDatesDesc.length === 0) {
+      return {
+        currentDatesAsc,
+        currentSessionCount: currentDatesDesc.length,
+        previousDatesAsc: [] as string[],
+        previousSessionCount: 0,
+        previousTrades: [] as GroupedTrade[]
+      };
+    }
+
+    const earliestCurrentDate = currentDatesDesc[currentDatesDesc.length - 1];
+    const earliestCurrentDateIndex = allFilteredDatesDesc.indexOf(earliestCurrentDate);
+    const previousDatesDesc =
+      earliestCurrentDateIndex >= 0
+        ? allFilteredDatesDesc.slice(
+            earliestCurrentDateIndex + 1,
+            earliestCurrentDateIndex + 1 + currentDatesDesc.length
+          )
+        : [];
+    const previousDateSet = new Set(previousDatesDesc);
+    const previousTrades =
+      previousDateSet.size > 0 ? attributeFilteredTrades.filter((trade) => previousDateSet.has(trade.tradeDate)) : [];
+
+    return {
+      currentDatesAsc,
+      currentSessionCount: currentDatesDesc.length,
+      previousDatesAsc: [...previousDatesDesc].reverse(),
+      previousSessionCount: previousDatesDesc.length,
+      previousTrades
+    };
+  }, [attributeFilteredTrades, filteredTrades]);
+  const hasPreviousSlice = comparisonWindow.previousSessionCount > 0 && comparisonWindow.previousTrades.length > 0;
+  const previousSliceSummary = useMemo(() => getTradeSummary(comparisonWindow.previousTrades), [comparisonWindow.previousTrades]);
+  const currentSliceWindowLabel = formatDateWindow(comparisonWindow.currentDatesAsc);
+  const previousSliceWindowLabel = formatDateWindow(comparisonWindow.previousDatesAsc);
+  const comparisonCoverageNote =
+    hasPreviousSlice && comparisonWindow.previousSessionCount < comparisonWindow.currentSessionCount
+      ? `Previous slice only has ${comparisonWindow.previousSessionCount} of ${comparisonWindow.currentSessionCount} sessions available.`
+      : "";
+  const periodComparisonMetrics = useMemo<PeriodComparisonMetric[]>(() => {
+    if (!hasPreviousSlice) {
+      return [];
+    }
+
+    const netDelta = reportSummary.totalNetPnl - previousSliceSummary.totalNetPnl;
+    const winRateDelta = reportSummary.winRate - previousSliceSummary.winRate;
+    const tradeDelta = reportSummary.totalTrades - previousSliceSummary.totalTrades;
+    const avgTradeDelta = reportSummary.avgTrade - previousSliceSummary.avgTrade;
+
+    return [
+      {
+        key: "net",
+        label: "Net P&L",
+        currentValue: formatSignedMoney(reportSummary.totalNetPnl),
+        previousValue: formatSignedMoney(previousSliceSummary.totalNetPnl),
+        deltaValue: `${formatSignedMoney(netDelta)} (${formatRelativeDelta(netDelta, previousSliceSummary.totalNetPnl)})`,
+        tone: getDeltaTone(netDelta)
+      },
+      {
+        key: "winRate",
+        label: "Win Rate",
+        currentValue: `${reportSummary.winRate.toFixed(1)}%`,
+        previousValue: `${previousSliceSummary.winRate.toFixed(1)}%`,
+        deltaValue: `${winRateDelta >= 0 ? "+" : ""}${winRateDelta.toFixed(1)} pts`,
+        tone: getDeltaTone(winRateDelta)
+      },
+      {
+        key: "trades",
+        label: "Trades",
+        currentValue: reportSummary.totalTrades.toLocaleString(),
+        previousValue: previousSliceSummary.totalTrades.toLocaleString(),
+        deltaValue: `${formatSignedCount(tradeDelta)} (${formatRelativeDelta(tradeDelta, previousSliceSummary.totalTrades)})`,
+        tone: getDeltaTone(tradeDelta)
+      },
+      {
+        key: "avgTrade",
+        label: "Avg Trade",
+        currentValue: formatSignedMoney(reportSummary.avgTrade),
+        previousValue: formatSignedMoney(previousSliceSummary.avgTrade),
+        deltaValue: `${formatSignedMoney(avgTradeDelta)} (${formatRelativeDelta(avgTradeDelta, previousSliceSummary.avgTrade)})`,
+        tone: getDeltaTone(avgTradeDelta)
+      }
+    ];
+  }, [hasPreviousSlice, previousSliceSummary, reportSummary]);
   const activeFilters = [
     selectedTradeDateFilterStart || selectedTradeDateFilterEnd
       ? {
-          key: "date",
+          key: "date" as const,
           label: "Date",
           value: formatActiveDateRange(selectedTradeDateFilterStart, selectedTradeDateFilterEnd)
         }
       : null,
     selectedPlaybookFilter !== "all"
-      ? { key: "playbook", label: "Playbook", value: selectedPlaybookFilter }
+      ? { key: "playbook" as const, label: "Playbook", value: selectedPlaybookFilter }
       : null,
     selectedSymbolFilter !== "all"
-      ? { key: "symbol", label: "Symbol", value: selectedSymbolFilter }
+      ? { key: "symbol" as const, label: "Symbol", value: selectedSymbolFilter }
       : null,
     selectedStatusFilter !== "all"
-      ? { key: "status", label: "Status", value: selectedStatusFilter }
+      ? { key: "status" as const, label: "Status", value: selectedStatusFilter }
       : null,
     selectedGameFilter !== "all"
-      ? { key: "game", label: "Game", value: selectedGameFilter }
+      ? { key: "game" as const, label: "Game", value: selectedGameFilter }
       : null,
     selectedExecutionFilter !== "all"
-      ? { key: "execution", label: "Execution", value: selectedExecutionFilter }
+      ? { key: "execution" as const, label: "Execution", value: selectedExecutionFilter }
       : null
-  ].filter((value): value is { key: string; label: string; value: string } => value !== null);
+  ].filter((value): value is { key: ActiveReportFilterKey; label: string; value: string } => value !== null);
 
   const clearFilters = () => {
     setSelectedTradeDateFilterStart("");
@@ -330,6 +569,31 @@ export const ReportsPage = ({
     setSelectedStatusFilter("all");
     setSelectedGameFilter("all");
     setSelectedExecutionFilter("all");
+  };
+  const clearFilter = (filterKey: ActiveReportFilterKey) => {
+    switch (filterKey) {
+      case "date":
+        setSelectedTradeDateFilterStart("");
+        setSelectedTradeDateFilterEnd("");
+        break;
+      case "playbook":
+        setSelectedPlaybookFilter("all");
+        break;
+      case "symbol":
+        setSelectedSymbolFilter("all");
+        break;
+      case "status":
+        setSelectedStatusFilter("all");
+        break;
+      case "game":
+        setSelectedGameFilter("all");
+        break;
+      case "execution":
+        setSelectedExecutionFilter("all");
+        break;
+      default:
+        break;
+    }
   };
 
   return (
@@ -370,10 +634,7 @@ export const ReportsPage = ({
                   ariaLabel="Report playbook filter"
                   value={selectedPlaybookFilter}
                   onChange={setSelectedPlaybookFilter}
-                  options={[
-                    { label: "All Playbooks", value: "all" },
-                    ...playbookOptions.map((playbook) => ({ label: playbook, value: playbook }))
-                  ]}
+                  options={playbookFilterOptions}
                 />
               </label>
               <label className="trade-filter-field">
@@ -425,18 +686,42 @@ export const ReportsPage = ({
                 />
               </label>
             </div>
+            <div className="report-date-preset-row">
+              <span>Quick Ranges</span>
+              <div className="report-date-preset-actions">
+                {DATE_RANGE_PRESETS.map((preset) => (
+                  <button
+                    key={preset.key}
+                    type="button"
+                    className={`mini-action report-date-preset-action ${isDatePresetActive(preset) ? "report-date-preset-action-active" : ""}`}
+                    onClick={() => applyDatePreset(preset)}
+                    disabled={Boolean(preset.sessionCount && tradeDateOptions.length === 0)}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="active-filter-chip-row dashboard-review-chip-row" aria-label="Active report slice">
               {activeFilters.length > 0 ? (
                 activeFilters.map((filter) => (
                   <span key={filter.key} className="active-filter-chip">
                     <strong>{filter.label}</strong>
                     <span>{filter.value}</span>
+                    <button
+                      type="button"
+                      className="active-filter-chip-remove"
+                      aria-label={`Clear ${filter.label} filter`}
+                      onClick={() => clearFilter(filter.key)}
+                    >
+                      x
+                    </button>
                   </span>
                 ))
               ) : (
                 <span className="active-filter-chip active-filter-chip-muted">
                   <strong>Slice</strong>
-                  <span>All saved trades</span>
+                  <span>All saved sessions</span>
                 </span>
               )}
             </div>
@@ -444,24 +729,79 @@ export const ReportsPage = ({
         }
       >
         <div className="page-hero-stat-grid">
-          <div className="page-hero-stat-card">
+          <div className="page-hero-stat-card report-hero-stat-card">
             <span>Range</span>
             <strong>{formatActiveDateRange(selectedTradeDateFilterStart, selectedTradeDateFilterEnd)}</strong>
+            <small>{activeFilters.length > 0 ? `${activeFilters.length} filters active` : "Full report universe"}</small>
           </div>
-          <div className="page-hero-stat-card">
+          <div className="page-hero-stat-card report-hero-stat-card">
             <span>Trades</span>
-            <strong>{filteredTrades.length}</strong>
+            <strong>{filteredTrades.length.toLocaleString()}</strong>
+            <small>{reportSummary.winCount} wins / {reportSummary.lossCount} losses</small>
           </div>
-          <div className="page-hero-stat-card">
+          <div className="page-hero-stat-card report-hero-stat-card">
             <span>Symbols</span>
             <strong>{symbols}</strong>
+            <small>Top: {topSymbolLabel}</small>
           </div>
-          <div className="page-hero-stat-card">
+          <div
+            className={`page-hero-stat-card report-hero-stat-card ${
+              reportSummary.totalNetPnl >= 0 ? "report-hero-stat-card-positive" : "report-hero-stat-card-negative"
+            }`}
+          >
             <span>Net P&amp;L</span>
-            <strong>{formatSignedMoney(reportSummary.totalNetPnl)}</strong>
+            <strong className={getSignedValueClassName(reportSummary.totalNetPnl)}>{formatSignedMoney(reportSummary.totalNetPnl)}</strong>
+            <small>
+              {hasPreviousSlice
+                ? `Prev ${formatSignedMoney(previousSliceSummary.totalNetPnl)}`
+                : "Pick a quick range to compare periods"}
+            </small>
           </div>
         </div>
       </PageHero>
+      <section className="placeholder-panel report-period-compare-panel">
+        <div className="report-period-compare-header">
+          <div className="panel-header">
+            <WorkspaceIcon icon="dashboard" alt="Period comparison icon" className="panel-header-icon" />
+            <h2>Period Comparison</h2>
+          </div>
+          <span className="report-period-compare-badge">Current vs Previous Slice</span>
+        </div>
+        {hasPreviousSlice ? (
+          <>
+            <div className="report-period-window-grid">
+              <div className="report-period-window-card report-period-window-card-current">
+                <span>Current Slice</span>
+                <strong>{currentSliceWindowLabel}</strong>
+                <small>{comparisonWindow.currentSessionCount} sessions</small>
+              </div>
+              <div className="report-period-window-card report-period-window-card-previous">
+                <span>Previous Slice</span>
+                <strong>{previousSliceWindowLabel}</strong>
+                <small>{comparisonWindow.previousSessionCount} sessions</small>
+              </div>
+            </div>
+            {comparisonCoverageNote ? <div className="report-period-compare-note">{comparisonCoverageNote}</div> : null}
+            <div className="report-period-metric-grid">
+              {periodComparisonMetrics.map((metric) => (
+                <div
+                  key={metric.key}
+                  className={`report-period-metric-card report-period-metric-card-${metric.tone}`}
+                >
+                  <span>{metric.label}</span>
+                  <strong>{metric.currentValue}</strong>
+                  <small>Prev {metric.previousValue}</small>
+                  <em className={`report-period-delta report-period-delta-${metric.tone}`}>{metric.deltaValue}</em>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <div className="empty-state report-period-compare-empty">
+            Narrow the date range (Quick Ranges works well) to compare the current slice against a previous one.
+          </div>
+        )}
+      </section>
       <section className="analytics-grid">
         <article className="placeholder-panel analytics-panel analytics-grid-full">
           <div className="panel-header">
@@ -639,8 +979,20 @@ export const ReportsPage = ({
                 align: "right"
               },
               { key: "winRate", label: "Win Rate", render: (row) => `${row.winRate.toFixed(1)}%`, align: "right" },
-              { key: "netPnl", label: "Total P&L", render: (row) => `$${row.netPnl.toFixed(2)}`, align: "right" },
-              { key: "avgPnl", label: "Avg P&L", render: (row) => `$${row.avgPnl.toFixed(2)}`, align: "right" },
+              {
+                key: "netPnl",
+                label: "Total P&L",
+                render: (row) => formatSignedMoney(row.netPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.netPnl)
+              },
+              {
+                key: "avgPnl",
+                label: "Avg P&L",
+                render: (row) => formatSignedMoney(row.avgPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.avgPnl)
+              },
               { key: "totalFees", label: "Fees", render: (row) => `$${(row.totalFees ?? 0).toFixed(2)}`, align: "right" }
             ]}
           />
@@ -654,7 +1006,12 @@ export const ReportsPage = ({
             rows={topSymbols}
             emptyMessage="Adjust the report filters to populate symbol leaders."
             columns={[
-              { key: "label", label: "Symbol", render: (row) => row.label },
+              {
+                key: "label",
+                label: "Symbol",
+                render: (row) => <SymbolPills symbols={[row.label]} />,
+                className: "analytics-symbol-cell"
+              },
               { key: "trades", label: "Trades", render: (row) => row.trades, align: "right" },
               {
                 key: "totalSharesTraded",
@@ -663,7 +1020,13 @@ export const ReportsPage = ({
                 align: "right"
               },
               { key: "winRate", label: "Win Rate", render: (row) => `${row.winRate.toFixed(1)}%`, align: "right" },
-              { key: "netPnl", label: "Net P&L", render: (row) => `$${row.netPnl.toFixed(2)}`, align: "right" },
+              {
+                key: "netPnl",
+                label: "Net P&L",
+                render: (row) => formatSignedMoney(row.netPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.netPnl)
+              },
               { key: "totalFees", label: "Fees", render: (row) => `$${(row.totalFees ?? 0).toFixed(2)}`, align: "right" }
             ]}
           />
@@ -705,7 +1068,12 @@ export const ReportsPage = ({
             rows={symbolRows}
             emptyMessage="Load trades to see symbol performance."
             columns={[
-              { key: "label", label: "Symbol", render: (row) => row.label },
+              {
+                key: "label",
+                label: "Symbol",
+                render: (row) => <SymbolPills symbols={[row.label]} />,
+                className: "analytics-symbol-cell"
+              },
               { key: "trades", label: "Trades", render: (row) => row.trades, align: "right" },
               {
                 key: "totalSharesTraded",
@@ -714,8 +1082,20 @@ export const ReportsPage = ({
                 align: "right"
               },
               { key: "winRate", label: "Win Rate", render: (row) => `${row.winRate.toFixed(1)}%`, align: "right" },
-              { key: "avgPnl", label: "Avg Trade", render: (row) => `$${row.avgPnl.toFixed(2)}`, align: "right" },
-              { key: "netPnl", label: "Net PnL", render: (row) => `$${row.netPnl.toFixed(2)}`, align: "right" },
+              {
+                key: "avgPnl",
+                label: "Avg Trade",
+                render: (row) => formatSignedMoney(row.avgPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.avgPnl)
+              },
+              {
+                key: "netPnl",
+                label: "Net PnL",
+                render: (row) => formatSignedMoney(row.netPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.netPnl)
+              },
               { key: "totalFees", label: "Fees", render: (row) => `$${(row.totalFees ?? 0).toFixed(2)}`, align: "right" }
             ]}
           />
@@ -738,8 +1118,20 @@ export const ReportsPage = ({
                 align: "right"
               },
               { key: "winRate", label: "Win Rate", render: (row) => `${row.winRate.toFixed(1)}%`, align: "right" },
-              { key: "avgPnl", label: "Avg Trade", render: (row) => `$${row.avgPnl.toFixed(2)}`, align: "right" },
-              { key: "netPnl", label: "Net PnL", render: (row) => `$${row.netPnl.toFixed(2)}`, align: "right" },
+              {
+                key: "avgPnl",
+                label: "Avg Trade",
+                render: (row) => formatSignedMoney(row.avgPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.avgPnl)
+              },
+              {
+                key: "netPnl",
+                label: "Net PnL",
+                render: (row) => formatSignedMoney(row.netPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.netPnl)
+              },
               { key: "totalFees", label: "Fees", render: (row) => `$${(row.totalFees ?? 0).toFixed(2)}`, align: "right" }
             ]}
           />
@@ -763,8 +1155,6 @@ export const ReportsPage = ({
                 render: (row) => (row.totalSharesTraded ?? 0).toLocaleString(),
                 align: "right"
               },
-              { key: "winRate", label: "Win Rate", render: (row) => `${row.winRate.toFixed(1)}%`, align: "right" },
-              { key: "netPnl", label: "Net PnL", render: (row) => `$${row.netPnl.toFixed(2)}`, align: "right" },
               { key: "totalFees", label: "Fees", render: (row) => `$${(row.totalFees ?? 0).toFixed(2)}`, align: "right" }
             ]}
           />
@@ -787,8 +1177,20 @@ export const ReportsPage = ({
                 align: "right"
               },
               { key: "winRate", label: "Win Rate", render: (row) => `${row.winRate.toFixed(1)}%`, align: "right" },
-              { key: "avgPnl", label: "Avg Trade", render: (row) => `$${row.avgPnl.toFixed(2)}`, align: "right" },
-              { key: "netPnl", label: "Net PnL", render: (row) => `$${row.netPnl.toFixed(2)}`, align: "right" },
+              {
+                key: "avgPnl",
+                label: "Avg Trade",
+                render: (row) => formatSignedMoney(row.avgPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.avgPnl)
+              },
+              {
+                key: "netPnl",
+                label: "Net PnL",
+                render: (row) => formatSignedMoney(row.netPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.netPnl)
+              },
               { key: "totalFees", label: "Fees", render: (row) => `$${(row.totalFees ?? 0).toFixed(2)}`, align: "right" }
             ]}
           />
@@ -813,8 +1215,20 @@ export const ReportsPage = ({
                 align: "right"
               },
               { key: "winRate", label: "Win Rate", render: (row) => `${row.winRate.toFixed(1)}%`, align: "right" },
-              { key: "avgPnl", label: "Avg Trade", render: (row) => `$${row.avgPnl.toFixed(2)}`, align: "right" },
-              { key: "netPnl", label: "Net PnL", render: (row) => `$${row.netPnl.toFixed(2)}`, align: "right" },
+              {
+                key: "avgPnl",
+                label: "Avg Trade",
+                render: (row) => formatSignedMoney(row.avgPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.avgPnl)
+              },
+              {
+                key: "netPnl",
+                label: "Net PnL",
+                render: (row) => formatSignedMoney(row.netPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.netPnl)
+              },
               { key: "totalFees", label: "Fees", render: (row) => `$${(row.totalFees ?? 0).toFixed(2)}`, align: "right" }
             ]}
           />
@@ -837,8 +1251,20 @@ export const ReportsPage = ({
                 align: "right"
               },
               { key: "winRate", label: "Win Rate", render: (row) => `${row.winRate.toFixed(1)}%`, align: "right" },
-              { key: "avgPnl", label: "Avg Trade", render: (row) => `$${row.avgPnl.toFixed(2)}`, align: "right" },
-              { key: "netPnl", label: "Net PnL", render: (row) => `$${row.netPnl.toFixed(2)}`, align: "right" },
+              {
+                key: "avgPnl",
+                label: "Avg Trade",
+                render: (row) => formatSignedMoney(row.avgPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.avgPnl)
+              },
+              {
+                key: "netPnl",
+                label: "Net PnL",
+                render: (row) => formatSignedMoney(row.netPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.netPnl)
+              },
               { key: "totalFees", label: "Fees", render: (row) => `$${(row.totalFees ?? 0).toFixed(2)}`, align: "right" }
             ]}
           />

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import type { PointerEvent } from "react";
 import type { TimeSeriesPoint } from "../lib/analytics/tradeAnalytics";
 
@@ -31,6 +31,31 @@ const formatShortLabel = (value: string): string => {
   return formatted.length > 18 ? `${formatted.slice(0, 17)}...` : formatted;
 };
 
+const formatAxisValue = (value: number): string => {
+  const absolute = Math.abs(value);
+  const prefix = value < 0 ? "-" : "";
+
+  if (absolute >= 1_000_000) {
+    const compact = absolute >= 10_000_000 ? (absolute / 1_000_000).toFixed(0) : (absolute / 1_000_000).toFixed(1);
+    return `${prefix}${compact}m`;
+  }
+
+  if (absolute >= 1_000) {
+    const compact = absolute >= 10_000 ? (absolute / 1_000).toFixed(0) : (absolute / 1_000).toFixed(1);
+    return `${prefix}${compact}k`;
+  }
+
+  if (absolute >= 100) {
+    return `${Math.round(value)}`;
+  }
+
+  if (absolute >= 10) {
+    return value.toFixed(1);
+  }
+
+  return value.toFixed(2);
+};
+
 export const ReportBarChart = ({
   points,
   title,
@@ -43,6 +68,7 @@ export const ReportBarChart = ({
   layout = "horizontal"
 }: ReportBarChartProps) => {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const chartId = useId().replace(/:/g, "");
 
   const chart = useMemo(() => {
     const width = 1240;
@@ -226,6 +252,36 @@ export const ReportBarChart = ({
     tooltipAnchorX > chart.width - chart.paddingRight - 220 ? tooltipAnchorX - 204 : tooltipAnchorX + 16;
   const tooltipY =
     tooltipAnchorY > chart.height - chart.paddingBottom - 74 ? tooltipAnchorY - 82 : tooltipAnchorY + 16;
+  const hoveredValueLabel: { x: number; y: number; anchor: "start" | "end" | "middle" } | null =
+    hoveredPoint && chart.layout === "horizontal"
+      ? {
+          x: Math.max(
+            chart.paddingLeft + 8,
+            Math.min(
+              chart.width - chart.paddingRight - 8,
+              hoveredPoint.value >= 0 ? hoveredPoint.rectX + hoveredPoint.barLength + 10 : hoveredPoint.rectX - 10
+            )
+          ),
+          y: hoveredPoint.rectY + hoveredPoint.barBreadth / 2 + 4,
+          anchor:
+              hoveredPoint.value >= 0
+              ? hoveredPoint.rectX + hoveredPoint.barLength > chart.width - chart.paddingRight - 34
+                ? "end"
+                : "start"
+              : hoveredPoint.rectX < chart.paddingLeft + 40
+                ? "start"
+                : "end"
+        }
+      : hoveredPoint
+        ? {
+            x: hoveredPoint.rectX + hoveredPoint.barBreadth / 2,
+            y:
+              hoveredPoint.value >= 0
+                ? Math.max(chart.paddingTop + 14, hoveredPoint.rectY - 10)
+                : Math.min(chart.height - chart.paddingBottom - 8, hoveredPoint.rectY + hoveredPoint.barLength + 16),
+            anchor: "middle"
+          }
+        : null;
 
   const handlePointerMove = (event: PointerEvent<SVGRectElement>) => {
     const bounds = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
@@ -265,6 +321,35 @@ export const ReportBarChart = ({
           preserveAspectRatio="none"
           style={{ height: chart.height }}
         >
+          <defs>
+            <linearGradient id={`${chartId}-positive-gradient`} x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor={positiveColor} stopOpacity="0.74" />
+              <stop offset="100%" stopColor={positiveColor} stopOpacity="1" />
+            </linearGradient>
+            <linearGradient id={`${chartId}-negative-gradient`} x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor={negativeColor} stopOpacity="0.78" />
+              <stop offset="100%" stopColor={negativeColor} stopOpacity="1" />
+            </linearGradient>
+            <linearGradient id={`${chartId}-neutral-gradient`} x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor={color} stopOpacity="0.72" />
+              <stop offset="100%" stopColor={color} stopOpacity="0.96" />
+            </linearGradient>
+            <filter id={`${chartId}-bar-glow`} x="-20%" y="-40%" width="150%" height="200%">
+              <feGaussianBlur stdDeviation="2.1" result="barBlur" />
+              <feMerge>
+                <feMergeNode in="barBlur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+          <rect
+            x={chart.paddingLeft}
+            y={chart.paddingTop}
+            width={chart.innerWidth}
+            height={chart.innerHeight}
+            rx="18"
+            className="report-line-chart-plot-bg"
+          />
           {chart.layout === "horizontal"
             ? chart.valueTicks.map((tick) => (
                 <g key={`bar-x-${tick.value}`}>
@@ -281,7 +366,7 @@ export const ReportBarChart = ({
                     textAnchor="middle"
                     className="report-line-chart-tick"
                   >
-                    {valueFormatter(tick.value)}
+                    {formatAxisValue(tick.value)}
                   </text>
                 </g>
               ))
@@ -295,7 +380,7 @@ export const ReportBarChart = ({
                     className="report-line-chart-grid"
                   />
                   <text x={chart.paddingLeft - 12} y={tick.y + 4} textAnchor="end" className="report-line-chart-tick">
-                    {valueFormatter(tick.value)}
+                    {formatAxisValue(tick.value)}
                   </text>
                 </g>
               ))}
@@ -369,10 +454,29 @@ export const ReportBarChart = ({
               width={chart.layout === "horizontal" ? point.barLength : point.barBreadth}
               height={chart.layout === "horizontal" ? point.barBreadth : point.barLength}
               rx="7"
-              fill={point.value < 0 ? negativeColor : point.value > 0 ? positiveColor : color}
-              className="report-bar-chart-bar"
+              fill={
+                point.value < 0
+                  ? `url(#${chartId}-negative-gradient)`
+                  : point.value > 0
+                    ? `url(#${chartId}-positive-gradient)`
+                    : `url(#${chartId}-neutral-gradient)`
+              }
+              className={`report-bar-chart-bar ${
+                hoveredIndex === index ? "is-hovered" : hoveredIndex !== null ? "is-muted" : ""
+              }`}
+              filter={hoveredIndex === index ? `url(#${chartId}-bar-glow)` : undefined}
             />
           ))}
+          {hoveredPoint && hoveredValueLabel ? (
+            <text
+              x={hoveredValueLabel.x}
+              y={hoveredValueLabel.y}
+              textAnchor={hoveredValueLabel.anchor}
+              className="report-bar-chart-hover-value"
+            >
+              {valueFormatter(hoveredPoint.value)}
+            </text>
+          ) : null}
           {hoveredPoint ? (
             <g className="report-line-chart-cursor">
               {chart.layout === "horizontal" ? (

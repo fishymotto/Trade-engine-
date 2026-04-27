@@ -1,17 +1,23 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-const FALLBACK_SUPABASE_URL = 'https://pyfcshzunlsjtktynvae.supabase.co';
-const FALLBACK_SUPABASE_ANON_KEY = 'sb_publishable_HiBmU9YKW5_Y0L8w86rp2A_p-RAMx7t';
+const env = (import.meta as { env?: Record<string, string | undefined> }).env;
+const SUPABASE_URL = env?.VITE_SUPABASE_URL?.trim();
+const SUPABASE_ANON_KEY = env?.VITE_SUPABASE_ANON_KEY?.trim();
+const hasSupabaseEnv = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+const SUPABASE_FALLBACK_URL = 'https://placeholder.supabase.co';
+const SUPABASE_FALLBACK_ANON_KEY = 'placeholder-anon-key';
 
-const SUPABASE_URL = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_SUPABASE_URL || FALLBACK_SUPABASE_URL;
-const SUPABASE_ANON_KEY =
-  (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_SUPABASE_ANON_KEY || FALLBACK_SUPABASE_ANON_KEY;
-
-if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-  throw new Error('Missing Supabase environment variables');
+if (!hasSupabaseEnv) {
+  console.warn(
+    'Missing Supabase environment variables (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY). Running in local-only mode.'
+  );
 }
 
-export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+export const supabase: SupabaseClient = createClient(
+  SUPABASE_URL ?? SUPABASE_FALLBACK_URL,
+  SUPABASE_ANON_KEY ?? SUPABASE_FALLBACK_ANON_KEY
+);
+export const isSupabaseConfigured = hasSupabaseEnv;
 
 export type AuthUser = {
   id: string;
@@ -23,7 +29,16 @@ export type AuthUser = {
 export type User = AuthUser;
 
 export class AuthService {
+  private ensureSupabaseConfigured(): void {
+    if (!isSupabaseConfigured) {
+      throw new Error(
+        'Supabase is not configured for this build. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env.local, then restart npm run desktop:dev (or rebuild the desktop app).'
+      );
+    }
+  }
+
   async signup(email: string, password: string, username?: string): Promise<AuthUser> {
+    this.ensureSupabaseConfigured();
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
@@ -62,6 +77,7 @@ export class AuthService {
   }
 
   async login(email: string, password: string): Promise<AuthUser> {
+    this.ensureSupabaseConfigured();
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
@@ -88,11 +104,18 @@ export class AuthService {
   }
 
   async logout(): Promise<void> {
+    if (!isSupabaseConfigured) {
+      return;
+    }
     const { error } = await supabase.auth.signOut();
     if (error) throw new Error(error.message);
   }
 
   async getCurrentUser(): Promise<AuthUser | null> {
+    if (!isSupabaseConfigured) {
+      return null;
+    }
+
     const {
       data: { user },
     } = await supabase.auth.getUser();
@@ -126,6 +149,10 @@ export class AuthService {
   }
 
   async getSession() {
+    if (!isSupabaseConfigured) {
+      return null;
+    }
+
     const {
       data: { session },
     } = await supabase.auth.getSession();
@@ -133,6 +160,17 @@ export class AuthService {
   }
 
   onAuthStateChange(callback: (user: AuthUser | null) => void) {
+    if (!isSupabaseConfigured) {
+      callback(null);
+      return {
+        data: {
+          subscription: {
+            unsubscribe: () => undefined
+          }
+        }
+      };
+    }
+
     return supabase.auth.onAuthStateChange(async (event, session) => {
       if (session?.user) {
         const user = await this.getCurrentUser();

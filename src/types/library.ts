@@ -4,7 +4,6 @@ export type LibraryCollectionId =
   | "idea-inbox"
   | "book-club"
   | "quotes"
-  | "trading-notes"
   | "weekly-review"
   | "monthly-review"
   | "replay"

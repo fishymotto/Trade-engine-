@@ -109,5 +109,87 @@ export const useEditableSelectOptions = (storageKey: string, defaultOptions: str
     [defaultLookup]
   );
 
-  return { options, addOption };
+  const renameOption = useCallback(
+    (currentValue: string, nextValue: string) => {
+      const currentNormalized = normalizeOption(currentValue);
+      const nextNormalized = normalizeOption(nextValue);
+      if (!currentNormalized || !nextNormalized) {
+        return false;
+      }
+
+      const currentKey = currentNormalized.toLowerCase();
+      const nextKey = nextNormalized.toLowerCase();
+      const isCaseOnlyRename = currentKey === nextKey && currentNormalized !== nextNormalized;
+
+      if (defaultLookup.has(currentKey)) {
+        return false;
+      }
+
+      if (!additions.some((option) => option.toLowerCase() === currentKey)) {
+        return false;
+      }
+
+      if (isCaseOnlyRename) {
+        setAdditions((current) =>
+          dedupeByLower(
+            current.map((option) => (option.toLowerCase() === currentKey ? nextNormalized : option))
+          ).filter((option) => !defaultLookup.has(option.toLowerCase()))
+        );
+        return true;
+      }
+
+      if (currentKey === nextKey || defaultLookup.has(nextKey)) {
+        return false;
+      }
+
+      if (additions.some((option) => option.toLowerCase() === nextKey)) {
+        return false;
+      }
+
+      setAdditions((current) => {
+        const withoutCurrent = current.filter((option) => option.toLowerCase() !== currentKey);
+        return dedupeByLower([...withoutCurrent, nextNormalized]).filter(
+          (option) => !defaultLookup.has(option.toLowerCase())
+        );
+      });
+      return true;
+    },
+    [additions, defaultLookup]
+  );
+
+  const removeOption = useCallback(
+    (value: string) => {
+      const normalized = normalizeOption(value);
+      if (!normalized) {
+        return false;
+      }
+
+      const key = normalized.toLowerCase();
+      if (defaultLookup.has(key)) {
+        return false;
+      }
+
+      if (!additions.some((option) => option.toLowerCase() === key)) {
+        return false;
+      }
+
+      setAdditions(additions.filter((option) => option.toLowerCase() !== key));
+      return true;
+    },
+    [additions, defaultLookup]
+  );
+
+  const isCustomOption = useCallback(
+    (value: string) => {
+      const normalized = normalizeOption(value).toLowerCase();
+      if (!normalized || defaultLookup.has(normalized)) {
+        return false;
+      }
+
+      return additions.some((option) => option.toLowerCase() === normalized);
+    },
+    [additions, defaultLookup]
+  );
+
+  return { options, addOption, renameOption, removeOption, isCustomOption };
 };

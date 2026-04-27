@@ -8,7 +8,7 @@ import { TagDrawer } from "../../../components/TagDrawer";
 import { TradeChart, type TradeChartLayerVisibility } from "../../../components/TradeChart";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
 import { TradeExecutionsTable } from "../components/TradeExecutionsTable";
-import { tradeTagFieldLabels, tradeTagFields } from "../../../lib/trades/tradeTagCatalog";
+import { tradeTagFieldLabels, tradeTagFields, tradeTagOptionsByField as defaultTradeTagOptionsByField } from "../../../lib/trades/tradeTagCatalog";
 import type { ChartInterval, HistoricalBarSet } from "../../../types/chart";
 import type { TradeReviewRecord } from "../../../types/review";
 import type { GroupedTrade } from "../../../types/trade";
@@ -46,6 +46,8 @@ interface TradesPageProps {
   onUpdateTradeTag: (trade: EditableTradeRow, field: EditableTradeTagField, value: string | string[] | null) => void;
   onBulkUpdateTradeTags: (tradeIds: string[], field: EditableTradeTagField, value: string | string[] | null) => void;
   onCreateTradeTagOption: (field: EditableTradeTagField, value: string) => void;
+  onRenameTradeTagOption: (field: EditableTradeTagField, currentValue: string, nextValue: string) => void;
+  onDeleteTradeTagOption: (field: EditableTradeTagField, value: string) => void;
   onClearExternalSelectedTrade?: () => void;
 }
 
@@ -110,6 +112,8 @@ export const TradesPage = ({
   onUpdateTradeTag,
   onBulkUpdateTradeTags,
   onCreateTradeTagOption,
+  onRenameTradeTagOption,
+  onDeleteTradeTagOption,
   onClearExternalSelectedTrade
 }: TradesPageProps) => {
   const [selectedTradeId, setSelectedTradeId] = useState<string>("");
@@ -970,6 +974,8 @@ export const TradesPage = ({
             onSelectTrade={(trade) => selectTradeAndReveal(trade)}
             onUpdateTradeTag={onUpdateTradeTag}
             onCreateTradeTagOption={onCreateTradeTagOption}
+            onRenameTradeTagOption={onRenameTradeTagOption}
+            onDeleteTradeTagOption={onDeleteTradeTagOption}
             emptyStateLabel={
               selectedTrade
                 ? "No other trades match this relationship in the current slice."
@@ -1177,6 +1183,8 @@ export const TradesPage = ({
           }
           onUpdateTradeTag={onUpdateTradeTag}
           onCreateTradeTagOption={onCreateTradeTagOption}
+          onRenameTradeTagOption={onRenameTradeTagOption}
+          onDeleteTradeTagOption={onDeleteTradeTagOption}
         />
       </section>
       {isBulkEditorOpen ? (
@@ -1200,6 +1208,17 @@ export const TradesPage = ({
             setIsBulkEditorOpen(false);
             setBulkEditorSearchQuery("");
           }}
+          onRenameOption={(currentValue, nextValue) => {
+            onRenameTradeTagOption(bulkField, currentValue, nextValue);
+          }}
+          onDeleteOption={(value) => {
+            onDeleteTradeTagOption(bulkField, value);
+          }}
+          canManageOption={(value) =>
+            !defaultTradeTagOptionsByField[bulkField].some(
+              (option) => option.toLowerCase() === value.toLowerCase()
+            )
+          }
           onClose={() => {
             setIsBulkEditorOpen(false);
             setBulkEditorSearchQuery("");
@@ -1250,6 +1269,17 @@ export const TradesPage = ({
             setQuickTagEditorField(null);
             setQuickTagEditorSearchQuery("");
           }}
+          onRenameOption={(currentValue, nextValue) => {
+            onRenameTradeTagOption(quickTagEditorField, currentValue, nextValue);
+          }}
+          onDeleteOption={(value) => {
+            onDeleteTradeTagOption(quickTagEditorField, value);
+          }}
+          canManageOption={(value) =>
+            !defaultTradeTagOptionsByField[quickTagEditorField].some(
+              (option) => option.toLowerCase() === value.toLowerCase()
+            )
+          }
           onClose={() => {
             setQuickTagEditorField(null);
             setQuickTagEditorSearchQuery("");

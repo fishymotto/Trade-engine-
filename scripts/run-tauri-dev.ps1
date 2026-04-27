@@ -22,6 +22,40 @@ function Find-CommandPath {
   return $null
 }
 
+function Get-DotEnvValue {
+  param(
+    [string]$Path,
+    [string]$Key
+  )
+
+  if (-not (Test-Path $Path)) {
+    return $null
+  }
+
+  $pattern = "^\s*$([regex]::Escape($Key))\s*=\s*(.*)\s*$"
+  $match = Get-Content $Path | Select-String -Pattern $pattern | Select-Object -Last 1
+  if (-not $match) {
+    return $null
+  }
+
+  $rawValue = $match.Matches[0].Groups[1].Value.Trim()
+  if (-not $rawValue) {
+    return $null
+  }
+
+  if (($rawValue.StartsWith('"') -and $rawValue.EndsWith('"')) -or ($rawValue.StartsWith("'") -and $rawValue.EndsWith("'"))) {
+    if ($rawValue.Length -ge 2) {
+      $rawValue = $rawValue.Substring(1, $rawValue.Length - 2)
+    }
+  }
+
+  if (-not $rawValue.Trim()) {
+    return $null
+  }
+
+  return $rawValue.Trim()
+}
+
 function Get-ListeningProcessIdsForPort {
   param(
     [int]$Port
@@ -80,6 +114,25 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectPath = Split-Path -Parent $scriptDir
 
 & (Join-Path $scriptDir "check-desktop-prereqs.ps1") -Quiet
+
+$envExamplePath = Join-Path $projectPath ".env.example"
+$envLocalPath = Join-Path $projectPath ".env.local"
+
+if (-not (Test-Path $envLocalPath)) {
+  if (Test-Path $envExamplePath) {
+    Copy-Item -Path $envExamplePath -Destination $envLocalPath -Force
+    throw "Created .env.local from .env.example. Fill VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then rerun npm run desktop:dev."
+  }
+
+  throw "Missing .env.local. Create it at $envLocalPath and set VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY, then rerun npm run desktop:dev."
+}
+
+$supabaseUrl = if ($env:VITE_SUPABASE_URL) { $env:VITE_SUPABASE_URL.Trim() } else { Get-DotEnvValue -Path $envLocalPath -Key "VITE_SUPABASE_URL" }
+$supabaseAnonKey = if ($env:VITE_SUPABASE_ANON_KEY) { $env:VITE_SUPABASE_ANON_KEY.Trim() } else { Get-DotEnvValue -Path $envLocalPath -Key "VITE_SUPABASE_ANON_KEY" }
+
+if (-not $supabaseUrl -or -not $supabaseAnonKey) {
+  throw "Supabase is not configured for desktop dev. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env.local, then rerun npm run desktop:dev."
+}
 
 $vcvarsPath = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
 

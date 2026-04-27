@@ -8,6 +8,7 @@ export interface PlaybookSectionRecord {
 }
 
 export type PlaybookExampleRating = "A+" | "A" | "B+";
+export type PlaybookStatus = "Testing" | "Active" | "Proven" | "Needs Review" | "Retired";
 
 export interface PlaybookExampleRecord {
   id: string;
@@ -25,6 +26,7 @@ export interface PlaybookRecord {
   id: string;
   name: string;
   aliases: string[];
+  status: PlaybookStatus;
   description: string;
   focus: string;
   sections: PlaybookSectionRecord[];

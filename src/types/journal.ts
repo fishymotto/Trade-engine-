@@ -25,7 +25,23 @@ export type JournalContentField =
   | "morningContent"
   | "closingContent"
   | "mppPlanContent"
+  | "inPlayStocksContent"
+  | "traderReachOutsContent"
   | "notesContent";
+
+export interface JournalScreenshotTradeLink {
+  tradeId: string;
+  tradeDate: string;
+}
+
+export interface JournalScreenshotTagRecord {
+  linkedTrades: JournalScreenshotTradeLink[];
+  linkedTradeId: string;
+  linkedTradeDate: string;
+  ticker: string;
+  playbook: string;
+  taggedDate: string;
+}
 
 export interface JournalPageRecord {
   id: string;
@@ -41,11 +57,14 @@ export interface JournalPageRecord {
   afternoonMood: string;
   closeMood: string;
   screenshotUrls: string[];
+  screenshotTags: JournalScreenshotTagRecord[];
   closingChecklistContent: JSONContent;
   morningChecklistContent: JSONContent;
   morningContent: JSONContent;
   closingContent: JSONContent;
   mppPlanContent: JSONContent;
+  inPlayStocksContent: JSONContent;
+  traderReachOutsContent: JSONContent;
   notesContent: JSONContent;
   morningBlocks: JournalBlock[];
   closingBlocks: JournalBlock[];

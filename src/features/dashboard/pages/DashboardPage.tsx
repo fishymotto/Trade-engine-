@@ -3,7 +3,16 @@ import { AnalyticsTable } from "../../../components/AnalyticsTable";
 import { DateFilterPopover } from "../../../components/DateFilterPopover";
 import { FilterSelect } from "../../../components/FilterSelect";
 import { PageHero } from "../../../components/PageHero";
+import { SymbolPills } from "../../../components/SymbolPills";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
+import mppExcludedBadgeIcon from "../../../assets/ui-icons/mpp-excluded.png";
+import mppIncludedBadgeIcon from "../../../assets/ui-icons/mpp-included.png";
+import {
+  MPP_FORMULA_TOOLTIP,
+  calculateMPPWindow,
+  getMPPExcludedDays,
+  getMPPIncludedDays
+} from "../../../lib/analytics/mppAnalytics";
 import {
   type CalendarDaySummary,
   getCalendarSummary,
@@ -155,7 +164,7 @@ const DashboardSummaryCard = ({
     <div className="dashboard-summary-metrics">
       <div>
         <span>Net P&L</span>
-        <strong>${summary.totalNetPnl.toFixed(2)}</strong>
+        <strong>{summary.totalNetPnl.toFixed(2)}</strong>
       </div>
       <div>
         <span>Win Rate</span>
@@ -172,7 +181,7 @@ const DashboardSummaryCard = ({
       </div>
       <div>
         <span>Avg Trade</span>
-        <strong>${summary.avgTrade.toFixed(2)}</strong>
+        <strong>{summary.avgTrade.toFixed(2)}</strong>
       </div>
       <div>
         <span>Profit Factor</span>
@@ -187,18 +196,21 @@ const DashboardWidgetCard = ({
   value,
   detail,
   tone = "neutral",
-  onClick
+  onClick,
+  tooltip
 }: {
   title: string;
   value: string;
   detail: string;
   tone?: "positive" | "negative" | "neutral";
   onClick?: () => void;
+  tooltip?: string;
 }) => (
   <article
     className={`placeholder-panel analytics-panel dashboard-widget-card dashboard-widget-card-${tone}${
       onClick ? " dashboard-widget-card-clickable" : ""
     }`}
+    title={tooltip}
     onClick={onClick}
     role={onClick ? "button" : undefined}
     tabIndex={onClick ? 0 : undefined}
@@ -220,6 +232,10 @@ const DashboardWidgetCard = ({
 );
 
 const formatSignedMoney = (value: number): string => `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`;
+const formatSignedNumber = (value: number): string => `${value >= 0 ? "+" : "-"}${Math.abs(value).toFixed(2)}`;
+
+const getSignedValueClassName = (value: number): "positive-value" | "negative-value" =>
+  value >= 0 ? "positive-value" : "negative-value";
 
 const formatActiveDateRange = (startValue: string, endValue: string): string => {
   if (startValue && endValue) {
@@ -497,6 +513,40 @@ export const DashboardPage = ({
     filteredTrades.length > 0
       ? filteredTrades.reduce((sum, trade) => sum + trade.size, 0) / filteredTrades.length
       : 0;
+  const mppSourceDays = useMemo(
+    () =>
+      getCalendarSummary(attributeFilteredTrades).map((day) => ({
+        tradeDate: day.tradeDate,
+        netPnl: day.netPnl,
+        trades: day.trades
+      })),
+    [attributeFilteredTrades]
+  );
+  const mppWindow = useMemo(() => calculateMPPWindow(mppSourceDays), [mppSourceDays]);
+  const mppIncludedDaySet = useMemo(
+    () => new Set(getMPPIncludedDays(mppWindow).map((day) => day.tradeDate)),
+    [mppWindow]
+  );
+  const mppExcludedDaySet = useMemo(
+    () => new Set(getMPPExcludedDays(mppWindow).map((day) => day.tradeDate)),
+    [mppWindow]
+  );
+  const mppByTradeDate = useMemo(() => {
+    const mppMap = new Map<string, number>();
+
+    for (const day of mppSourceDays) {
+      const snapshot = calculateMPPWindow(mppSourceDays, { anchorTradeDate: day.tradeDate });
+      mppMap.set(day.tradeDate, snapshot.currentMPP);
+    }
+
+    return mppMap;
+  }, [mppSourceDays]);
+  const removedDaysLabel = `${
+    mppWindow.formulaBreakdown.excludedDaysRemoved
+  } worst day${mppWindow.formulaBreakdown.excludedDaysRemoved === 1 ? "" : "s"} removed`;
+  const mppCardDetail = mppWindow.isPartialWindow
+    ? `Not enough days yet (${mppWindow.formulaBreakdown.eligibleDayCount}/${mppWindow.formulaBreakdown.windowSize} days) | ${removedDaysLabel}`
+    : removedDaysLabel;
 
   const availableMonthKeys = useMemo(() => getVisibleMonthNavigation(filteredTrades), [filteredTrades]);
   const latestMonthKey = availableMonthKeys[availableMonthKeys.length - 1] ?? getTodayMonthKey();
@@ -727,11 +777,11 @@ export const DashboardPage = ({
           </div>
           <div className="page-hero-stat-card">
             <span>Net P&L</span>
-            <strong>{formatSignedMoney(overallSummary.totalNetPnl)}</strong>
+            <strong>{formatSignedNumber(overallSummary.totalNetPnl)}</strong>
           </div>
           <div className="page-hero-stat-card">
             <span>Gross P&L</span>
-            <strong>{formatSignedMoney(overallSummary.totalGrossPnl)}</strong>
+            <strong>{formatSignedNumber(overallSummary.totalGrossPnl)}</strong>
           </div>
           <div className="page-hero-stat-card">
             <span>Win Rate</span>
@@ -776,6 +826,13 @@ export const DashboardPage = ({
       </section>
       <section className="dashboard-widget-strip">
         <DashboardWidgetCard
+          title={mppWindow.isPartialWindow ? "MPP partial" : "MPP"}
+          value={mppWindow.currentMPP.toLocaleString()}
+          detail={mppCardDetail}
+          tone={mppWindow.currentMPP > 0 ? "positive" : mppWindow.currentMPP < 0 ? "negative" : "neutral"}
+          tooltip={MPP_FORMULA_TOOLTIP}
+        />
+        <DashboardWidgetCard
           title="Active Days"
           value={String(databaseStats.sessions)}
           detail={`${databaseStats.symbols} symbols tracked`}
@@ -783,14 +840,14 @@ export const DashboardPage = ({
         />
         <DashboardWidgetCard
           title="Best Day"
-          value={bestDay ? formatSignedMoney(bestDay.netPnl) : "$0.00"}
+          value={bestDay ? formatSignedNumber(bestDay.netPnl) : "0.00"}
           detail={bestDay ? bestDay.tradeDate : "No saved sessions yet"}
           tone={bestDay && bestDay.netPnl > 0 ? "positive" : "neutral"}
           onClick={bestDay ? () => focusTradeDate(bestDay.tradeDate) : undefined}
         />
         <DashboardWidgetCard
           title="Worst Day"
-          value={worstDay ? formatSignedMoney(worstDay.netPnl) : "$0.00"}
+          value={worstDay ? formatSignedNumber(worstDay.netPnl) : "0.00"}
           detail={worstDay ? worstDay.tradeDate : "No saved sessions yet"}
           tone={worstDay && worstDay.netPnl < 0 ? "negative" : "neutral"}
           onClick={worstDay ? () => focusTradeDate(worstDay.tradeDate) : undefined}
@@ -800,7 +857,7 @@ export const DashboardPage = ({
           value={topSymbol?.label ?? "--"}
           detail={
             topSymbol
-              ? `${formatSignedMoney(topSymbol.netPnl)} across ${topSymbol.trades} trades`
+              ? `${formatSignedNumber(topSymbol.netPnl)} across ${topSymbol.trades} trades`
               : "Load more trades to rank symbols"
           }
           tone={topSymbol && topSymbol.netPnl > 0 ? "positive" : topSymbol && topSymbol.netPnl < 0 ? "negative" : "neutral"}
@@ -808,7 +865,7 @@ export const DashboardPage = ({
         />
         <DashboardWidgetCard
           title="Avg Fees / Trade"
-          value={`$${averageFeesPerTrade.toFixed(2)}`}
+          value={averageFeesPerTrade.toFixed(2)}
           detail={`Avg size ${averageSize.toFixed(0)} shares`}
         />
       </section>
@@ -822,12 +879,12 @@ export const DashboardPage = ({
               </span>
             </div>
             <div className="dashboard-line-stat-list">
-              <div><span>Net P&L</span><strong>${overallSummary.totalNetPnl.toFixed(2)}</strong></div>
-              <div><span>Gross P&L</span><strong>${overallSummary.totalGrossPnl.toFixed(2)}</strong></div>
+              <div><span>Net P&L</span><strong>{overallSummary.totalNetPnl.toFixed(2)}</strong></div>
+              <div><span>Gross P&L</span><strong>{overallSummary.totalGrossPnl.toFixed(2)}</strong></div>
               <div><span>Win Rate</span><strong>{overallSummary.winRate.toFixed(1)}%</strong></div>
               <div><span>Trades</span><strong>{overallSummary.totalTrades}</strong></div>
-              <div><span>Fees</span><strong>${overallSummary.totalFees.toFixed(2)}</strong></div>
-              <div><span>Avg Trade</span><strong>${overallSummary.avgTrade.toFixed(2)}</strong></div>
+              <div><span>Fees</span><strong>{overallSummary.totalFees.toFixed(2)}</strong></div>
+              <div><span>Avg Trade</span><strong>{overallSummary.avgTrade.toFixed(2)}</strong></div>
               <div><span>Profit Factor</span><strong>{overallSummary.profitFactor.toFixed(2)}</strong></div>
             </div>
           </article>
@@ -839,8 +896,8 @@ export const DashboardPage = ({
               <div><span>Total Trades</span><strong>{databaseStats.totalTrades}</strong></div>
               <div><span>Executions</span><strong>{databaseStats.totalExecutions}</strong></div>
               <div><span>Shares Traded</span><strong>{databaseStats.totalSharesTraded.toLocaleString()}</strong></div>
-              <div><span>Gross P&L</span><strong>${databaseStats.totalGrossPnl.toFixed(2)}</strong></div>
-              <div><span>Fees</span><strong>${databaseStats.totalFees.toFixed(2)}</strong></div>
+              <div><span>Gross P&L</span><strong>{databaseStats.totalGrossPnl.toFixed(2)}</strong></div>
+              <div><span>Fees</span><strong>{databaseStats.totalFees.toFixed(2)}</strong></div>
               <div><span>Sessions</span><strong>{databaseStats.sessions}</strong></div>
               <div><span>Symbols</span><strong>{databaseStats.symbols}</strong></div>
             </div>
@@ -900,29 +957,69 @@ export const DashboardPage = ({
                 {weekday}
               </div>
             ))}
-            {monthGrid.map((day) => (
-              <button
-                key={day.tradeDate}
-                type="button"
-                className={`session-month-cell ${
-                  !day.isCurrentMonth ? "session-month-cell-muted" : ""
-                } ${day.tradeDate === selectedTradeDate ? "session-month-cell-selected" : ""} ${
-                  day.session && day.session.netPnl > 0 ? "session-month-cell-positive" : ""
-                } ${day.session && day.session.netPnl < 0 ? "session-month-cell-negative" : ""}`}
-                onClick={() => focusTradeDate(day.tradeDate)}
-              >
-                <strong>{day.day}</strong>
-                {day.session ? (
-                  <>
-                    <span>{day.session.trades} trades</span>
-                    <span>{day.session.netPnl >= 0 ? "+" : ""}${day.session.netPnl.toFixed(2)}</span>
-                    <span>{day.session.winRate.toFixed(0)}% WR</span>
-                  </>
-                ) : (
-                  <span>{day.isCurrentMonth ? "No trades" : ""}</span>
-                )}
-              </button>
-            ))}
+            {monthGrid.map((day) => {
+              const isIncludedInMPP = mppIncludedDaySet.has(day.tradeDate);
+              const isExcludedFromMPP = mppExcludedDaySet.has(day.tradeDate);
+              const dayMPP = mppByTradeDate.get(day.tradeDate);
+
+              return (
+                <button
+                  key={day.tradeDate}
+                  type="button"
+                  className={`session-month-cell ${
+                    !day.isCurrentMonth ? "session-month-cell-muted" : ""
+                  } ${day.tradeDate === selectedTradeDate ? "session-month-cell-selected" : ""} ${
+                    day.session && day.session.netPnl > 0 ? "session-month-cell-positive" : ""
+                  } ${day.session && day.session.netPnl < 0 ? "session-month-cell-negative" : ""}`}
+                  onClick={() => focusTradeDate(day.tradeDate)}
+                >
+                  <div className="session-month-cell-top">
+                    <strong>{day.day}</strong>
+                    {day.session ? (
+                      <div className="session-month-cell-badges">
+                        {isExcludedFromMPP ? (
+                          <span
+                            className="session-month-cell-badge session-month-cell-badge-excluded"
+                            title={MPP_FORMULA_TOOLTIP}
+                          >
+                            <img
+                              className="session-month-cell-badge-icon"
+                              src={mppExcludedBadgeIcon}
+                              alt="Excluded from MPP"
+                            />
+                          </span>
+                        ) : isIncludedInMPP ? (
+                          <span
+                            className="session-month-cell-badge session-month-cell-badge-included"
+                            title={MPP_FORMULA_TOOLTIP}
+                          >
+                            <img
+                              className="session-month-cell-badge-icon"
+                              src={mppIncludedBadgeIcon}
+                              alt="MPP included day"
+                            />
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                  {day.session ? (
+                    <>
+                      <span>{day.session.trades} trades</span>
+                      <span>{day.session.netPnl >= 0 ? "+" : ""}{day.session.netPnl.toFixed(2)}</span>
+                      <span>{day.session.winRate.toFixed(0)}% WR</span>
+                      {typeof dayMPP === "number" ? (
+                        <span className="session-month-cell-mpp" title={MPP_FORMULA_TOOLTIP}>
+                          MPP {dayMPP.toLocaleString()}
+                        </span>
+                      ) : null}
+                    </>
+                  ) : (
+                    <span>{day.isCurrentMonth ? "No trades" : ""}</span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </article>
         <aside className="placeholder-panel analytics-panel session-detail-panel">
@@ -1039,8 +1136,20 @@ export const DashboardPage = ({
               { key: "label", label: "Hour", render: (row) => row.label },
               { key: "trades", label: "Trades", render: (row) => row.trades, align: "right" },
               { key: "winRate", label: "Win Rate", render: (row) => `${row.winRate.toFixed(1)}%`, align: "right" },
-              { key: "netPnl", label: "Total P&L", render: (row) => `$${row.netPnl.toFixed(2)}`, align: "right" },
-              { key: "avgPnl", label: "Avg P&L", render: (row) => `$${row.avgPnl.toFixed(2)}`, align: "right" }
+              {
+                key: "netPnl",
+                label: "Total P&L",
+                render: (row) => formatSignedMoney(row.netPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.netPnl)
+              },
+              {
+                key: "avgPnl",
+                label: "Avg P&L",
+                render: (row) => formatSignedMoney(row.avgPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.avgPnl)
+              }
             ]}
           />
         </article>
@@ -1053,7 +1162,12 @@ export const DashboardPage = ({
             rows={topSymbols}
             emptyMessage="Save sessions to see symbol leaders."
             columns={[
-              { key: "label", label: "Symbol", render: (row) => row.label },
+              {
+                key: "label",
+                label: "Symbol",
+                render: (row) => <SymbolPills symbols={[row.label]} />,
+                className: "analytics-symbol-cell"
+              },
               { key: "trades", label: "Trades", render: (row) => row.trades, align: "right" },
               {
                 key: "totalSharesTraded",
@@ -1062,7 +1176,13 @@ export const DashboardPage = ({
                 align: "right"
               },
               { key: "winRate", label: "Win Rate", render: (row) => `${row.winRate.toFixed(1)}%`, align: "right" },
-              { key: "netPnl", label: "Net P&L", render: (row) => `$${row.netPnl.toFixed(2)}`, align: "right" },
+              {
+                key: "netPnl",
+                label: "Net P&L",
+                render: (row) => formatSignedMoney(row.netPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.netPnl)
+              },
               { key: "totalFees", label: "Fees", render: (row) => `$${(row.totalFees ?? 0).toFixed(2)}`, align: "right" }
             ]}
           />

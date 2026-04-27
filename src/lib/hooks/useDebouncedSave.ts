@@ -25,6 +25,7 @@ export const useDebouncedSave = <T,>(
 
   useEffect(() => {
     if (!enabled) {
+      isFirstRunRef.current = false;
       flushPendingSave();
       return;
     }

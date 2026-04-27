@@ -18,6 +18,7 @@ import StarterKit from "@tiptap/starter-kit";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDebouncedSave } from "../../../lib/hooks/useDebouncedSave";
 import type { JournalSaveState, JournalSlashCommandItem } from "../../../types/journalEditor";
+import { JournalBlockActionsMenu } from "./JournalBlockActionsMenu";
 import { JournalBubbleMenu } from "./JournalBubbleMenu";
 import { JournalSlashMenu } from "./JournalSlashMenu";
 
@@ -27,7 +28,9 @@ interface JournalRichTextEditorProps {
   placeholder?: string;
   readOnly?: boolean;
   compact?: boolean;
+  autosize?: boolean;
   taskListColumns?: 1 | 2;
+  appearance?: "default" | "notion";
   onImageInsert?: (file: File) => Promise<string>;
 }
 
@@ -76,6 +79,21 @@ const createBulletListNode = (items: string[]) => ({
     content: [{ type: "paragraph", content: [{ type: "text", text }] }]
   }))
 });
+
+const createParagraphNodes = (items: string[]) =>
+  items.map((text) => ({
+    type: "paragraph",
+    content: [{ type: "text", text }]
+  }));
+
+const countWords = (rawText: string) => {
+  const normalized = rawText.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return 0;
+  }
+
+  return normalized.split(" ").length;
+};
 
 const createSlashCommands = (): JournalSlashCommandItem[] => [
   {
@@ -199,16 +217,16 @@ const createSlashCommands = (): JournalSlashCommandItem[] => [
   },
   {
     key: "riskCheck",
-    label: "Risk Check",
+    label: "Risk Reminder",
     description: "Insert a compact risk review section",
-    keywords: ["template", "risk", "rules"],
+    keywords: ["template", "risk", "rules", "risk reminder"],
     command: (editor) => {
       clearCurrentParagraph(editor);
       editor
         .chain()
         .focus()
         .insertContent([
-          { type: "heading3", attrs: { level: 3 }, content: [{ type: "text", text: "Risk Check" }] },
+          { type: "heading3", attrs: { level: 3 }, content: [{ type: "text", text: "Risk Reminder" }] },
           createBulletListNode([
             "Current daily loss limit:",
             "Max risk per trade:",
@@ -219,10 +237,31 @@ const createSlashCommands = (): JournalSlashCommandItem[] => [
     }
   },
   {
+    key: "focusBlock",
+    label: "Focus Block",
+    description: "Insert quick writing prompts for focus and setup",
+    keywords: ["template", "focus", "setup", "review", "risk"],
+    command: (editor) => {
+      clearCurrentParagraph(editor);
+      editor
+        .chain()
+        .focus()
+        .insertContent(
+          createParagraphNodes([
+            "Risk Reminder:",
+            "Main Focus:",
+            "Setup I'm Waiting For:",
+            "End of Day Review:"
+          ])
+        )
+        .run();
+    }
+  },
+  {
     key: "closingReview",
     label: "Closing Review",
     description: "Insert an end-of-day reflection template",
-    keywords: ["template", "closing", "review"],
+    keywords: ["template", "closing", "review", "end of day"],
     command: (editor) => {
       clearCurrentParagraph(editor);
       editor
@@ -278,13 +317,17 @@ export const JournalRichTextEditor = ({
   placeholder = "Type '/' for commands",
   readOnly = false,
   compact = false,
+  autosize = false,
   taskListColumns = 1,
+  appearance = "default",
   onImageInsert
 }: JournalRichTextEditorProps) => {
   const [pendingContent, setPendingContent] = useState<JSONContent>(content);
   const [saveState, setSaveState] = useState<JournalSaveState>("saved");
   const [slashQuery, setSlashQuery] = useState("");
   const [activeSlashIndex, setActiveSlashIndex] = useState(0);
+  const [lastSavedAt, setLastSavedAt] = useState<Date>(() => new Date());
+  const [wordCount, setWordCount] = useState(0);
 
   const slashCommands = useMemo(() => createSlashCommands(), []);
   const filteredCommandsRef = useRef<JournalSlashCommandItem[]>([]);
@@ -295,6 +338,26 @@ export const JournalRichTextEditor = ({
     const query = getCurrentSlashQuery(editor);
     setSlashQuery(query ?? "");
   }, []);
+
+  const commitContent = useCallback(
+    (nextContent: JSONContent) => {
+      onChange(nextContent);
+      setSaveState("saved");
+      setLastSavedAt(new Date());
+    },
+    [onChange]
+  );
+
+  const saveNow = useCallback(() => {
+    const currentEditor = editorRef.current;
+    if (!currentEditor) {
+      return;
+    }
+
+    const nextContent = currentEditor.getJSON();
+    setPendingContent(nextContent);
+    commitContent(nextContent);
+  }, [commitContent]);
 
   const editor = useEditor({
     extensions: [
@@ -332,8 +395,8 @@ export const JournalRichTextEditor = ({
         },
         renderToggleButton: ({ element, isOpen }) => {
           element.type = "button";
-          element.className = "journal-details-toggle";
-          element.textContent = isOpen ? "▾" : "▸";
+          element.className = `journal-details-toggle${isOpen ? " is-open" : ""}`;
+          element.textContent = "\u25B8";
           element.setAttribute("aria-label", isOpen ? "Collapse section" : "Expand section");
         }
       }),
@@ -358,7 +421,24 @@ export const JournalRichTextEditor = ({
           return false;
         }
 
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+          event.preventDefault();
+          saveNow();
+          return true;
+        }
+
         const slashActive = getCurrentSlashQueryFromState(currentEditor.state) !== null;
+        if (!slashActive && event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
+          event.preventDefault();
+          if (event.shiftKey) {
+            return true;
+          }
+
+          currentEditor.chain().focus().insertContent("\t").run();
+          setSaveState("saving");
+          return true;
+        }
+
         if (!slashActive) {
           return false;
         }
@@ -415,12 +495,14 @@ export const JournalRichTextEditor = ({
       }
     },
     onCreate: ({ editor: nextEditor }) => {
+      setWordCount(countWords(nextEditor.getText()));
       updateSlashState(nextEditor);
     },
     onUpdate: ({ editor: nextEditor }) => {
       const nextContent = nextEditor.getJSON();
       setPendingContent(nextContent);
       setSaveState("saving");
+      setWordCount(countWords(nextEditor.getText()));
       updateSlashState(nextEditor);
     },
     onSelectionUpdate: ({ editor: nextEditor }) => {
@@ -432,8 +514,7 @@ export const JournalRichTextEditor = ({
     pendingContent,
     450,
     (nextContent) => {
-      onChange(nextContent);
-      setSaveState("saved");
+      commitContent(nextContent);
     },
     saveState === "saving"
   );
@@ -487,33 +568,55 @@ export const JournalRichTextEditor = ({
     }
 
     editor.commands.setContent(content, { emitUpdate: false });
+    setWordCount(countWords(editor.getText()));
     setSaveState("saved");
   }, [content, editor]);
+
+  const formattedSavedTime = useMemo(
+    () =>
+      lastSavedAt.toLocaleTimeString([], {
+        hour: "numeric",
+        minute: "2-digit"
+      }),
+    [lastSavedAt]
+  );
 
   if (!editor) {
     return null;
   }
 
   return (
-    <div className={`journal-rich-editor-shell${compact ? " journal-rich-editor-shell-compact" : ""}`}>
-      {!readOnly ? <JournalBubbleMenu editor={editor} onImageInsert={onImageInsert} /> : null}
+    <div
+      className={`journal-rich-editor-shell${compact ? " journal-rich-editor-shell-compact" : ""}${
+        appearance === "notion" ? " journal-rich-editor-shell-notion" : ""
+      }${autosize ? " journal-rich-editor-shell-autosize" : ""}`}
+    >
+      {!readOnly ? (
+        <JournalBubbleMenu editor={editor} onImageInsert={onImageInsert} appearance={appearance} />
+      ) : null}
       {!readOnly ? (
         <div className="journal-rich-editor-status">
-          <span>{saveState === "saving" ? "Saving..." : "Saved"}</span>
+          <span className={`journal-rich-editor-status-indicator ${saveState === "saving" ? "is-saving" : "is-saved"}`} />
+          <span>{saveState === "saving" ? "Saving..." : `Saved ${formattedSavedTime}`}</span>
+          <span className="journal-rich-editor-word-count">{wordCount} words</span>
         </div>
       ) : null}
-      <div className={`journal-rich-editor-surface${compact ? " journal-rich-editor-surface-compact" : ""}`}>
+      <div
+        className={`journal-rich-editor-surface${compact ? " journal-rich-editor-surface-compact" : ""}${
+          appearance === "notion" ? " journal-rich-editor-surface-notion" : ""
+        }`}
+      >
+        {!readOnly ? <JournalBlockActionsMenu editor={editor} appearance={appearance} /> : null}
         <EditorContent
           editor={editor}
-          className={`journal-rich-editor${
-            taskListColumns === 2 ? " journal-rich-editor-task-columns-2" : ""
-          }`}
+          className={`journal-rich-editor${taskListColumns === 2 ? " journal-rich-editor-task-columns-2" : ""}`}
         />
         {!readOnly && slashQuery !== null && slashQuery !== undefined && getCurrentSlashQuery(editor) !== null ? (
           <JournalSlashMenu
             items={filteredSlashCommands}
             query={slashQuery}
             activeIndex={activeSlashIndex}
+            appearance={appearance}
             onHover={(index) => {
               setActiveSlashIndex(index);
               activeSlashIndexRef.current = index;

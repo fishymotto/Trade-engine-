@@ -5,6 +5,7 @@ import { useCallback, useRef, useState } from "react";
 interface JournalBubbleMenuProps {
   editor: Editor;
   onImageInsert?: (file: File) => Promise<string>;
+  appearance?: "default" | "notion";
 }
 
 const IconButton = ({
@@ -28,7 +29,11 @@ const IconButton = ({
   </button>
 );
 
-export const JournalBubbleMenu = ({ editor, onImageInsert }: JournalBubbleMenuProps) => {
+export const JournalBubbleMenu = ({
+  editor,
+  onImageInsert,
+  appearance = "default"
+}: JournalBubbleMenuProps) => {
   const [linkUrl, setLinkUrl] = useState("");
   const [showLinkInput, setShowLinkInput] = useState(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -94,7 +99,11 @@ export const JournalBubbleMenu = ({ editor, onImageInsert }: JournalBubbleMenuPr
   );
 
   return (
-    <BubbleMenu editor={editor} options={{ onShow: () => undefined }} className="journal-bubble-menu">
+    <BubbleMenu
+      editor={editor}
+      options={{ onShow: () => undefined }}
+      className={`journal-bubble-menu${appearance === "notion" ? " journal-bubble-menu-notion" : ""}`}
+    >
       <div className="journal-bubble-section">
         <IconButton
           icon="B"

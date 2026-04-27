@@ -19,6 +19,8 @@ interface ImportPageProps {
   tagOptionsByField: Record<EditableTradeTagField, string[]>;
   onUpdateTradeTag: (trade: EditableTradeRow, field: EditableTradeTagField, value: string | string[] | null) => void;
   onCreateTradeTagOption: (field: EditableTradeTagField, rawValue: string) => void;
+  onRenameTradeTagOption: (field: EditableTradeTagField, currentValue: string, nextValue: string) => void;
+  onDeleteTradeTagOption: (field: EditableTradeTagField, value: string) => void;
 }
 
 export const ImportPage = ({
@@ -33,7 +35,9 @@ export const ImportPage = ({
   onClear,
   tagOptionsByField,
   onUpdateTradeTag,
-  onCreateTradeTagOption
+  onCreateTradeTagOption,
+  onRenameTradeTagOption,
+  onDeleteTradeTagOption
 }: ImportPageProps) => {
   const [selectedTradeIds, setSelectedTradeIds] = useState<string[]>([]);
 
@@ -92,6 +96,8 @@ export const ImportPage = ({
         }
         onUpdateTradeTag={onUpdateTradeTag}
         onCreateTradeTagOption={onCreateTradeTagOption}
+        onRenameTradeTagOption={onRenameTradeTagOption}
+        onDeleteTradeTagOption={onDeleteTradeTagOption}
       />
     </main>
   );

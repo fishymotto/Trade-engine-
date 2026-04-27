@@ -1,9 +1,21 @@
 import type { JSONContent } from "@tiptap/core";
 import { hasJournalDocContent } from "../journal/journalContent";
-import type { PlaybookExampleRating, PlaybookRecord } from "../../types/playbook";
+import type { PlaybookExampleRating, PlaybookRecord, PlaybookStatus } from "../../types/playbook";
 import { syncStores } from "../sync/syncStore";
 
 const DEFAULT_PLAYBOOK_ID = "wide-spread-open-drive";
+const LEGACY_WIDE_SPREAD_OPEN_DRIVE_ID = "opening-drive-wide-spread";
+const WIDE_SPREAD_OPEN_DRIVE_NAME = "Wide Spread Open Drive";
+const LEGACY_WIDE_SPREAD_OPEN_DRIVE_NAME = "Opening Drive Wide Spread";
+const PLAYBOOK_PLACEHOLDER_DESCRIPTION =
+  "Build this playbook out with your rules, examples, and chart notes.";
+const PLAYBOOK_STATUS_VALUES: PlaybookStatus[] = [
+  "Testing",
+  "Active",
+  "Proven",
+  "Needs Review",
+  "Retired"
+];
 const SEEDED_PLAYBOOK_NAMES = [
   "Earning",
   "Imbalance number NY/NQ Scalping",
@@ -76,6 +88,11 @@ const isPlaybookRecord = (value: unknown): value is PlaybookRecord =>
 const isExampleRating = (value: unknown): value is PlaybookExampleRating =>
   value === "A+" || value === "A" || value === "B+";
 
+const isPlaybookStatus = (value: unknown): value is PlaybookStatus =>
+  typeof value === "string" && PLAYBOOK_STATUS_VALUES.includes(value as PlaybookStatus);
+
+const getFallbackPlaybookStatus = (): PlaybookStatus => "Testing";
+
 const normalizeName = (value: string): string => value.trim().toLowerCase();
 const slugify = (value: string): string =>
   normalizeName(value)
@@ -138,7 +155,8 @@ const createPlaceholderPlaybook = (name: string): PlaybookRecord => {
     id: slugify(name),
     name,
     aliases: [name],
-    description: "Build this playbook out with your rules, examples, and chart notes.",
+    status: getFallbackPlaybookStatus(),
+    description: PLAYBOOK_PLACEHOLDER_DESCRIPTION,
     focus: "Define the setup clearly, then connect tagged trades and examples over time.",
     screenshotUrls: [],
     aPlusExamples: [],
@@ -155,7 +173,7 @@ const createWorkspaceTemplatePlaybook = (name: string): PlaybookRecord => ({
 });
 
 const DEFAULT_WORKSPACE_PLAYBOOK_NAMES = [
-  "Wide Spread Open Drive",
+  WIDE_SPREAD_OPEN_DRIVE_NAME,
   "Imbalance number NY/NQ Scalping",
   "6/12 EMA Cross",
   ...SEEDED_PLAYBOOK_NAMES
@@ -183,12 +201,13 @@ const createDefaultWideSpreadOpenDrive = (): PlaybookRecord => {
 
   return {
     id: DEFAULT_PLAYBOOK_ID,
-    name: "Wide Spread Open Drive",
+    name: WIDE_SPREAD_OPEN_DRIVE_NAME,
     aliases: [
-      "Wide Spread Open Drive",
+      WIDE_SPREAD_OPEN_DRIVE_NAME,
       "Wide-Spread Open Drive",
-      "Opening Drive Wide Spread"
+      LEGACY_WIDE_SPREAD_OPEN_DRIVE_NAME
     ],
+    status: "Active",
     description:
       "Catalyst-driven open trade where the spread widens, the bid holds and reloads, and price grinds higher through midpoint acceptance.",
     focus:
@@ -386,6 +405,7 @@ const createDefaultImbalanceNumberScalping = (): PlaybookRecord => {
       "Buy Imbalance",
       "Sell Imbalance"
     ],
+    status: "Active",
     description:
       "Large NYSE/Nasdaq closing imbalance trade focused on names where the imbalance is meaningful versus liquidity and cannot fully pair off before the close.",
     focus:
@@ -541,6 +561,7 @@ const createDefault612EmaCross = (): PlaybookRecord => {
     id: "6-12-ema-cross",
     name: "6/12 EMA Cross",
     aliases: ["6/12 EMA Cross", "6/12 EMA", "EMA Cross"],
+    status: "Testing",
     description:
       "A momentum continuation or reversal trigger built around the 6 EMA crossing the 12 EMA with price, tape, and context aligned.",
     focus:
@@ -665,8 +686,7 @@ const ensureDefaultPlaybook = (playbooks: PlaybookRecord[]): PlaybookRecord[] =>
 };
 
 const isPlaceholderDescription = (playbook: PlaybookRecord): boolean =>
-  playbook.description ===
-  "Build this playbook out with your rules, examples, and chart notes.";
+  playbook.description === PLAYBOOK_PLACEHOLDER_DESCRIPTION;
 
 const isMostlyBlankPlaybook = (playbook: PlaybookRecord): boolean =>
   playbook.sections.length > 0 && playbook.sections.every((section) => isBlankContent(section.content));
@@ -703,6 +723,258 @@ const hydrateSeededPlaybooks = (playbooks: PlaybookRecord[]): PlaybookRecord[] =
   });
 };
 
+const mergeUniqueStrings = (values: string[]): string[] => {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const key = normalizeName(trimmed);
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    result.push(trimmed);
+  }
+
+  return result;
+};
+
+const asTimestamp = (value: string): number => {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+};
+
+const pickOldestTimestamp = (left: string, right: string): string => {
+  const leftTime = asTimestamp(left);
+  const rightTime = asTimestamp(right);
+  if (Number.isNaN(leftTime)) {
+    return right;
+  }
+  if (Number.isNaN(rightTime)) {
+    return left;
+  }
+  return leftTime <= rightTime ? left : right;
+};
+
+const pickNewestTimestamp = (left: string, right: string): string => {
+  const leftTime = asTimestamp(left);
+  const rightTime = asTimestamp(right);
+  if (Number.isNaN(leftTime)) {
+    return right;
+  }
+  if (Number.isNaN(rightTime)) {
+    return left;
+  }
+  return leftTime >= rightTime ? left : right;
+};
+
+const hasMeaningfulSectionContent = (section: PlaybookRecord["sections"][number]): boolean =>
+  hasJournalDocContent(section.content) && !isBlankContent(section.content);
+
+const createMergedSectionId = (baseId: string, usedIds: Set<string>): string => {
+  let suffix = 2;
+  let candidate = `${baseId}-merged`;
+  while (usedIds.has(candidate)) {
+    candidate = `${baseId}-merged-${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+};
+
+const mergePlaybookSections = (
+  primarySections: PlaybookRecord["sections"],
+  secondarySections: PlaybookRecord["sections"]
+): PlaybookRecord["sections"] => {
+  const merged = [...primarySections];
+  const sectionIndexById = new Map(merged.map((section, index) => [section.id, index]));
+  const usedIds = new Set(merged.map((section) => section.id));
+
+  for (const sourceSection of secondarySections) {
+    const existingIndex = sectionIndexById.get(sourceSection.id);
+    if (existingIndex === undefined) {
+      const sectionId = usedIds.has(sourceSection.id)
+        ? createMergedSectionId(sourceSection.id, usedIds)
+        : sourceSection.id;
+      usedIds.add(sectionId);
+      sectionIndexById.set(sectionId, merged.length);
+      merged.push({
+        ...sourceSection,
+        id: sectionId
+      });
+      continue;
+    }
+
+    const targetSection = merged[existingIndex];
+    const targetHasContent = hasMeaningfulSectionContent(targetSection);
+    const sourceHasContent = hasMeaningfulSectionContent(sourceSection);
+
+    if (!targetHasContent && sourceHasContent) {
+      merged[existingIndex] = {
+        ...targetSection,
+        description:
+          targetSection.description.trim().length > 0
+            ? targetSection.description
+            : sourceSection.description,
+        content: sourceSection.content
+      };
+      continue;
+    }
+
+    if (!targetHasContent || !sourceHasContent) {
+      continue;
+    }
+
+    if (JSON.stringify(targetSection.content) === JSON.stringify(sourceSection.content)) {
+      continue;
+    }
+
+    const sectionId = createMergedSectionId(sourceSection.id, usedIds);
+    usedIds.add(sectionId);
+    sectionIndexById.set(sectionId, merged.length);
+    merged.push({
+      ...sourceSection,
+      id: sectionId,
+      title: `${sourceSection.title} (Merged)`
+    });
+  }
+
+  return merged;
+};
+
+const mergePlaybookExamples = (
+  primaryExamples: PlaybookRecord["aPlusExamples"],
+  secondaryExamples: PlaybookRecord["aPlusExamples"]
+): PlaybookRecord["aPlusExamples"] => {
+  const seen = new Set<string>();
+  const merged: PlaybookRecord["aPlusExamples"] = [];
+
+  for (const example of [...primaryExamples, ...secondaryExamples]) {
+    const key = `${example.id}|${example.tradeId}|${example.tradeDate}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    merged.push(example);
+  }
+
+  return merged.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+};
+
+const pickPreferredText = (left: string, right: string, placeholder = ""): string => {
+  const leftTrimmed = left.trim();
+  const rightTrimmed = right.trim();
+  const candidates = [leftTrimmed, rightTrimmed].filter(Boolean);
+  if (candidates.length === 0) {
+    return left || right;
+  }
+
+  const filtered = placeholder
+    ? candidates.filter((value) => normalizeName(value) !== normalizeName(placeholder))
+    : candidates;
+  const shortlist = filtered.length > 0 ? filtered : candidates;
+
+  return shortlist.sort((a, b) => b.length - a.length)[0];
+};
+
+const mergePlaybookStatus = (primary: PlaybookStatus, secondary: PlaybookStatus): PlaybookStatus => {
+  if (primary !== getFallbackPlaybookStatus()) {
+    return primary;
+  }
+
+  return secondary;
+};
+
+const mergePlaybookPair = (primary: PlaybookRecord, secondary: PlaybookRecord): PlaybookRecord => ({
+  ...primary,
+  name: WIDE_SPREAD_OPEN_DRIVE_NAME,
+  status: mergePlaybookStatus(primary.status, secondary.status),
+  aliases: mergeUniqueStrings([
+    WIDE_SPREAD_OPEN_DRIVE_NAME,
+    LEGACY_WIDE_SPREAD_OPEN_DRIVE_NAME,
+    primary.name,
+    secondary.name,
+    ...primary.aliases,
+    ...secondary.aliases
+  ]),
+  description: pickPreferredText(
+    primary.description,
+    secondary.description,
+    PLAYBOOK_PLACEHOLDER_DESCRIPTION
+  ),
+  focus: pickPreferredText(primary.focus, secondary.focus),
+  screenshotUrls: mergeUniqueStrings([...primary.screenshotUrls, ...secondary.screenshotUrls]),
+  aPlusExamples: mergePlaybookExamples(primary.aPlusExamples, secondary.aPlusExamples),
+  sections: mergePlaybookSections(primary.sections, secondary.sections),
+  createdAt: pickOldestTimestamp(primary.createdAt, secondary.createdAt),
+  updatedAt: pickNewestTimestamp(primary.updatedAt, secondary.updatedAt)
+});
+
+const isWideSpreadOpenDriveVariant = (playbook: PlaybookRecord): boolean => {
+  const matchNames = new Set([
+    normalizeName(WIDE_SPREAD_OPEN_DRIVE_NAME),
+    normalizeName(LEGACY_WIDE_SPREAD_OPEN_DRIVE_NAME)
+  ]);
+
+  return [playbook.name, ...playbook.aliases].some((value) => matchNames.has(normalizeName(value)));
+};
+
+const mergeWideSpreadOpenDriveVariants = (playbooks: PlaybookRecord[]): PlaybookRecord[] => {
+  const variantPlaybooks = playbooks.filter(isWideSpreadOpenDriveVariant);
+  if (variantPlaybooks.length <= 1) {
+    return playbooks;
+  }
+
+  const primary =
+    variantPlaybooks.find((playbook) => normalizeName(playbook.name) === normalizeName(WIDE_SPREAD_OPEN_DRIVE_NAME)) ??
+    variantPlaybooks.find((playbook) => playbook.id === DEFAULT_PLAYBOOK_ID) ??
+    variantPlaybooks[0];
+
+  const variantIds = new Set(variantPlaybooks.map((playbook) => playbook.id));
+  const merged = variantPlaybooks.reduce(
+    (acc, playbook) => (playbook.id === primary.id ? acc : mergePlaybookPair(acc, playbook)),
+    {
+      ...primary
+    }
+  );
+
+  const mergedId =
+    primary.id === LEGACY_WIDE_SPREAD_OPEN_DRIVE_ID ||
+    variantPlaybooks.some((playbook) => playbook.id === DEFAULT_PLAYBOOK_ID)
+      ? DEFAULT_PLAYBOOK_ID
+      : primary.id;
+
+  const mergedPlaybook = {
+    ...merged,
+    id: mergedId
+  };
+
+  const deduped: PlaybookRecord[] = [];
+  let hasInsertedMerged = false;
+
+  for (const playbook of playbooks) {
+    if (!variantIds.has(playbook.id)) {
+      deduped.push(playbook);
+      continue;
+    }
+
+    if (hasInsertedMerged) {
+      continue;
+    }
+
+    deduped.push(mergedPlaybook);
+    hasInsertedMerged = true;
+  }
+
+  return deduped;
+};
+
 export const loadPlaybooks = (): PlaybookRecord[] => {
   if (typeof window === "undefined") {
     return createDefaultWorkspacePlaybooks();
@@ -722,6 +994,15 @@ export const loadPlaybooks = (): PlaybookRecord[] => {
       .filter(isPlaybookRecord)
       .map((playbook) => ({
         ...playbook,
+        name: typeof playbook.name === "string" ? playbook.name : "",
+        aliases: Array.isArray((playbook as { aliases?: unknown }).aliases)
+          ? ((playbook as { aliases?: unknown[] }).aliases ?? []).filter(
+              (value): value is string => typeof value === "string"
+            )
+          : [playbook.name],
+        status: isPlaybookStatus((playbook as { status?: unknown }).status)
+          ? (playbook as { status: PlaybookStatus }).status
+          : getFallbackPlaybookStatus(),
         screenshotUrls: Array.isArray((playbook as { screenshotUrls?: unknown }).screenshotUrls)
           ? ((playbook as { screenshotUrls?: unknown[] }).screenshotUrls ?? []).filter(
               (value): value is string => typeof value === "string"
@@ -760,7 +1041,8 @@ export const loadPlaybooks = (): PlaybookRecord[] => {
           }))
       }));
 
-    return playbooks.length > 0 ? playbooks : createDefaultWorkspacePlaybooks();
+    const mergedPlaybooks = mergeWideSpreadOpenDriveVariants(playbooks);
+    return mergedPlaybooks.length > 0 ? mergedPlaybooks : createDefaultWorkspacePlaybooks();
   } catch {
     return createDefaultWorkspacePlaybooks();
   }
@@ -886,7 +1168,10 @@ export const addPlaybookRecord = (
   }
 
   const existing = playbooks.find(
-    (playbook) => normalizeName(playbook.name) === normalizeName(trimmedName)
+    (playbook) =>
+      [playbook.name, ...playbook.aliases].some(
+        (candidateName) => normalizeName(candidateName) === normalizeName(trimmedName)
+      )
   );
   if (existing) {
     return { playbooks, playbookId: existing.id };
@@ -905,7 +1190,11 @@ export const ensurePlaybooksForNames = (
 ): { playbooks: PlaybookRecord[]; addedPlaybookIds: string[] } => {
   const seen = new Set<string>();
   const addedPlaybookIds: string[] = [];
-  const existingNames = new Set(playbooks.map((playbook) => normalizeName(playbook.name)));
+  const existingNames = new Set(
+    playbooks.flatMap((playbook) =>
+      [playbook.name, ...playbook.aliases].map((name) => normalizeName(name))
+    )
+  );
   const nextPlaybooks = [...playbooks];
 
   for (const name of names) {

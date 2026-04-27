@@ -19,6 +19,11 @@ import {
   calculateMACD,
   calculateStochastic
 } from "../lib/chartIndicators";
+import {
+  isAdapterManagedNativeTool,
+  isAdapterManagedTradeDrawingType,
+  resolveDrawingEngine
+} from "../chart/drawingTools/drawingTypes";
 import type { ChartInterval, HistoricalBar } from "../types/chart";
 import type { TradeChartDrawing } from "../types/review";
 import type { GroupedTrade } from "../types/trade";
@@ -158,6 +163,27 @@ interface DrawingContextMenu {
   drawingId: string;
   x: number;
   y: number;
+}
+
+interface DrawingAdapter {
+  attach(args: { chart: IChartApi; series: ISeriesApi<"Candlestick">; container: HTMLElement }): void;
+  detach(): void;
+  destroy(): void;
+  isAttached(): boolean;
+  setOnDrawingsChange(handler: ((drawings: TradeChartDrawing[]) => void) | undefined): void;
+  setOnSelectionChange(handler: ((drawingId: string | null) => void) | undefined): void;
+  setReferencePoint(time: number | undefined, price: number | undefined): void;
+  syncFromApp(drawings: TradeChartDrawing[]): void;
+  setActiveTool(tool: DrawingTool): void;
+  clearActiveTool(): void;
+  selectAtPoint(point: { x: number; y: number }): string | null;
+  addTrendLine(start: DrawingPoint, end: DrawingPoint): string;
+  addHorizontalLine(price: number): string;
+  addVerticalLine(time: number): string;
+  addFibRetracement(start: DrawingPoint, end: DrawingPoint): string;
+  deleteSelectedDrawing(): boolean;
+  undoLast(): boolean;
+  clearAll(): void;
 }
 
 const FAST_EMA_PERIOD = 9;
@@ -362,6 +388,102 @@ const formatTimestampLabel = (timestamp: number, interval: ChartInterval) => {
 
 const createDrawingId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+const FIBONACCI_LEVELS: Array<{ key: string; ratio: number; label: string }> = [
+  { key: "fib-0", ratio: 0, label: "0" },
+  { key: "fib-236", ratio: 0.236, label: "0.236" },
+  { key: "fib-382", ratio: 0.382, label: "0.382" },
+  { key: "fib-500", ratio: 0.5, label: "0.5" },
+  { key: "fib-618", ratio: 0.618, label: "0.618" },
+  { key: "fib-786", ratio: 0.786, label: "0.786" },
+  { key: "fib-1000", ratio: 1, label: "1" }
+];
+
+interface ProjectedLineSegment {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+const projectInfiniteLine = (
+  anchorX: number,
+  anchorY: number,
+  directionX: number,
+  directionY: number,
+  width: number,
+  height: number
+): ProjectedLineSegment | null => {
+  const epsilon = 0.0001;
+
+  if (
+    width <= 0 ||
+    height <= 0 ||
+    (Math.abs(directionX) < epsilon && Math.abs(directionY) < epsilon)
+  ) {
+    return null;
+  }
+
+  const candidates: number[] = [];
+
+  if (Math.abs(directionX) >= epsilon) {
+    const tAtLeft = (0 - anchorX) / directionX;
+    const yAtLeft = anchorY + tAtLeft * directionY;
+    if (yAtLeft >= 0 && yAtLeft <= height) {
+      candidates.push(tAtLeft);
+    }
+
+    const tAtRight = (width - anchorX) / directionX;
+    const yAtRight = anchorY + tAtRight * directionY;
+    if (yAtRight >= 0 && yAtRight <= height) {
+      candidates.push(tAtRight);
+    }
+  }
+
+  if (Math.abs(directionY) >= epsilon) {
+    const tAtTop = (0 - anchorY) / directionY;
+    const xAtTop = anchorX + tAtTop * directionX;
+    if (xAtTop >= 0 && xAtTop <= width) {
+      candidates.push(tAtTop);
+    }
+
+    const tAtBottom = (height - anchorY) / directionY;
+    const xAtBottom = anchorX + tAtBottom * directionX;
+    if (xAtBottom >= 0 && xAtBottom <= width) {
+      candidates.push(tAtBottom);
+    }
+  }
+
+  if (candidates.length < 2) {
+    return null;
+  }
+
+  const minT = Math.min(...candidates);
+  const maxT = Math.max(...candidates);
+
+  return {
+    x1: anchorX + minT * directionX,
+    y1: anchorY + minT * directionY,
+    x2: anchorX + maxT * directionX,
+    y2: anchorY + maxT * directionY
+  };
+};
+
+const isTextInputLikeElement = (element: Element | null): boolean => {
+  if (!element) {
+    return false;
+  }
+
+  const tagName = element.tagName.toLowerCase();
+
+  return (
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLTextAreaElement ||
+    element instanceof HTMLSelectElement ||
+    tagName === "button" ||
+    element.getAttribute("contenteditable") === "true"
+  );
+};
+
 const isRegularSessionBar = (bar: HistoricalBar): boolean => {
   const date = new Date(bar.time * 1000);
   const totalMinutes = date.getHours() * 60 + date.getMinutes();
@@ -541,12 +663,17 @@ export const TradeChart = ({
   const macdHistogramSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const stochasticKSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const stochasticDSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const macdPaneIndexRef = useRef<number | null>(null);
+  const stochasticPaneIndexRef = useRef<number | null>(null);
   const rsiPriceLineRefs = useRef<IPriceLine[]>([]);
   const rsiPaneIndexRef = useRef<number | null>(null);
   const displayBarsRef = useRef<HistoricalBar[]>([]);
+  const drawingAdapterRef = useRef<DrawingAdapter | null>(null);
+  const drawingsRef = useRef<TradeChartDrawing[]>(drawings);
   const [hoveredBar, setHoveredBar] = useState<HistoricalBar | null>(null);
   const [drawingTool, setDrawingTool] = useState<DrawingTool>("cursor");
   const [draftPoint, setDraftPoint] = useState<DrawingPoint | null>(null);
+  const [secondaryDraftPoint, setSecondaryDraftPoint] = useState<DrawingPoint | null>(null);
   const [hoverPoint, setHoverPoint] = useState<DrawingPoint | null>(null);
   const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
   const [drawingDragTarget, setDrawingDragTarget] = useState<DrawingDragTarget | null>(null);
@@ -570,10 +697,123 @@ export const TradeChart = ({
   const macdData = useMemo(() => calculateMACD(displayBars, 12, 26, 9), [displayBars]);
   const stochasticData = useMemo(() => calculateStochastic(displayBars, 14, 3, 3), [displayBars]);
   const canDraw = showDrawingTools && Boolean(onDrawingsChange) && displayBars.length > 0;
+  const drawingEngine = resolveDrawingEngine(showDrawingTools);
+  const shouldUseDrawingAdapter = drawingEngine === "lightweight-adapter" && Boolean(onDrawingsChange);
+  const adapterManagedDrawings = useMemo(
+    () => drawings.filter((drawing) => isAdapterManagedTradeDrawingType(drawing.type)),
+    [drawings]
+  );
+  const nativeOverlayDrawings = useMemo(
+    () =>
+      shouldUseDrawingAdapter
+        ? drawings.filter((drawing) => !isAdapterManagedTradeDrawingType(drawing.type))
+        : drawings,
+    [drawings, shouldUseDrawingAdapter]
+  );
+  const isAdapterToolActive = shouldUseDrawingAdapter && isAdapterManagedNativeTool(drawingTool);
 
   const refreshOverlay = useCallback(() => {
     setOverlayVersion((current) => current + 1);
   }, []);
+
+  const handleAdapterDrawingsChange = useCallback(
+    (nextManagedDrawings: TradeChartDrawing[]) => {
+      if (!onDrawingsChange) {
+        return;
+      }
+
+      const unmanagedDrawings = drawingsRef.current.filter(
+        (drawing) => !isAdapterManagedTradeDrawingType(drawing.type)
+      );
+      onDrawingsChange([...unmanagedDrawings, ...nextManagedDrawings]);
+    },
+    [onDrawingsChange]
+  );
+
+  useEffect(() => {
+    drawingsRef.current = drawings;
+  }, [drawings]);
+
+  useEffect(() => {
+    if (!shouldUseDrawingAdapter || !onDrawingsChange) {
+      drawingAdapterRef.current?.destroy();
+      drawingAdapterRef.current = null;
+      return;
+    }
+
+    if (!chartRef.current || !seriesRef.current || !overlayRef.current || overlaySize.width === 0) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const attachAdapter = async () => {
+      try {
+        let adapter = drawingAdapterRef.current;
+
+        if (!adapter) {
+          const module = await import("../chart/drawingTools/lightweightDrawingAdapter");
+          if (cancelled) {
+            return;
+          }
+
+          adapter = new module.LightweightDrawingAdapter({
+            onDrawingsChange: handleAdapterDrawingsChange,
+            onSelectionChange: setSelectedDrawingId
+          });
+          drawingAdapterRef.current = adapter;
+        }
+
+        adapter.setOnDrawingsChange(handleAdapterDrawingsChange);
+        adapter.setOnSelectionChange(setSelectedDrawingId);
+        if (!adapter.isAttached()) {
+          adapter.attach({
+            chart: chartRef.current!,
+            series: seriesRef.current!,
+            container: overlayRef.current!
+          });
+        }
+      } catch (error) {
+        console.error("Failed to initialize lightweight drawing adapter. Falling back to native drawings.", error);
+      }
+    };
+
+    void attachAdapter();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [handleAdapterDrawingsChange, onDrawingsChange, overlaySize.width, shouldUseDrawingAdapter]);
+
+  useEffect(() => {
+    return () => {
+      drawingAdapterRef.current?.destroy();
+      drawingAdapterRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!shouldUseDrawingAdapter || !drawingAdapterRef.current) {
+      return;
+    }
+
+    const anchorBar = displayBars[displayBars.length - 1];
+    drawingAdapterRef.current.setReferencePoint(anchorBar?.time, anchorBar?.close);
+    drawingAdapterRef.current.syncFromApp(adapterManagedDrawings);
+  }, [adapterManagedDrawings, displayBars, shouldUseDrawingAdapter]);
+
+  useEffect(() => {
+    if (!shouldUseDrawingAdapter || !drawingAdapterRef.current) {
+      return;
+    }
+
+    if (isAdapterManagedNativeTool(drawingTool)) {
+      drawingAdapterRef.current.setActiveTool(drawingTool);
+      return;
+    }
+
+    drawingAdapterRef.current.clearActiveTool();
+  }, [drawingTool, shouldUseDrawingAdapter]);
 
   const fitTradeRange = useCallback(() => {
     if (!chartRef.current || displayBarsRef.current.length === 0) {
@@ -683,14 +923,200 @@ export const TradeChart = ({
     return rsiSeries;
   }, [refreshOverlay]);
 
+  const removeMacdPane = useCallback(() => {
+    const chart = chartRef.current;
+
+    if (!chart) {
+      macdLineSeriesRef.current = null;
+      macdSignalSeriesRef.current = null;
+      macdHistogramSeriesRef.current = null;
+      macdPaneIndexRef.current = null;
+      return;
+    }
+
+    if (macdLineSeriesRef.current) {
+      chart.removeSeries(macdLineSeriesRef.current);
+    }
+    if (macdSignalSeriesRef.current) {
+      chart.removeSeries(macdSignalSeriesRef.current);
+    }
+    if (macdHistogramSeriesRef.current) {
+      chart.removeSeries(macdHistogramSeriesRef.current);
+    }
+
+    const paneIndex = macdPaneIndexRef.current;
+    macdLineSeriesRef.current = null;
+    macdSignalSeriesRef.current = null;
+    macdHistogramSeriesRef.current = null;
+    macdPaneIndexRef.current = null;
+
+    if (typeof paneIndex === "number" && chart.panes().some((pane) => pane.paneIndex() === paneIndex)) {
+      chart.removePane(paneIndex);
+    }
+
+    requestAnimationFrame(refreshOverlay);
+  }, [refreshOverlay]);
+
+  const ensureMacdPane = useCallback(() => {
+    if (
+      macdLineSeriesRef.current &&
+      macdSignalSeriesRef.current &&
+      macdHistogramSeriesRef.current
+    ) {
+      return {
+        line: macdLineSeriesRef.current,
+        signal: macdSignalSeriesRef.current,
+        histogram: macdHistogramSeriesRef.current
+      };
+    }
+
+    if (!chartRef.current) {
+      return null;
+    }
+
+    const macdPane = chartRef.current.addPane(true);
+    macdPane.setStretchFactor(1);
+
+    const macdLineSeries = macdPane.addSeries(LineSeries, {
+      color: "#2962FF",
+      lineWidth: 2,
+      crosshairMarkerVisible: false,
+      priceLineVisible: false,
+      lastValueVisible: false
+    });
+
+    const macdSignalSeries = macdPane.addSeries(LineSeries, {
+      color: "#FF6A00",
+      lineWidth: 2,
+      crosshairMarkerVisible: false,
+      priceLineVisible: false,
+      lastValueVisible: false
+    });
+
+    const macdHistogramSeries = macdPane.addSeries(HistogramSeries, {
+      priceFormat: {
+        type: "volume"
+      },
+      priceLineVisible: false,
+      lastValueVisible: false,
+      base: 0
+    });
+
+    macdPane.priceScale("right").applyOptions({
+      scaleMargins: {
+        top: 0.1,
+        bottom: 0.1
+      },
+      borderColor: "rgba(255,255,255,0.12)"
+    });
+    macdPane.priceScale("left").applyOptions({
+      visible: false
+    });
+
+    macdLineSeriesRef.current = macdLineSeries;
+    macdSignalSeriesRef.current = macdSignalSeries;
+    macdHistogramSeriesRef.current = macdHistogramSeries;
+    macdPaneIndexRef.current = macdPane.paneIndex();
+    requestAnimationFrame(refreshOverlay);
+
+    return {
+      line: macdLineSeries,
+      signal: macdSignalSeries,
+      histogram: macdHistogramSeries
+    };
+  }, [refreshOverlay]);
+
+  const removeStochasticPane = useCallback(() => {
+    const chart = chartRef.current;
+
+    if (!chart) {
+      stochasticKSeriesRef.current = null;
+      stochasticDSeriesRef.current = null;
+      stochasticPaneIndexRef.current = null;
+      return;
+    }
+
+    if (stochasticKSeriesRef.current) {
+      chart.removeSeries(stochasticKSeriesRef.current);
+    }
+    if (stochasticDSeriesRef.current) {
+      chart.removeSeries(stochasticDSeriesRef.current);
+    }
+
+    const paneIndex = stochasticPaneIndexRef.current;
+    stochasticKSeriesRef.current = null;
+    stochasticDSeriesRef.current = null;
+    stochasticPaneIndexRef.current = null;
+
+    if (typeof paneIndex === "number" && chart.panes().some((pane) => pane.paneIndex() === paneIndex)) {
+      chart.removePane(paneIndex);
+    }
+
+    requestAnimationFrame(refreshOverlay);
+  }, [refreshOverlay]);
+
+  const ensureStochasticPane = useCallback(() => {
+    if (stochasticKSeriesRef.current && stochasticDSeriesRef.current) {
+      return {
+        k: stochasticKSeriesRef.current,
+        d: stochasticDSeriesRef.current
+      };
+    }
+
+    if (!chartRef.current) {
+      return null;
+    }
+
+    const stochPane = chartRef.current.addPane(true);
+    stochPane.setStretchFactor(1);
+
+    const stochKSeries = stochPane.addSeries(LineSeries, {
+      color: "#2962FF",
+      lineWidth: 2,
+      crosshairMarkerVisible: false,
+      priceLineVisible: false,
+      lastValueVisible: false
+    });
+
+    const stochDSeries = stochPane.addSeries(LineSeries, {
+      color: "#FF6A00",
+      lineWidth: 2,
+      crosshairMarkerVisible: false,
+      priceLineVisible: false,
+      lastValueVisible: false
+    });
+
+    stochPane.priceScale("right").applyOptions({
+      scaleMargins: {
+        top: 0.1,
+        bottom: 0.1
+      },
+      borderColor: "rgba(255,255,255,0.12)"
+    });
+    stochPane.priceScale("left").applyOptions({
+      visible: false
+    });
+
+    stochasticKSeriesRef.current = stochKSeries;
+    stochasticDSeriesRef.current = stochDSeries;
+    stochasticPaneIndexRef.current = stochPane.paneIndex();
+    requestAnimationFrame(refreshOverlay);
+
+    return {
+      k: stochKSeries,
+      d: stochDSeries
+    };
+  }, [refreshOverlay]);
+
   const resetDrawingDraft = useCallback(() => {
     setDraftPoint(null);
+    setSecondaryDraftPoint(null);
     setHoverPoint(null);
   }, []);
 
   const handleSelectDrawingTool = useCallback(
     (tool: DrawingTool) => {
-      setDrawingTool((current) => (current === tool ? "cursor" : tool));
+      setDrawingTool(tool);
       setSelectedDrawingId(null);
       setDrawingDragTarget(null);
       resetDrawingDraft();
@@ -726,7 +1152,6 @@ export const TradeChart = ({
       setSelectedDrawingId((current) => (current === drawingId ? null : current));
       setDrawingDragTarget((current) => (current?.id === drawingId ? null : current));
       setDrawingContextMenu(null);
-      setDrawingTool("cursor");
       resetDrawingDraft();
     },
     [drawings, onDrawingsChange, resetDrawingDraft]
@@ -737,8 +1162,21 @@ export const TradeChart = ({
       return;
     }
 
+    const selectedDrawing = drawings.find((drawing) => drawing.id === selectedDrawingId);
+    const shouldUseAdapterForSelection =
+      shouldUseDrawingAdapter &&
+      selectedDrawing !== undefined &&
+      isAdapterManagedTradeDrawingType(selectedDrawing.type) &&
+      Boolean(drawingAdapterRef.current);
+
+    if (shouldUseAdapterForSelection && drawingAdapterRef.current?.deleteSelectedDrawing()) {
+      setDrawingContextMenu(null);
+      resetDrawingDraft();
+      return;
+    }
+
     handleDeleteDrawing(selectedDrawingId);
-  }, [handleDeleteDrawing, selectedDrawingId]);
+  }, [drawings, handleDeleteDrawing, resetDrawingDraft, selectedDrawingId, shouldUseDrawingAdapter]);
 
   useEffect(() => {
     if (!canDraw) {
@@ -746,17 +1184,38 @@ export const TradeChart = ({
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if ((event.key === "Delete" || event.key === "Backspace") && selectedDrawingId) {
-        const activeElement = document.activeElement;
-        const tagName = activeElement?.tagName?.toLowerCase();
-        const isTypingTarget =
-          activeElement instanceof HTMLInputElement ||
-          activeElement instanceof HTMLTextAreaElement ||
-          activeElement instanceof HTMLSelectElement ||
-          tagName === "button" ||
-          activeElement?.getAttribute("contenteditable") === "true";
+      const activeElement = document.activeElement;
+      const isTypingTarget = isTextInputLikeElement(activeElement);
 
-        if (!isTypingTarget) {
+      if (!isTypingTarget) {
+        const shortcutTool = (() => {
+          switch (event.key.toLowerCase()) {
+            case "v":
+              return "cursor" as const;
+            case "1":
+              return "trendline" as const;
+            case "2":
+              return "horizontal" as const;
+            case "3":
+              return "vertical" as const;
+            case "4":
+              return "fibonacci" as const;
+            case "5":
+              return "pitchfork" as const;
+            case "6":
+              return "channel" as const;
+            default:
+              return null;
+          }
+        })();
+
+        if (shortcutTool) {
+          event.preventDefault();
+          handleSelectDrawingTool(shortcutTool);
+          return;
+        }
+
+        if ((event.key === "Delete" || event.key === "Backspace") && selectedDrawingId) {
           event.preventDefault();
           handleDeleteSelectedDrawing();
           return;
@@ -770,6 +1229,7 @@ export const TradeChart = ({
       if (draftPoint || hoverPoint || drawingTool !== "cursor" || selectedDrawingId || drawingContextMenu) {
         event.preventDefault();
         setDrawingTool("cursor");
+        drawingAdapterRef.current?.clearActiveTool();
         setSelectedDrawingId(null);
         setDrawingDragTarget(null);
         setDrawingContextMenu(null);
@@ -785,6 +1245,7 @@ export const TradeChart = ({
     drawingContextMenu,
     drawingTool,
     handleDeleteSelectedDrawing,
+    handleSelectDrawingTool,
     hoverPoint,
     resetDrawingDraft,
     selectedDrawingId
@@ -920,7 +1381,68 @@ export const TradeChart = ({
 
   const handleOverlayPointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
-      if (!canDraw || drawingTool === "cursor" || !onDrawingsChange) {
+      if (!canDraw || !onDrawingsChange) {
+        return;
+      }
+
+      if (drawingTool === "cursor") {
+        if (!shouldUseDrawingAdapter || !drawingAdapterRef.current || !overlayRef.current) {
+          return;
+        }
+
+        const rect = overlayRef.current.getBoundingClientRect();
+        const selectedId = drawingAdapterRef.current.selectAtPoint({
+          x: event.clientX - rect.left,
+          y: event.clientY - rect.top
+        });
+        setSelectedDrawingId(selectedId);
+        return;
+      }
+
+      if (isAdapterToolActive && drawingAdapterRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        setDrawingContextMenu(null);
+
+        const point = resolveDrawingPoint(event.clientX, event.clientY);
+        if (!point) {
+          return;
+        }
+
+        if (drawingTool === "horizontal") {
+          const id = drawingAdapterRef.current.addHorizontalLine(point.price);
+          setSelectedDrawingId(id);
+          resetDrawingDraft();
+          return;
+        }
+
+        if (drawingTool === "vertical") {
+          const id = drawingAdapterRef.current.addVerticalLine(point.time);
+          setSelectedDrawingId(id);
+          resetDrawingDraft();
+          return;
+        }
+
+        if (drawingTool === "fibonacci") {
+          if (!draftPoint) {
+            setDraftPoint(point);
+            return;
+          }
+
+          const id = drawingAdapterRef.current.addFibRetracement(draftPoint, point);
+          setSelectedDrawingId(id);
+          resetDrawingDraft();
+          return;
+        }
+
+        if (!draftPoint) {
+          setDraftPoint(point);
+          return;
+        }
+
+        const id = drawingAdapterRef.current.addTrendLine(draftPoint, point);
+        setSelectedDrawingId(id);
+        resetDrawingDraft();
         return;
       }
 
@@ -944,7 +1466,6 @@ export const TradeChart = ({
           }
         ]);
         setSelectedDrawingId(id);
-        setDrawingTool("cursor");
         resetDrawingDraft();
         return;
       }
@@ -960,7 +1481,6 @@ export const TradeChart = ({
           }
         ]);
         setSelectedDrawingId(id);
-        setDrawingTool("cursor");
         resetDrawingDraft();
         return;
       }
@@ -984,7 +1504,6 @@ export const TradeChart = ({
           }
         ]);
         setSelectedDrawingId(id);
-        setDrawingTool("cursor");
         resetDrawingDraft();
         return;
       }
@@ -995,31 +1514,28 @@ export const TradeChart = ({
           return;
         }
 
-        if (draftPoint && !hoverPoint?.x) {
-          setHoverPoint(point);
+        if (!secondaryDraftPoint) {
+          setSecondaryDraftPoint(point);
           return;
         }
 
-        if (draftPoint && hoverPoint) {
-          const id = createDrawingId();
-          onDrawingsChange([
-            ...drawings,
-            {
-              id,
-              type: "pitchfork",
-              pivotTime: draftPoint.time,
-              pivotPrice: draftPoint.price,
-              leftTime: hoverPoint.time,
-              leftPrice: hoverPoint.price,
-              rightTime: point.time,
-              rightPrice: point.price
-            }
-          ]);
-          setSelectedDrawingId(id);
-          setDrawingTool("cursor");
-          resetDrawingDraft();
-          return;
-        }
+        const id = createDrawingId();
+        onDrawingsChange([
+          ...drawings,
+          {
+            id,
+            type: "pitchfork",
+            pivotTime: draftPoint.time,
+            pivotPrice: draftPoint.price,
+            leftTime: secondaryDraftPoint.time,
+            leftPrice: secondaryDraftPoint.price,
+            rightTime: point.time,
+            rightPrice: point.price
+          }
+        ]);
+        setSelectedDrawingId(id);
+        resetDrawingDraft();
+        return;
       }
 
       if (drawingTool === "channel") {
@@ -1028,31 +1544,28 @@ export const TradeChart = ({
           return;
         }
 
-        if (draftPoint && !hoverPoint?.x) {
-          setHoverPoint(point);
+        if (!secondaryDraftPoint) {
+          setSecondaryDraftPoint(point);
           return;
         }
 
-        if (draftPoint && hoverPoint) {
-          const id = createDrawingId();
-          onDrawingsChange([
-            ...drawings,
-            {
-              id,
-              type: "channel",
-              startTime: draftPoint.time,
-              startPrice: draftPoint.price,
-              endTime: hoverPoint.time,
-              endPrice: hoverPoint.price,
-              parallelTime: point.time,
-              parallelPrice: point.price
-            }
-          ]);
-          setSelectedDrawingId(id);
-          setDrawingTool("cursor");
-          resetDrawingDraft();
-          return;
-        }
+        const id = createDrawingId();
+        onDrawingsChange([
+          ...drawings,
+          {
+            id,
+            type: "channel",
+            startTime: draftPoint.time,
+            startPrice: draftPoint.price,
+            endTime: secondaryDraftPoint.time,
+            endPrice: secondaryDraftPoint.price,
+            parallelTime: point.time,
+            parallelPrice: point.price
+          }
+        ]);
+        setSelectedDrawingId(id);
+        resetDrawingDraft();
+        return;
       }
 
       if (!draftPoint) {
@@ -1073,10 +1586,20 @@ export const TradeChart = ({
         }
       ]);
       setSelectedDrawingId(id);
-      setDrawingTool("cursor");
       resetDrawingDraft();
     },
-    [canDraw, draftPoint, drawingTool, drawings, onDrawingsChange, resetDrawingDraft, resolveDrawingPoint, hoverPoint]
+    [
+      canDraw,
+      draftPoint,
+      drawingTool,
+      drawings,
+      isAdapterToolActive,
+      onDrawingsChange,
+      resetDrawingDraft,
+      resolveDrawingPoint,
+      shouldUseDrawingAdapter,
+      secondaryDraftPoint
+    ]
   );
 
   const handleUndoDrawing = useCallback(() => {
@@ -1084,24 +1607,39 @@ export const TradeChart = ({
       return;
     }
 
+    const lastDrawing = drawings[drawings.length - 1];
+    if (
+      shouldUseDrawingAdapter &&
+      lastDrawing &&
+      isAdapterManagedTradeDrawingType(lastDrawing.type) &&
+      drawingAdapterRef.current?.undoLast()
+    ) {
+      setSelectedDrawingId(null);
+      setDrawingContextMenu(null);
+      resetDrawingDraft();
+      return;
+    }
+
     onDrawingsChange(drawings.slice(0, -1));
     setSelectedDrawingId(null);
     setDrawingContextMenu(null);
-    setDrawingTool("cursor");
     resetDrawingDraft();
-  }, [drawings, onDrawingsChange, resetDrawingDraft]);
+  }, [drawings, onDrawingsChange, resetDrawingDraft, shouldUseDrawingAdapter]);
 
   const handleClearDrawings = useCallback(() => {
     if (!onDrawingsChange || drawings.length === 0) {
       return;
     }
 
+    if (shouldUseDrawingAdapter && drawingAdapterRef.current) {
+      drawingAdapterRef.current.clearAll();
+    }
+
     onDrawingsChange([]);
     setSelectedDrawingId(null);
     setDrawingContextMenu(null);
-    setDrawingTool("cursor");
     resetDrawingDraft();
-  }, [drawings.length, onDrawingsChange, resetDrawingDraft]);
+  }, [drawings.length, onDrawingsChange, resetDrawingDraft, shouldUseDrawingAdapter]);
 
   const handleSelectDrawing = useCallback(
     (event: React.PointerEvent<SVGElement>, drawingId: string) => {
@@ -1323,77 +1861,6 @@ export const TradeChart = ({
       lastValueVisible: false
     });
 
-    // MACD - create separate pane
-    const macdPane = chart.addPane(true);
-    macdPane.setStretchFactor(1);
-
-    const macdLineSeries = macdPane.addSeries(LineSeries, {
-      color: "#2962FF",
-      lineWidth: 2,
-      crosshairMarkerVisible: false,
-      priceLineVisible: false,
-      lastValueVisible: false
-    });
-
-    const macdSignalSeries = macdPane.addSeries(LineSeries, {
-      color: "#FF6A00",
-      lineWidth: 2,
-      crosshairMarkerVisible: false,
-      priceLineVisible: false,
-      lastValueVisible: false
-    });
-
-    const macdHistogramSeries = macdPane.addSeries(HistogramSeries, {
-      priceFormat: {
-        type: "volume"
-      },
-      priceLineVisible: false,
-      lastValueVisible: false,
-      base: 0
-    });
-    macdPane.priceScale("right").applyOptions({
-      scaleMargins: {
-        top: 0.1,
-        bottom: 0.1
-      },
-      borderColor: "rgba(255,255,255,0.12)"
-    });
-    macdPane.priceScale("left").applyOptions({
-      visible: false
-    });
-
-    // Stochastic - create separate pane
-    const stochPane = chart.addPane(true);
-    stochPane.setStretchFactor(1);
-
-    const stochKSeries = stochPane.addSeries(LineSeries, {
-      color: "#2962FF",
-      lineWidth: 2,
-      crosshairMarkerVisible: false,
-      priceLineVisible: false,
-      lastValueVisible: false
-    });
-
-    const stochDSeries = stochPane.addSeries(LineSeries, {
-      color: "#FF6A00",
-      lineWidth: 2,
-      crosshairMarkerVisible: false,
-      priceLineVisible: false,
-      lastValueVisible: false
-    });
-
-    // Add reference lines to stochastic pane (20, 50, 80)
-    stochPane.priceScale("right").applyOptions({
-      scaleMargins: {
-        top: 0.1,
-        bottom: 0.1
-      },
-      borderColor: "rgba(255,255,255,0.12)"
-    });
-    stochPane.priceScale("left").applyOptions({
-      visible: false
-    });
-
     chartRef.current = chart;
     seriesRef.current = series;
     fastEmaSeriesRef.current = fastEmaSeries;
@@ -1404,11 +1871,13 @@ export const TradeChart = ({
     lodSeriesRef.current = lodSeries;
     volumeSeriesRef.current = volumeSeries;
     bollingerBandsSeriesRefs.current = { upper: bbUpperSeries, middle: bbMiddleSeries, lower: bbLowerSeries };
-    macdLineSeriesRef.current = macdLineSeries;
-    macdSignalSeriesRef.current = macdSignalSeries;
-    macdHistogramSeriesRef.current = macdHistogramSeries;
-    stochasticKSeriesRef.current = stochKSeries;
-    stochasticDSeriesRef.current = stochDSeries;
+    macdLineSeriesRef.current = null;
+    macdSignalSeriesRef.current = null;
+    macdHistogramSeriesRef.current = null;
+    stochasticKSeriesRef.current = null;
+    stochasticDSeriesRef.current = null;
+    macdPaneIndexRef.current = null;
+    stochasticPaneIndexRef.current = null;
     const handleCrosshairMove = (param: MouseEventParams<Time>) => {
       setHoveredBar(findBarByTime(displayBarsRef.current, toUtcTimestamp(param.time)));
     };
@@ -1437,6 +1906,8 @@ export const TradeChart = ({
       macdHistogramSeriesRef.current = null;
       stochasticKSeriesRef.current = null;
       stochasticDSeriesRef.current = null;
+      macdPaneIndexRef.current = null;
+      stochasticPaneIndexRef.current = null;
       rsiPriceLineRefs.current = [];
       rsiPaneIndexRef.current = null;
     };
@@ -1514,47 +1985,48 @@ export const TradeChart = ({
   }, [displayBars, fastEmaData, layerVisibility, showEma, slowEmaData, vwapData, bollingerBandsData]);
 
   useEffect(() => {
-    if (!macdLineSeriesRef.current || !macdSignalSeriesRef.current || !macdHistogramSeriesRef.current) {
+    if (!chartRef.current || !layerVisibility.macd || macdData.length === 0) {
+      removeMacdPane();
       return;
     }
 
-    if (layerVisibility.macd && macdData.length > 0) {
-      const macdLine = macdData.map(d => ({ time: d.time, value: d.value }));
-      const macdSignal = macdData
-        .filter(d => d.signal !== undefined)
-        .map(d => ({ time: d.time, value: d.signal ?? 0 }));
-      const macdHistogram = macdData
-        .filter(d => d.histogram !== undefined)
-        .map(d => ({ time: d.time, value: d.histogram ?? 0 }));
-
-      macdLineSeriesRef.current.setData(macdLine);
-      macdSignalSeriesRef.current.setData(macdSignal);
-      macdHistogramSeriesRef.current.setData(macdHistogram);
-    } else {
-      macdLineSeriesRef.current.setData([]);
-      macdSignalSeriesRef.current.setData([]);
-      macdHistogramSeriesRef.current.setData([]);
+    const macdSeries = ensureMacdPane();
+    if (!macdSeries) {
+      return;
     }
-  }, [layerVisibility.macd, macdData]);
+
+    const macdLine = macdData.map((d) => ({ time: d.time, value: d.value }));
+    const macdSignal = macdData
+      .filter((d) => d.signal !== undefined)
+      .map((d) => ({ time: d.time, value: d.signal ?? 0 }));
+    const macdHistogram = macdData
+      .filter((d) => d.histogram !== undefined)
+      .map((d) => ({ time: d.time, value: d.histogram ?? 0 }));
+
+    macdSeries.line.setData(macdLine);
+    macdSeries.signal.setData(macdSignal);
+    macdSeries.histogram.setData(macdHistogram);
+  }, [ensureMacdPane, layerVisibility.macd, macdData, removeMacdPane]);
 
   useEffect(() => {
-    if (!stochasticKSeriesRef.current || !stochasticDSeriesRef.current) {
+    if (!chartRef.current || !layerVisibility.stochastic || stochasticData.length === 0) {
+      removeStochasticPane();
       return;
     }
 
-    if (layerVisibility.stochastic && stochasticData.length > 0) {
-      const stochK = stochasticData.map(d => ({ time: d.time, value: d.k ?? d.value }));
-      const stochD = stochasticData
-        .filter(d => d.d !== undefined)
-        .map(d => ({ time: d.time, value: d.d ?? 0 }));
-
-      stochasticKSeriesRef.current.setData(stochK);
-      stochasticDSeriesRef.current.setData(stochD);
-    } else {
-      stochasticKSeriesRef.current.setData([]);
-      stochasticDSeriesRef.current.setData([]);
+    const stochSeries = ensureStochasticPane();
+    if (!stochSeries) {
+      return;
     }
-  }, [layerVisibility.stochastic, stochasticData]);
+
+    const stochK = stochasticData.map((d) => ({ time: d.time, value: d.k ?? d.value }));
+    const stochD = stochasticData
+      .filter((d) => d.d !== undefined)
+      .map((d) => ({ time: d.time, value: d.d ?? 0 }));
+
+    stochSeries.k.setData(stochK);
+    stochSeries.d.setData(stochD);
+  }, [ensureStochasticPane, layerVisibility.stochastic, removeStochasticPane, stochasticData]);
 
   useEffect(() => {
     if (!chartRef.current || !layerVisibility.rsi || rsiData.length === 0) {
@@ -1734,17 +2206,20 @@ export const TradeChart = ({
   );
 
   const projectedDrawings = useMemo(() => {
-    if (!chartRef.current || !seriesRef.current || overlaySize.width === 0 || overlaySize.height === 0) {
+    const chart = chartRef.current;
+    const series = seriesRef.current;
+
+    if (!chart || !series || overlaySize.width === 0 || overlaySize.height === 0) {
       return [];
     }
 
-    return drawings
+    return nativeOverlayDrawings
       .map((drawing) => {
-        if (drawing.type === "trendline" || drawing.type === "fibonacci") {
-          const x1 = chartRef.current?.timeScale().timeToCoordinate(drawing.startTime as UTCTimestamp);
-          const y1 = seriesRef.current?.priceToCoordinate(drawing.startPrice);
-          const x2 = chartRef.current?.timeScale().timeToCoordinate(drawing.endTime as UTCTimestamp);
-          const y2 = seriesRef.current?.priceToCoordinate(drawing.endPrice);
+        if (drawing.type === "trendline") {
+          const x1 = chart.timeScale().timeToCoordinate(drawing.startTime as UTCTimestamp);
+          const y1 = series.priceToCoordinate(drawing.startPrice);
+          const x2 = chart.timeScale().timeToCoordinate(drawing.endTime as UTCTimestamp);
+          const y2 = series.priceToCoordinate(drawing.endPrice);
 
           if (
             typeof x1 !== "number" ||
@@ -1765,8 +2240,44 @@ export const TradeChart = ({
           };
         }
 
+        if (drawing.type === "fibonacci") {
+          const x1 = chart.timeScale().timeToCoordinate(drawing.startTime as UTCTimestamp);
+          const y1 = series.priceToCoordinate(drawing.startPrice);
+          const x2 = chart.timeScale().timeToCoordinate(drawing.endTime as UTCTimestamp);
+          const y2 = series.priceToCoordinate(drawing.endPrice);
+
+          if (
+            typeof x1 !== "number" ||
+            typeof y1 !== "number" ||
+            typeof x2 !== "number" ||
+            typeof y2 !== "number"
+          ) {
+            return null;
+          }
+
+          const levelStartX = Math.min(x1, x2);
+          const levelEndX = Math.max(x1, x2);
+          const deltaY = y2 - y1;
+
+          return {
+            id: drawing.id,
+            type: drawing.type,
+            x1,
+            y1,
+            x2,
+            y2,
+            levelStartX,
+            levelEndX,
+            levels: FIBONACCI_LEVELS.map((level) => ({
+              key: level.key,
+              label: level.label,
+              y: y1 + deltaY * level.ratio
+            }))
+          };
+        }
+
         if (drawing.type === "horizontal") {
-          const y = seriesRef.current?.priceToCoordinate(drawing.price);
+          const y = series.priceToCoordinate(drawing.price);
           if (typeof y !== "number") {
             return null;
           }
@@ -1779,7 +2290,7 @@ export const TradeChart = ({
         }
 
         if (drawing.type === "vertical") {
-          const x = chartRef.current?.timeScale().timeToCoordinate(drawing.time as UTCTimestamp);
+          const x = chart.timeScale().timeToCoordinate(drawing.time as UTCTimestamp);
           if (typeof x !== "number") {
             return null;
           }
@@ -1792,12 +2303,12 @@ export const TradeChart = ({
         }
 
         if (drawing.type === "pitchfork") {
-          const pivotX = chartRef.current?.timeScale().timeToCoordinate(drawing.pivotTime as UTCTimestamp);
-          const pivotY = seriesRef.current?.priceToCoordinate(drawing.pivotPrice);
-          const leftX = chartRef.current?.timeScale().timeToCoordinate(drawing.leftTime as UTCTimestamp);
-          const leftY = seriesRef.current?.priceToCoordinate(drawing.leftPrice);
-          const rightX = chartRef.current?.timeScale().timeToCoordinate(drawing.rightTime as UTCTimestamp);
-          const rightY = seriesRef.current?.priceToCoordinate(drawing.rightPrice);
+          const pivotX = chart.timeScale().timeToCoordinate(drawing.pivotTime as UTCTimestamp);
+          const pivotY = series.priceToCoordinate(drawing.pivotPrice);
+          const leftX = chart.timeScale().timeToCoordinate(drawing.leftTime as UTCTimestamp);
+          const leftY = series.priceToCoordinate(drawing.leftPrice);
+          const rightX = chart.timeScale().timeToCoordinate(drawing.rightTime as UTCTimestamp);
+          const rightY = series.priceToCoordinate(drawing.rightPrice);
 
           if (
             typeof pivotX !== "number" ||
@@ -1810,6 +2321,40 @@ export const TradeChart = ({
             return null;
           }
 
+          const middleX = (leftX + rightX) / 2;
+          const middleY = (leftY + rightY) / 2;
+          const directionX = middleX - pivotX;
+          const directionY = middleY - pivotY;
+
+          const centerLine = projectInfiniteLine(
+            pivotX,
+            pivotY,
+            directionX,
+            directionY,
+            overlaySize.width,
+            overlaySize.height
+          );
+          const leftLine = projectInfiniteLine(
+            leftX,
+            leftY,
+            directionX,
+            directionY,
+            overlaySize.width,
+            overlaySize.height
+          );
+          const rightLine = projectInfiniteLine(
+            rightX,
+            rightY,
+            directionX,
+            directionY,
+            overlaySize.width,
+            overlaySize.height
+          );
+
+          if (!centerLine || !leftLine || !rightLine) {
+            return null;
+          }
+
           return {
             id: drawing.id,
             type: drawing.type,
@@ -1818,17 +2363,20 @@ export const TradeChart = ({
             leftX,
             leftY,
             rightX,
-            rightY
+            rightY,
+            middleX,
+            middleY,
+            rails: [centerLine, leftLine, rightLine]
           };
         }
 
         if (drawing.type === "channel") {
-          const x1 = chartRef.current?.timeScale().timeToCoordinate(drawing.startTime as UTCTimestamp);
-          const y1 = seriesRef.current?.priceToCoordinate(drawing.startPrice);
-          const x2 = chartRef.current?.timeScale().timeToCoordinate(drawing.endTime as UTCTimestamp);
-          const y2 = seriesRef.current?.priceToCoordinate(drawing.endPrice);
-          const x3 = chartRef.current?.timeScale().timeToCoordinate(drawing.parallelTime as UTCTimestamp);
-          const y3 = seriesRef.current?.priceToCoordinate(drawing.parallelPrice);
+          const x1 = chart.timeScale().timeToCoordinate(drawing.startTime as UTCTimestamp);
+          const y1 = series.priceToCoordinate(drawing.startPrice);
+          const x2 = chart.timeScale().timeToCoordinate(drawing.endTime as UTCTimestamp);
+          const y2 = series.priceToCoordinate(drawing.endPrice);
+          const x3 = chart.timeScale().timeToCoordinate(drawing.parallelTime as UTCTimestamp);
+          const y3 = series.priceToCoordinate(drawing.parallelPrice);
 
           if (
             typeof x1 !== "number" ||
@@ -1841,6 +2389,25 @@ export const TradeChart = ({
             return null;
           }
 
+          const directionX = x2 - x1;
+          const directionY = y2 - y1;
+          const offsetX = x3 - x1;
+          const offsetY = y3 - y1;
+
+          const mainLine = projectInfiniteLine(x1, y1, directionX, directionY, overlaySize.width, overlaySize.height);
+          const parallelLine = projectInfiniteLine(
+            x3,
+            y3,
+            directionX,
+            directionY,
+            overlaySize.width,
+            overlaySize.height
+          );
+
+          if (!mainLine || !parallelLine) {
+            return null;
+          }
+
           return {
             id: drawing.id,
             type: drawing.type,
@@ -1849,14 +2416,17 @@ export const TradeChart = ({
             x2,
             y2,
             x3,
-            y3
+            y3,
+            x4: x2 + offsetX,
+            y4: y2 + offsetY,
+            rails: [mainLine, parallelLine]
           };
         }
 
         return null;
       })
       .filter((drawing): drawing is NonNullable<typeof drawing> => drawing !== null);
-  }, [drawings, overlaySize.height, overlaySize.width, overlayVersion]);
+  }, [nativeOverlayDrawings, overlaySize.height, overlaySize.width, overlayVersion]);
 
   const projectedExecutionMarkers = useMemo(() => {
     if (
@@ -1905,7 +2475,7 @@ export const TradeChart = ({
 
   const getExecutionMarkerPoints = useCallback(
     (x: number, y: number, kind: ExecutionMarkerPoint["kind"]) => {
-      const size = 8;
+      const size = 10;
 
       if (kind === "exit") {
         return `${x},${y} ${x + size},${y - size * 0.78} ${x + size},${y + size * 0.78}`;
@@ -1946,9 +2516,155 @@ export const TradeChart = ({
           x1: draftPoint.x,
           y1: draftPoint.y,
           x2: hoverPoint.x,
-          y2: hoverPoint.y
+          y2: hoverPoint.y,
+          levelStartX: Math.min(draftPoint.x, hoverPoint.x),
+          levelEndX: Math.max(draftPoint.x, hoverPoint.x),
+          levels: FIBONACCI_LEVELS.map((level) => ({
+            key: level.key,
+            label: level.label,
+            y: draftPoint.y + (hoverPoint.y - draftPoint.y) * level.ratio
+          }))
         }
       : null;
+
+  const draftPitchfork = useMemo(() => {
+    if (drawingTool !== "pitchfork" || !draftPoint) {
+      return null;
+    }
+
+    if (!secondaryDraftPoint) {
+      if (!hoverPoint) {
+        return null;
+      }
+
+      return {
+        rails: null,
+        base: null,
+        guideLine: {
+          x1: draftPoint.x,
+          y1: draftPoint.y,
+          x2: hoverPoint.x,
+          y2: hoverPoint.y
+        },
+        anchors: [draftPoint, hoverPoint]
+      };
+    }
+
+    const rightPoint = hoverPoint ?? secondaryDraftPoint;
+    const middleX = (secondaryDraftPoint.x + rightPoint.x) / 2;
+    const middleY = (secondaryDraftPoint.y + rightPoint.y) / 2;
+    const directionX = middleX - draftPoint.x;
+    const directionY = middleY - draftPoint.y;
+    const centerLine = projectInfiniteLine(
+      draftPoint.x,
+      draftPoint.y,
+      directionX,
+      directionY,
+      overlaySize.width,
+      overlaySize.height
+    );
+    const leftLine = projectInfiniteLine(
+      secondaryDraftPoint.x,
+      secondaryDraftPoint.y,
+      directionX,
+      directionY,
+      overlaySize.width,
+      overlaySize.height
+    );
+    const rightLine = projectInfiniteLine(
+      rightPoint.x,
+      rightPoint.y,
+      directionX,
+      directionY,
+      overlaySize.width,
+      overlaySize.height
+    );
+
+    if (!centerLine || !leftLine || !rightLine) {
+      return null;
+    }
+
+    return {
+      guideLine: null,
+      rails: [centerLine, leftLine, rightLine],
+      base: {
+        x1: secondaryDraftPoint.x,
+        y1: secondaryDraftPoint.y,
+        x2: rightPoint.x,
+        y2: rightPoint.y
+      },
+      anchors: [draftPoint, secondaryDraftPoint, rightPoint]
+    };
+  }, [drawingTool, draftPoint, hoverPoint, overlaySize.height, overlaySize.width, secondaryDraftPoint]);
+
+  const draftChannel = useMemo(() => {
+    if (drawingTool !== "channel" || !draftPoint) {
+      return null;
+    }
+
+    if (!secondaryDraftPoint) {
+      if (!hoverPoint) {
+        return null;
+      }
+
+      return {
+        rails: null,
+        connectorA: null,
+        connectorB: null,
+        guideLine: {
+          x1: draftPoint.x,
+          y1: draftPoint.y,
+          x2: hoverPoint.x,
+          y2: hoverPoint.y
+        },
+        anchors: [draftPoint, hoverPoint]
+      };
+    }
+
+    const parallelPoint = hoverPoint ?? secondaryDraftPoint;
+    const directionX = secondaryDraftPoint.x - draftPoint.x;
+    const directionY = secondaryDraftPoint.y - draftPoint.y;
+    const offsetX = parallelPoint.x - draftPoint.x;
+    const offsetY = parallelPoint.y - draftPoint.y;
+    const primaryLine = projectInfiniteLine(
+      draftPoint.x,
+      draftPoint.y,
+      directionX,
+      directionY,
+      overlaySize.width,
+      overlaySize.height
+    );
+    const parallelLine = projectInfiniteLine(
+      parallelPoint.x,
+      parallelPoint.y,
+      directionX,
+      directionY,
+      overlaySize.width,
+      overlaySize.height
+    );
+
+    if (!primaryLine || !parallelLine) {
+      return null;
+    }
+
+    return {
+      guideLine: null,
+      rails: [primaryLine, parallelLine],
+      connectorA: {
+        x1: draftPoint.x,
+        y1: draftPoint.y,
+        x2: parallelPoint.x,
+        y2: parallelPoint.y
+      },
+      connectorB: {
+        x1: secondaryDraftPoint.x,
+        y1: secondaryDraftPoint.y,
+        x2: secondaryDraftPoint.x + offsetX,
+        y2: secondaryDraftPoint.y + offsetY
+      },
+      anchors: [draftPoint, secondaryDraftPoint, parallelPoint]
+    };
+  }, [drawingTool, draftPoint, hoverPoint, overlaySize.height, overlaySize.width, secondaryDraftPoint]);
 
   const activeDrawingTool = drawingToolOptions.find((option) => option.key === drawingTool) ?? drawingToolOptions[0];
   const drawingInstruction =
@@ -1962,25 +2678,25 @@ export const TradeChart = ({
           ? "Click the price level to place a horizontal line"
           : drawingTool === "vertical"
             ? "Click the time level to place a vertical line"
-            : drawingTool === "fibonacci"
-              ? draftPoint
-                ? "Click high or low to complete Fibonacci retracement"
-                : "Click the low point (start)"
-              : drawingTool === "pitchfork"
-                ? draftPoint && hoverPoint
-                  ? "Click the right pivot point"
-                  : draftPoint
-                    ? "Click the left pivot point"
-                    : "Click the center pivot point"
-                : drawingTool === "channel"
-                  ? draftPoint && hoverPoint
-                    ? "Click a point for the parallel line"
-                    : draftPoint
-                      ? "Click the end of the base line"
-                      : "Click the start point"
-                  : selectedDrawingId
-                    ? "Drag a handle or line to adjust. Press Delete to remove."
-                    : "Choose a drawing tool or click a line to select it";
+        : drawingTool === "fibonacci"
+          ? draftPoint
+            ? "Click second anchor to complete Fibonacci retracement"
+            : "Click first anchor for Fibonacci retracement"
+          : drawingTool === "pitchfork"
+            ? !draftPoint
+              ? "Click the center pivot point"
+              : !secondaryDraftPoint
+                ? "Click the left pivot point"
+                : "Click the right pivot point"
+            : drawingTool === "channel"
+                  ? !draftPoint
+                ? "Click the start of the base line"
+                : !secondaryDraftPoint
+                  ? "Click the end of the base line"
+                  : "Click a point for the parallel line"
+              : selectedDrawingId
+                ? "Drag supported handles or press Delete to remove."
+                : "Choose a drawing tool or click a line to select it.";
   const overlayModeClass =
     drawingTool !== "cursor" && canDraw
       ? " trade-chart-overlay-active"
@@ -2004,7 +2720,7 @@ export const TradeChart = ({
   ) : null;
 
   return (
-    <div className={`trade-chart-shell${fillHeight ? " is-fill" : ""}`}>
+    <div className={`trade-chart-shell${fillHeight ? " is-fill" : ""}`} data-drawing-engine={drawingEngine}>
       <div className="trade-chart-command-bar" role="toolbar" aria-label="Chart controls">
         <div className="trade-chart-command-group trade-chart-command-group-main">
           <button type="button" className="trade-chart-symbol-pill">
@@ -2277,12 +2993,13 @@ export const TradeChart = ({
           >
             <svg className="trade-chart-drawings" width="100%" height="100%">
             {projectedExecutionMarkers.map((marker) => (
-              <polygon
-                key={marker.id}
-                points={getExecutionMarkerPoints(marker.x, marker.y, marker.kind)}
-                className="trade-chart-execution-marker"
-                fill={getExecutionMarkerFill(marker.kind)}
-              />
+              <g key={marker.id}>
+                <polygon
+                  points={getExecutionMarkerPoints(marker.x, marker.y, marker.kind)}
+                  className={`trade-chart-execution-marker trade-chart-execution-marker-${marker.kind}`}
+                  fill={getExecutionMarkerFill(marker.kind)}
+                />
+              </g>
             ))}
             {projectedDrawings.map((drawing) => {
               const isSelected = drawing.id === selectedDrawingId;
@@ -2332,6 +3049,47 @@ export const TradeChart = ({
                 );
               }
 
+              if (drawing.type === "fibonacci") {
+                return (
+                  <g key={drawing.id}>
+                    <line
+                      x1={drawing.x1}
+                      y1={drawing.y1}
+                      x2={drawing.x2}
+                      y2={drawing.y2}
+                      className="trade-chart-drawing-hit-area"
+                      onPointerDown={(event) => handleSelectDrawing(event, drawing.id)}
+                      onContextMenu={(event) => handleOpenDrawingContextMenu(event, drawing.id)}
+                    />
+                    <line
+                      x1={drawing.x1}
+                      y1={drawing.y1}
+                      x2={drawing.x2}
+                      y2={drawing.y2}
+                      className={`trade-chart-drawing-line trade-chart-drawing-line-fibonacci-anchor${isSelected ? " is-selected" : ""}`}
+                    />
+                    {drawing.levels.map((level) => (
+                      <g key={level.key}>
+                        <line
+                          x1={drawing.levelStartX}
+                          y1={level.y}
+                          x2={drawing.levelEndX}
+                          y2={level.y}
+                          className={`trade-chart-drawing-line trade-chart-drawing-line-fibonacci${isSelected ? " is-selected" : ""}`}
+                        />
+                        <text
+                          x={drawing.levelEndX + 6}
+                          y={level.y - 2}
+                          className="trade-chart-drawing-label trade-chart-drawing-label-fibonacci"
+                        >
+                          {level.label}
+                        </text>
+                      </g>
+                    ))}
+                  </g>
+                );
+              }
+
               if (drawing.type === "horizontal") {
                 return (
                   <g key={drawing.id}>
@@ -2355,26 +3113,119 @@ export const TradeChart = ({
                 );
               }
 
-              return (
-                <g key={drawing.id}>
-                  <line
-                    x1={drawing.x}
-                    y1={0}
-                    x2={drawing.x}
-                    y2={overlaySize.height}
-                    className="trade-chart-drawing-hit-area"
-                    onPointerDown={(event) => handleStartDrawingDrag(event, { id: drawing.id, type: "vertical" })}
-                    onContextMenu={(event) => handleOpenDrawingContextMenu(event, drawing.id)}
-                  />
-                  <line
-                    x1={drawing.x}
-                    y1={0}
-                    x2={drawing.x}
-                    y2={overlaySize.height}
-                    className={`trade-chart-drawing-line trade-chart-drawing-line-vertical${isSelected ? " is-selected" : ""}`}
-                  />
-                </g>
-              );
+              if (drawing.type === "vertical") {
+                return (
+                  <g key={drawing.id}>
+                    <line
+                      x1={drawing.x}
+                      y1={0}
+                      x2={drawing.x}
+                      y2={overlaySize.height}
+                      className="trade-chart-drawing-hit-area"
+                      onPointerDown={(event) => handleStartDrawingDrag(event, { id: drawing.id, type: "vertical" })}
+                      onContextMenu={(event) => handleOpenDrawingContextMenu(event, drawing.id)}
+                    />
+                    <line
+                      x1={drawing.x}
+                      y1={0}
+                      x2={drawing.x}
+                      y2={overlaySize.height}
+                      className={`trade-chart-drawing-line trade-chart-drawing-line-vertical${isSelected ? " is-selected" : ""}`}
+                    />
+                  </g>
+                );
+              }
+
+              if (drawing.type === "pitchfork") {
+                return (
+                  <g key={drawing.id}>
+                    {drawing.rails.map((line, index) => (
+                      <g key={`${drawing.id}-pitchfork-rail-${index}`}>
+                        <line
+                          x1={line.x1}
+                          y1={line.y1}
+                          x2={line.x2}
+                          y2={line.y2}
+                          className="trade-chart-drawing-hit-area"
+                          onPointerDown={(event) => handleSelectDrawing(event, drawing.id)}
+                          onContextMenu={(event) => handleOpenDrawingContextMenu(event, drawing.id)}
+                        />
+                        <line
+                          x1={line.x1}
+                          y1={line.y1}
+                          x2={line.x2}
+                          y2={line.y2}
+                          className={`trade-chart-drawing-line trade-chart-drawing-line-pitchfork${isSelected ? " is-selected" : ""}`}
+                        />
+                      </g>
+                    ))}
+                    <line
+                      x1={drawing.leftX}
+                      y1={drawing.leftY}
+                      x2={drawing.rightX}
+                      y2={drawing.rightY}
+                      className={`trade-chart-drawing-line trade-chart-drawing-line-pitchfork-base${isSelected ? " is-selected" : ""}`}
+                    />
+                    {isSelected ? (
+                      <>
+                        <circle cx={drawing.pivotX} cy={drawing.pivotY} r={3.5} className="trade-chart-drawing-handle" />
+                        <circle cx={drawing.leftX} cy={drawing.leftY} r={3.5} className="trade-chart-drawing-handle" />
+                        <circle cx={drawing.rightX} cy={drawing.rightY} r={3.5} className="trade-chart-drawing-handle" />
+                      </>
+                    ) : null}
+                  </g>
+                );
+              }
+
+              if (drawing.type === "channel") {
+                return (
+                  <g key={drawing.id}>
+                    {drawing.rails.map((line, index) => (
+                      <g key={`${drawing.id}-channel-rail-${index}`}>
+                        <line
+                          x1={line.x1}
+                          y1={line.y1}
+                          x2={line.x2}
+                          y2={line.y2}
+                          className="trade-chart-drawing-hit-area"
+                          onPointerDown={(event) => handleSelectDrawing(event, drawing.id)}
+                          onContextMenu={(event) => handleOpenDrawingContextMenu(event, drawing.id)}
+                        />
+                        <line
+                          x1={line.x1}
+                          y1={line.y1}
+                          x2={line.x2}
+                          y2={line.y2}
+                          className={`trade-chart-drawing-line trade-chart-drawing-line-channel${isSelected ? " is-selected" : ""}`}
+                        />
+                      </g>
+                    ))}
+                    <line
+                      x1={drawing.x1}
+                      y1={drawing.y1}
+                      x2={drawing.x3}
+                      y2={drawing.y3}
+                      className={`trade-chart-drawing-line trade-chart-drawing-line-channel-connector${isSelected ? " is-selected" : ""}`}
+                    />
+                    <line
+                      x1={drawing.x2}
+                      y1={drawing.y2}
+                      x2={drawing.x4}
+                      y2={drawing.y4}
+                      className={`trade-chart-drawing-line trade-chart-drawing-line-channel-connector${isSelected ? " is-selected" : ""}`}
+                    />
+                    {isSelected ? (
+                      <>
+                        <circle cx={drawing.x1} cy={drawing.y1} r={3.5} className="trade-chart-drawing-handle" />
+                        <circle cx={drawing.x2} cy={drawing.y2} r={3.5} className="trade-chart-drawing-handle" />
+                        <circle cx={drawing.x3} cy={drawing.y3} r={3.5} className="trade-chart-drawing-handle" />
+                      </>
+                    ) : null}
+                  </g>
+                );
+              }
+
+              return null;
             })}
               {draftTrendLine ? (
                 <line
@@ -2402,6 +3253,102 @@ export const TradeChart = ({
                   y2={overlaySize.height}
                   className="trade-chart-drawing-line trade-chart-drawing-line-vertical trade-chart-drawing-line-draft"
                 />
+              ) : null}
+              {draftFibonacci ? (
+                <>
+                  <line
+                    x1={draftFibonacci.x1}
+                    y1={draftFibonacci.y1}
+                    x2={draftFibonacci.x2}
+                    y2={draftFibonacci.y2}
+                    className="trade-chart-drawing-line trade-chart-drawing-line-fibonacci-anchor trade-chart-drawing-line-draft"
+                  />
+                  {draftFibonacci.levels.map((level) => (
+                    <g key={`draft-${level.key}`}>
+                      <line
+                        x1={draftFibonacci.levelStartX}
+                        y1={level.y}
+                        x2={draftFibonacci.levelEndX}
+                        y2={level.y}
+                        className="trade-chart-drawing-line trade-chart-drawing-line-fibonacci trade-chart-drawing-line-draft"
+                      />
+                      <text
+                        x={draftFibonacci.levelEndX + 6}
+                        y={level.y - 2}
+                        className="trade-chart-drawing-label trade-chart-drawing-label-fibonacci"
+                      >
+                        {level.label}
+                      </text>
+                    </g>
+                  ))}
+                </>
+              ) : null}
+              {draftPitchfork?.guideLine ? (
+                <line
+                  x1={draftPitchfork.guideLine.x1}
+                  y1={draftPitchfork.guideLine.y1}
+                  x2={draftPitchfork.guideLine.x2}
+                  y2={draftPitchfork.guideLine.y2}
+                  className="trade-chart-drawing-line trade-chart-drawing-line-pitchfork trade-chart-drawing-line-draft"
+                />
+              ) : null}
+              {draftPitchfork?.rails && draftPitchfork.base ? (
+                <>
+                  {draftPitchfork.rails.map((line, index) => (
+                    <line
+                      key={`draft-pitchfork-rail-${index}`}
+                      x1={line.x1}
+                      y1={line.y1}
+                      x2={line.x2}
+                      y2={line.y2}
+                      className="trade-chart-drawing-line trade-chart-drawing-line-pitchfork trade-chart-drawing-line-draft"
+                    />
+                  ))}
+                  <line
+                    x1={draftPitchfork.base.x1}
+                    y1={draftPitchfork.base.y1}
+                    x2={draftPitchfork.base.x2}
+                    y2={draftPitchfork.base.y2}
+                    className="trade-chart-drawing-line trade-chart-drawing-line-pitchfork-base trade-chart-drawing-line-draft"
+                  />
+                </>
+              ) : null}
+              {draftChannel?.guideLine ? (
+                <line
+                  x1={draftChannel.guideLine.x1}
+                  y1={draftChannel.guideLine.y1}
+                  x2={draftChannel.guideLine.x2}
+                  y2={draftChannel.guideLine.y2}
+                  className="trade-chart-drawing-line trade-chart-drawing-line-channel trade-chart-drawing-line-draft"
+                />
+              ) : null}
+              {draftChannel?.rails && draftChannel.connectorA && draftChannel.connectorB ? (
+                <>
+                  {draftChannel.rails.map((line, index) => (
+                    <line
+                      key={`draft-channel-rail-${index}`}
+                      x1={line.x1}
+                      y1={line.y1}
+                      x2={line.x2}
+                      y2={line.y2}
+                      className="trade-chart-drawing-line trade-chart-drawing-line-channel trade-chart-drawing-line-draft"
+                    />
+                  ))}
+                  <line
+                    x1={draftChannel.connectorA.x1}
+                    y1={draftChannel.connectorA.y1}
+                    x2={draftChannel.connectorA.x2}
+                    y2={draftChannel.connectorA.y2}
+                    className="trade-chart-drawing-line trade-chart-drawing-line-channel-connector trade-chart-drawing-line-draft"
+                  />
+                  <line
+                    x1={draftChannel.connectorB.x1}
+                    y1={draftChannel.connectorB.y1}
+                    x2={draftChannel.connectorB.x2}
+                    y2={draftChannel.connectorB.y2}
+                    className="trade-chart-drawing-line trade-chart-drawing-line-channel-connector trade-chart-drawing-line-draft"
+                  />
+                </>
               ) : null}
             </svg>
             {drawingContextMenu ? (

@@ -60,6 +60,7 @@ This app supports syncing your workspace (sessions, journal pages, settings, tag
 4. Run the app and sign in (or create an account) in the in-app auth screen.
 
 Notes:
+- If you see `Supabase is not configured...` in the sign-in card, the app was started without `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`. Add them to `.env.local` and restart `npm run desktop:dev` (or rebuild if you are running a packaged desktop build).
 - Data is cached locally first, then synced to Supabase when a user session is available. Each synced store tracks dirty state, the last synced user/hash, and the last sync error so failed writes can be retried on later saves, login hydration, or reconnect.
 - On sign-in, the app pulls the user's Supabase blobs first, then merges only dirty or legacy local data. Clean local cache is treated as a cache of cloud data, which avoids stale data from one machine overwriting newer data from another.
 - Synced domains include trade sessions, journal pages, journal templates, settings, trade tag options/overrides, trade reviews, historical bars, workspace state, playbooks, library pages, headlines, editable select additions, and review templates.

@@ -20,6 +20,9 @@ as $$
 declare
   t text;
   backup_table text;
+  backup_constraint record;
+  source_columns text;
+  source_select text;
   tables text[] := array[
     'user_profiles',
     'workspace_admins',
@@ -47,11 +50,26 @@ begin
 
     backup_table := format('backup_%s', t);
 
+    -- Keep defaults/identity metadata but avoid PK/UNIQUE constraints so snapshots are rerunnable.
     execute format(
-      'create table if not exists public.%I (like public.%I including all);',
+      'create table if not exists public.%I (like public.%I including defaults including generated including identity including comments);',
       backup_table,
       t
     );
+
+    -- If a prior version created backup tables with PK/UNIQUE constraints, remove them.
+    for backup_constraint in
+      select conname
+        from pg_constraint
+       where conrelid = format('public.%I', backup_table)::regclass
+         and contype in ('p', 'u')
+    loop
+      execute format(
+        'alter table public.%I drop constraint if exists %I;',
+        backup_table,
+        backup_constraint.conname
+      );
+    end loop;
 
     execute format(
       'alter table public.%I add column if not exists backup_snapshot text not null default ''manual'';',
@@ -62,9 +80,27 @@ begin
       backup_table
     );
 
+    -- Ensure inserts are stable even if source schema evolves over time.
+    select
+      string_agg(format('%I', attname), ', ' order by attnum),
+      string_agg(format('src.%I', attname), ', ' order by attnum)
+      into source_columns, source_select
+      from pg_attribute
+     where attrelid = format('public.%I', t)::regclass
+       and attnum > 0
+       and not attisdropped;
+
+    if source_columns is null or source_select is null then
+      continue;
+    end if;
+
     execute format(
-      'insert into public.%I select src.*, $1::text as backup_snapshot, now() as backed_up_at from public.%I src;',
+      'insert into public.%I (%s, backup_snapshot, backed_up_at)
+       select %s, $1::text as backup_snapshot, now() as backed_up_at
+         from public.%I src;',
       backup_table,
+      source_columns,
+      source_select,
       t
     )
     using snapshot_label;
@@ -208,6 +244,37 @@ begin
 
   return query
   select snapshot_name, resolved_admin_user_id;
+end;
+$$;
+
+-- Restrict migration helpers to trusted backend roles only.
+do $$
+begin
+  revoke all on function public.trade_engine_backup_snapshot(text) from public;
+  revoke all on function public.trade_engine_assign_legacy_data_to_admin(uuid) from public;
+  revoke all on function public.trade_engine_assign_legacy_data_to_admin_by_email(text) from public;
+  revoke all on function public.trade_engine_run_owner_migration(text, text) from public;
+
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    revoke all on function public.trade_engine_backup_snapshot(text) from anon;
+    revoke all on function public.trade_engine_assign_legacy_data_to_admin(uuid) from anon;
+    revoke all on function public.trade_engine_assign_legacy_data_to_admin_by_email(text) from anon;
+    revoke all on function public.trade_engine_run_owner_migration(text, text) from anon;
+  end if;
+
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    revoke all on function public.trade_engine_backup_snapshot(text) from authenticated;
+    revoke all on function public.trade_engine_assign_legacy_data_to_admin(uuid) from authenticated;
+    revoke all on function public.trade_engine_assign_legacy_data_to_admin_by_email(text) from authenticated;
+    revoke all on function public.trade_engine_run_owner_migration(text, text) from authenticated;
+  end if;
+
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    grant execute on function public.trade_engine_backup_snapshot(text) to service_role;
+    grant execute on function public.trade_engine_assign_legacy_data_to_admin(uuid) to service_role;
+    grant execute on function public.trade_engine_assign_legacy_data_to_admin_by_email(text) to service_role;
+    grant execute on function public.trade_engine_run_owner_migration(text, text) to service_role;
+  end if;
 end;
 $$;
 

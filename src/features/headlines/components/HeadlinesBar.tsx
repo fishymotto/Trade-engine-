@@ -80,17 +80,20 @@ const formatHeadlineTimestamp = (iso: string): string | null => {
 };
 
 export const HeadlinesBar = ({ className = "", journalDate }: HeadlinesBarProps) => {
-  const { options: categoryOptions, addOption: addCategoryOption } = useEditableSelectOptions("headlineCategories", [
-    "General",
-    "Macro",
-    "Earnings",
-    "News",
-    "Technical"
-  ]);
-  const { options: tickerOptionsBase, addOption: addTickerOption } = useEditableSelectOptions(
-    "headlineTickers",
-    Object.keys(tickerIcons).sort()
-  );
+  const {
+    options: categoryOptions,
+    addOption: addCategoryOption,
+    renameOption: renameCategoryOption,
+    removeOption: removeCategoryOption,
+    isCustomOption: isCustomCategoryOption
+  } = useEditableSelectOptions("headlineCategories", ["General", "Macro", "Earnings", "News", "Technical"]);
+  const {
+    options: tickerOptionsBase,
+    addOption: addTickerOption,
+    renameOption: renameTickerOption,
+    removeOption: removeTickerOption,
+    isCustomOption: isCustomTickerOption
+  } = useEditableSelectOptions("headlineTickers", Object.keys(tickerIcons).sort());
   const [headlines, setHeadlines] = useState<HeadlineItem[]>(() => loadHeadlinesForTradeDate(journalDate));
   const skipNextSaveRef = useRef(true);
   const [isAdding, setIsAdding] = useState(false);
@@ -523,6 +526,48 @@ export const HeadlinesBar = ({ className = "", journalDate }: HeadlinesBarProps)
           setIsCategoryDrawerOpen(false);
           setCategorySearch("");
         }}
+        onRenameOption={(currentValue, nextValue) => {
+          const currentNormalized = normalizeSource(currentValue);
+          const nextNormalized = normalizeSource(nextValue);
+          if (!renameCategoryOption(currentNormalized, nextNormalized)) {
+            return;
+          }
+
+          setHeadlines((current) =>
+            current.map((headline) =>
+              normalizeSource(headline.source).toLowerCase() === currentNormalized.toLowerCase()
+                ? { ...headline, source: nextNormalized, updatedAt: new Date().toISOString() }
+                : headline
+            )
+          );
+
+          setDraft((current) =>
+            normalizeSource(current.source).toLowerCase() === currentNormalized.toLowerCase()
+              ? { ...current, source: nextNormalized }
+              : current
+          );
+        }}
+        onDeleteOption={(value) => {
+          const normalized = normalizeSource(value);
+          if (!removeCategoryOption(normalized)) {
+            return;
+          }
+
+          setHeadlines((current) =>
+            current.map((headline) =>
+              normalizeSource(headline.source).toLowerCase() === normalized.toLowerCase()
+                ? { ...headline, source: "General", updatedAt: new Date().toISOString() }
+                : headline
+            )
+          );
+
+          setDraft((current) =>
+            normalizeSource(current.source).toLowerCase() === normalized.toLowerCase()
+              ? { ...current, source: "General" }
+              : current
+          );
+        }}
+        canManageOption={isCustomCategoryOption}
         onClose={() => {
           setIsCategoryDrawerOpen(false);
           setCategorySearch("");
@@ -561,6 +606,75 @@ export const HeadlinesBar = ({ className = "", journalDate }: HeadlinesBarProps)
 
           setTickerSearch("");
         }}
+        onRenameOption={(currentValue, nextValue) => {
+          const currentTicker = currentValue.trim().toUpperCase();
+          const nextTicker = nextValue.trim().toUpperCase();
+          if (!currentTicker || !nextTicker || currentTicker === nextTicker) {
+            return;
+          }
+
+          if (!renameTickerOption(currentTicker, nextTicker)) {
+            return;
+          }
+
+          setHeadlines((current) =>
+            current.map((headline) => {
+              const tickers = parseTickerList(headline.ticker);
+              if (!tickers.some((ticker) => ticker.toUpperCase() === currentTicker)) {
+                return headline;
+              }
+
+              const nextTickers = parseTickerList(
+                tickers
+                  .map((ticker) => (ticker.toUpperCase() === currentTicker ? nextTicker : ticker))
+                  .join(", ")
+              );
+
+              return {
+                ...headline,
+                ticker: formatTickerList(nextTickers) || undefined,
+                updatedAt: new Date().toISOString()
+              };
+            })
+          );
+
+          setDraft((current) => ({
+            ...current,
+            tickers: parseTickerList(
+              current.tickers
+                .map((ticker) => (ticker.toUpperCase() === currentTicker ? nextTicker : ticker))
+                .join(", ")
+            )
+          }));
+        }}
+        onDeleteOption={(value) => {
+          const ticker = value.trim().toUpperCase();
+          if (!ticker || !removeTickerOption(ticker)) {
+            return;
+          }
+
+          setHeadlines((current) =>
+            current.map((headline) => {
+              const tickers = parseTickerList(headline.ticker);
+              if (!tickers.some((item) => item.toUpperCase() === ticker)) {
+                return headline;
+              }
+
+              const nextTickers = tickers.filter((item) => item.toUpperCase() !== ticker);
+              return {
+                ...headline,
+                ticker: formatTickerList(nextTickers) || undefined,
+                updatedAt: new Date().toISOString()
+              };
+            })
+          );
+
+          setDraft((current) => ({
+            ...current,
+            tickers: current.tickers.filter((item) => item.toUpperCase() !== ticker)
+          }));
+        }}
+        canManageOption={isCustomTickerOption}
         onClose={() => {
           setIsTickerDrawerOpen(false);
           setTickerSearch("");

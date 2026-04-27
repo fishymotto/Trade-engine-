@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { ChangeEvent, TextareaHTMLAttributes } from "react";
 import { JournalRichTextEditor } from "../../journal/components/JournalRichTextEditor";
 import { PlaybooksPage } from "../../playbooks/pages/PlaybooksPage";
 import { PageHero } from "../../../components/PageHero";
@@ -16,6 +17,7 @@ import {
   saveLibraryPages
 } from "../../../lib/library/libraryStore";
 import type { LibraryCollectionId, LibraryPageRecord } from "../../../types/library";
+import type { JournalPageRecord } from "../../../types/journal";
 import type { Settings } from "../../../types/trade";
 import type { GroupedTrade } from "../../../types/trade";
 import { ReviewDatabaseTable } from "../components/ReviewDatabaseTable";
@@ -37,6 +39,20 @@ import {
 
 const statusOptions = ["Active", "Draft", "Review", "Archived"];
 const REVIEW_REFLECTION_KEY = "__review_reflection_v1";
+const noteTypeOptions = [
+  { label: "Ideas", tag: "idea" },
+  { label: "Market Notes", tag: "market-notes" },
+  { label: "Mental Game", tag: "mental-game" },
+  { label: "Book Notes", tag: "book-notes" }
+] as const;
+const DEFAULT_NOTES_TAB = "All";
+const ARCHIVED_NOTES_TAB = "Archived";
+const defaultNoteTypeLabels = noteTypeOptions.map((option) => option.label);
+const NOTE_TYPE_PROPERTY_KEY = "Note Type";
+const NOTE_TYPE_LABEL_PROPERTY_KEY = "Note Type Label";
+const noteTypeTagSet = new Set<string>(noteTypeOptions.map((option) => option.tag));
+
+type NotesTab = string;
 
 const formatUpdatedAt = (value: string): string => {
   const parsed = new Date(value);
@@ -67,12 +83,6 @@ const getDateOnlyIsoString = (value: string): string => {
 
   return parsed.toISOString().slice(0, 10);
 };
-
-const parseTags = (value: string): string[] =>
-  value
-    .split(",")
-    .map((tag) => tag.trim())
-    .filter(Boolean);
 
 const renderPropertyValue = (
   page: LibraryPageRecord,
@@ -173,6 +183,128 @@ const getReadingStatusToneClass = (value: string): string => {
 
 const scoreOptions = ["", "1", "2", "3", "4", "5"];
 
+type AutoResizeTextareaProps = Omit<
+  TextareaHTMLAttributes<HTMLTextAreaElement>,
+  "value" | "onChange"
+> & {
+  value: string;
+  onChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
+};
+
+const normalizeTagToken = (value: string): string =>
+  value.trim().toLowerCase().replace(/\s+/g, "-");
+
+const normalizeNoteTypeToken = (value: string): string => normalizeTagToken(value);
+
+const resolveNoteTypeTokenFromInput = (value: string): string => {
+  const normalized = normalizeNoteTypeToken(value);
+  if (!normalized) {
+    return "";
+  }
+
+  const matchedOption = noteTypeOptions.find(
+    (option) => option.tag === normalized || normalizeTagToken(option.label) === normalized
+  );
+
+  return matchedOption?.tag ?? normalized;
+};
+
+const formatNoteTypeLabel = (token: string): string =>
+  noteTypeOptions.find((option) => option.tag === token)?.label ?? token;
+
+const getStoredNoteTypeTag = (page: LibraryPageRecord): string => {
+  const value = page.properties?.[NOTE_TYPE_PROPERTY_KEY];
+  return typeof value === "string" ? resolveNoteTypeTokenFromInput(value) : "";
+};
+
+const getStoredNoteTypeLabel = (page: LibraryPageRecord): string => {
+  const value = page.properties?.[NOTE_TYPE_LABEL_PROPERTY_KEY];
+  return typeof value === "string" ? value.trim() : "";
+};
+
+const resolveNoteTypeTag = (page: LibraryPageRecord): string => {
+  const storedTypeTag = getStoredNoteTypeTag(page);
+  if (storedTypeTag) {
+    return storedTypeTag;
+  }
+
+  const tags = page.tags.map(normalizeTagToken);
+  const matchedType = noteTypeOptions.find((option) => tags.includes(option.tag));
+  return matchedType?.tag ?? "idea";
+};
+
+const resolveEditableNoteType = (page: LibraryPageRecord): string => {
+  const resolvedTypeTag = resolveNoteTypeTag(page);
+  const builtInLabel = noteTypeOptions.find((option) => option.tag === resolvedTypeTag)?.label;
+  if (builtInLabel) {
+    return builtInLabel;
+  }
+
+  const storedLabel = getStoredNoteTypeLabel(page);
+  if (storedLabel && resolveNoteTypeTokenFromInput(storedLabel) === resolvedTypeTag) {
+    return storedLabel;
+  }
+
+  return formatNoteTypeLabel(resolvedTypeTag);
+};
+
+const applyNoteTypeToTags = (page: LibraryPageRecord, nextTypeToken: string): string[] => {
+  if (!nextTypeToken) {
+    return page.tags.map(normalizeTagToken).filter(Boolean);
+  }
+
+  const normalizedTags = page.tags.map(normalizeTagToken).filter(Boolean);
+  const currentTypeTag = resolveNoteTypeTag(page);
+  const removableTypeTags = new Set<string>([...noteTypeTagSet, currentTypeTag]);
+  const nonTypeTags = normalizedTags.filter((tag) => !removableTypeTags.has(tag));
+
+  return Array.from(new Set([nextTypeToken, ...nonTypeTags]));
+};
+
+const resolveNoteType = (page: LibraryPageRecord): NotesTab => resolveEditableNoteType(page);
+
+const getLibraryStatusToneClass = (value: string): string => {
+  switch (value) {
+    case "Archived":
+      return "library-status-pill-archived";
+    case "Imported":
+      return "library-status-pill-imported";
+    case "Draft":
+      return "library-status-pill-draft";
+    case "Review":
+      return "library-status-pill-review";
+    case "Active":
+      return "library-status-pill-active";
+    default:
+      return "";
+  }
+};
+
+const AutoResizeTextarea = ({ value, onChange, ...props }: AutoResizeTextareaProps) => {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const syncHeight = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    textarea.style.height = "0px";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  };
+
+  useLayoutEffect(() => {
+    syncHeight();
+  }, [value]);
+
+  const handleChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    onChange(event);
+    syncHeight();
+  };
+
+  return <textarea ref={textareaRef} value={value} onChange={handleChange} {...props} />;
+};
+
 const normalizeIsoTradeDate = (value: string): string => {
   if (!value) {
     return "";
@@ -206,6 +338,14 @@ type QuoteCellEditorState = {
   field: "Author" | "Source";
 };
 
+type NotesTagEditorState = {
+  pageId: string;
+};
+
+type NotesTypeEditorState = {
+  pageId: string;
+};
+
 type BookSortKey = "title" | "author" | "rating" | "readingStatus";
 
 type BookSortConfig = {
@@ -224,6 +364,7 @@ const ratingSortValue = (value: string): number => {
 
 interface LibraryPageProps {
   trades: GroupedTrade[];
+  journalPages?: JournalPageRecord[];
   settings: Settings;
   onSelectTrade: (tradeId: string, tradeDate: string) => void;
   onOpenJournalDate?: (tradeDate: string) => void;
@@ -233,6 +374,7 @@ interface LibraryPageProps {
 
 export const LibraryPage = ({
   trades,
+  journalPages = [],
   settings,
   onSelectTrade,
   onOpenJournalDate,
@@ -245,7 +387,13 @@ export const LibraryPage = ({
     useState<LibraryCollectionId>("idea-inbox");
   const [selectedPageId, setSelectedPageId] = useState("");
   const [collectionView, setCollectionView] = useState<"list" | "page">("list");
+  const [notesTab, setNotesTab] = useState<NotesTab>(DEFAULT_NOTES_TAB);
+  const [notesTagFilterQuery, setNotesTagFilterQuery] = useState("");
+  const [isNotesTagFilterDrawerOpen, setIsNotesTagFilterDrawerOpen] = useState(false);
+  const [notesTagFilterSearchQuery, setNotesTagFilterSearchQuery] = useState("");
   const [bookSearchQuery, setBookSearchQuery] = useState("");
+  const [isBookSearchDrawerOpen, setIsBookSearchDrawerOpen] = useState(false);
+  const [bookSearchDrawerQuery, setBookSearchDrawerQuery] = useState("");
   const [bookStatusFilter, setBookStatusFilter] = useState("");
   const [bookGenreFilter, setBookGenreFilter] = useState<string[]>([]);
   const [bookSortConfig, setBookSortConfig] = useState<BookSortConfig>({
@@ -257,8 +405,14 @@ export const LibraryPage = ({
   const [isBookGenreFilterOpen, setIsBookGenreFilterOpen] = useState(false);
   const [bookGenreFilterSearchQuery, setBookGenreFilterSearchQuery] = useState("");
   const [quoteSearchQuery, setQuoteSearchQuery] = useState("");
+  const [isQuoteSearchDrawerOpen, setIsQuoteSearchDrawerOpen] = useState(false);
+  const [quoteSearchDrawerQuery, setQuoteSearchDrawerQuery] = useState("");
   const [quoteCellEditor, setQuoteCellEditor] = useState<QuoteCellEditorState | null>(null);
   const [quoteCellEditorSearchQuery, setQuoteCellEditorSearchQuery] = useState("");
+  const [notesTypeEditor, setNotesTypeEditor] = useState<NotesTypeEditorState | null>(null);
+  const [notesTypeSearchQuery, setNotesTypeSearchQuery] = useState("");
+  const [notesTagEditor, setNotesTagEditor] = useState<NotesTagEditorState | null>(null);
+  const [notesTagSearchQuery, setNotesTagSearchQuery] = useState("");
   const [reviewTemplates, setReviewTemplates] = useState(() => loadReviewTemplates());
   const [selectedWeeklyReviewTemplateId, setSelectedWeeklyReviewTemplateId] = useState(
     () => reviewTemplates.weeklyTemplates[0]?.id ?? ""
@@ -278,6 +432,25 @@ export const LibraryPage = ({
     setActiveSection(initialSection);
     setCollectionView("list");
   }, [initialSection]);
+
+  useEffect(() => {
+    setPages((current) => {
+      let changed = false;
+      const next = current.map((page) => {
+        if (page.collectionId !== "replay" && page.collectionId !== "signal-mapping") {
+          return page;
+        }
+
+        changed = true;
+        return {
+          ...page,
+          collectionId: "idea-inbox" as LibraryCollectionId
+        };
+      });
+
+      return changed ? next : current;
+    });
+  }, []);
 
   useEffect(() => {
     if (skipNextPagesSaveRef.current) {
@@ -432,11 +605,127 @@ export const LibraryPage = ({
     [pages, selectedCollectionId]
   );
 
+  const isNotesCollection = selectedCollectionId === "idea-inbox";
   const isBookClub = selectedCollectionId === "book-club";
   const isQuotes = selectedCollectionId === "quotes";
   const isTickerGroups = selectedCollectionId === "ticker-groups";
   const selectedReviewPeriod = getReviewPeriodForCollection(selectedCollectionId);
   const isReviewCollection = selectedReviewPeriod !== null;
+
+  const notesPages = useMemo(() => {
+    if (!isNotesCollection) {
+      return collectionPages;
+    }
+
+    const typeFilteredPages =
+      notesTab === DEFAULT_NOTES_TAB
+        ? collectionPages
+        : notesTab === ARCHIVED_NOTES_TAB
+          ? collectionPages.filter((page) => page.status === "Archived")
+          : collectionPages.filter((page) => resolveNoteType(page) === notesTab);
+
+    const normalizedTagQuery = normalizeTagToken(notesTagFilterQuery);
+    if (!normalizedTagQuery) {
+      return typeFilteredPages;
+    }
+
+    return typeFilteredPages.filter((page) =>
+      page.tags.map(normalizeTagToken).some((tag) => tag.includes(normalizedTagQuery))
+    );
+  }, [collectionPages, isNotesCollection, notesTab, notesTagFilterQuery]);
+
+  const notesTagFilterToken = useMemo(
+    () => normalizeTagToken(notesTagFilterQuery),
+    [notesTagFilterQuery]
+  );
+
+  const notesTagFilterLabel = notesTagFilterToken.replace(/-/g, " ");
+
+  const notesTagOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          pages
+            .filter((page) => page.collectionId === "idea-inbox")
+            .flatMap((page) => page.tags.map(normalizeTagToken))
+            .filter(Boolean)
+        )
+      ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })),
+    [pages]
+  );
+
+  const notesTypePickerOptions = useMemo(() => {
+    const customTypeLabelsByToken = new Map<string, string>();
+
+    pages
+      .filter((page) => page.collectionId === "idea-inbox")
+      .forEach((page) => {
+        const typeToken = resolveNoteTypeTag(page);
+        if (!typeToken || noteTypeTagSet.has(typeToken)) {
+          return;
+        }
+
+        customTypeLabelsByToken.set(typeToken, resolveEditableNoteType(page));
+      });
+
+    const customTypeOptions = Array.from(customTypeLabelsByToken.values()).sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: "base" })
+    );
+
+    return [...defaultNoteTypeLabels, ...customTypeOptions];
+  }, [pages]);
+
+  const notesTabs = useMemo(
+    () => [DEFAULT_NOTES_TAB, ...notesTypePickerOptions, ARCHIVED_NOTES_TAB],
+    [notesTypePickerOptions]
+  );
+
+  useEffect(() => {
+    if (!isNotesCollection) {
+      return;
+    }
+
+    if (notesTabs.includes(notesTab)) {
+      return;
+    }
+
+    setNotesTab(DEFAULT_NOTES_TAB);
+  }, [isNotesCollection, notesTab, notesTabs]);
+
+  const notesTabCounts = useMemo(() => {
+    if (!isNotesCollection) {
+      return {} as Record<string, number>;
+    }
+
+    return notesTabs.reduce(
+      (acc, tab) => {
+        if (tab === DEFAULT_NOTES_TAB) {
+          acc[tab] = collectionPages.length;
+          return acc;
+        }
+
+        if (tab === ARCHIVED_NOTES_TAB) {
+          acc[tab] = collectionPages.filter((page) => page.status === "Archived").length;
+          return acc;
+        }
+
+        acc[tab] = collectionPages.filter((page) => resolveNoteType(page) === tab).length;
+        return acc;
+      },
+      {} as Record<string, number>
+    );
+  }, [collectionPages, isNotesCollection, notesTabs]);
+
+  const notesTypeTokensInUse = useMemo(
+    () =>
+      new Set(
+        pages
+          .filter((page) => page.collectionId === "idea-inbox")
+          .map((page) => resolveNoteTypeTag(page))
+          .filter(Boolean)
+      ),
+    [pages]
+  );
 
   const tickerGroupTickerOptions = useMemo(() => {
     const fromTrades = trades
@@ -489,6 +778,14 @@ export const LibraryPage = ({
 
     return Array.from(new Set(sources)).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
   }, [quoteRows]);
+
+  const bookSearchOptions = useMemo(() => {
+    const values = bookRows
+      .flatMap((page) => [page.title.trim(), getBookFieldValue(page, "Author").trim()])
+      .filter(Boolean);
+
+    return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }, [bookRows]);
 
   const bookStatusFilterOptions = useMemo(
     () => [
@@ -561,8 +858,13 @@ export const LibraryPage = ({
   }, [bookGenreFilter, bookRows, bookSearchQuery, bookSortConfig, bookStatusFilter]);
 
   const databasePages = useMemo(
-    () => (isBookClub && bookRows.length > 0 ? bookRows : collectionPages),
-    [bookRows, collectionPages, isBookClub]
+    () =>
+      isBookClub && bookRows.length > 0
+        ? bookRows
+        : isNotesCollection
+          ? notesPages
+          : collectionPages,
+    [bookRows, collectionPages, isBookClub, isNotesCollection, notesPages]
   );
 
   const allGenres = useMemo(
@@ -708,6 +1010,22 @@ export const LibraryPage = ({
     return pages.find((page) => page.id === quoteCellEditor.pageId) ?? null;
   }, [pages, quoteCellEditor]);
 
+  const notesTagEditorPage = useMemo(() => {
+    if (!notesTagEditor) {
+      return null;
+    }
+
+    return pages.find((page) => page.id === notesTagEditor.pageId) ?? null;
+  }, [notesTagEditor, pages]);
+
+  const notesTypeEditorPage = useMemo(() => {
+    if (!notesTypeEditor) {
+      return null;
+    }
+
+    return pages.find((page) => page.id === notesTypeEditor.pageId) ?? null;
+  }, [notesTypeEditor, pages]);
+
   useEffect(() => {
     if (collectionView !== "page") {
       return;
@@ -740,6 +1058,149 @@ export const LibraryPage = ({
             }
           : page
       )
+    );
+  };
+
+  const updatePageNoteType = (page: LibraryPageRecord, nextTypeLabel: string) => {
+    const nextLabel = nextTypeLabel.trim();
+    const nextTypeToken = resolveNoteTypeTokenFromInput(nextLabel);
+    if (!nextTypeToken) {
+      return;
+    }
+
+    const isBuiltInType = noteTypeTagSet.has(nextTypeToken);
+    const nextTags = applyNoteTypeToTags(page, nextTypeToken);
+    updatePage(page.id, {
+      tags: nextTags,
+      properties: {
+        ...page.properties,
+        [NOTE_TYPE_PROPERTY_KEY]: nextTypeToken,
+        [NOTE_TYPE_LABEL_PROPERTY_KEY]: isBuiltInType ? "" : nextLabel
+      }
+    });
+  };
+
+  const renameNotesTypeOption = (currentValue: string, nextValue: string) => {
+    const currentLabel = currentValue.trim();
+    const nextLabel = nextValue.trim();
+    if (!currentLabel || !nextLabel) {
+      return;
+    }
+
+    const currentTypeToken = resolveNoteTypeTokenFromInput(currentValue);
+    const nextTypeToken = resolveNoteTypeTokenFromInput(nextValue);
+    if (!currentTypeToken || !nextTypeToken || noteTypeTagSet.has(currentTypeToken)) {
+      return;
+    }
+
+    const isSameToken = currentTypeToken === nextTypeToken;
+    if (isSameToken && currentLabel === nextLabel) {
+      return;
+    }
+
+    setPages((current) =>
+      current.map((page) => {
+        if (page.collectionId !== "idea-inbox" || resolveNoteTypeTag(page) !== currentTypeToken) {
+          return page;
+        }
+
+        const nextTags = isSameToken ? page.tags : applyNoteTypeToTags(page, nextTypeToken);
+        const isBuiltInType = noteTypeTagSet.has(nextTypeToken);
+        return {
+          ...page,
+          tags: nextTags,
+          properties: {
+            ...page.properties,
+            [NOTE_TYPE_PROPERTY_KEY]: nextTypeToken,
+            [NOTE_TYPE_LABEL_PROPERTY_KEY]: isBuiltInType ? "" : nextLabel
+          },
+          updatedAt: new Date().toISOString()
+        };
+      })
+    );
+  };
+
+  const deleteNotesTypeOption = (value: string) => {
+    const typeToken = resolveNoteTypeTokenFromInput(value);
+    if (!typeToken || noteTypeTagSet.has(typeToken)) {
+      return;
+    }
+
+    setPages((current) =>
+      current.map((page) => {
+        if (page.collectionId !== "idea-inbox" || resolveNoteTypeTag(page) !== typeToken) {
+          return page;
+        }
+
+        const nextTags = applyNoteTypeToTags(page, "idea");
+        return {
+          ...page,
+          tags: nextTags,
+          properties: {
+            ...page.properties,
+            [NOTE_TYPE_PROPERTY_KEY]: "idea",
+            [NOTE_TYPE_LABEL_PROPERTY_KEY]: ""
+          },
+          updatedAt: new Date().toISOString()
+        };
+      })
+    );
+  };
+
+  const renameNotesTagOption = (currentValue: string, nextValue: string) => {
+    const currentTag = normalizeTagToken(currentValue);
+    const nextTag = normalizeTagToken(nextValue);
+    if (!currentTag || !nextTag || currentTag === nextTag) {
+      return;
+    }
+
+    setPages((current) =>
+      current.map((page) => {
+        if (page.collectionId !== "idea-inbox") {
+          return page;
+        }
+
+        const normalizedTags = page.tags.map(normalizeTagToken).filter(Boolean);
+        if (!normalizedTags.includes(currentTag)) {
+          return page;
+        }
+
+        const nextTags = Array.from(
+          new Set(normalizedTags.map((tag) => (tag === currentTag ? nextTag : tag)))
+        );
+
+        return {
+          ...page,
+          tags: nextTags,
+          updatedAt: new Date().toISOString()
+        };
+      })
+    );
+  };
+
+  const deleteNotesTagOption = (value: string) => {
+    const tag = normalizeTagToken(value);
+    if (!tag) {
+      return;
+    }
+
+    setPages((current) =>
+      current.map((page) => {
+        if (page.collectionId !== "idea-inbox") {
+          return page;
+        }
+
+        const normalizedTags = page.tags.map(normalizeTagToken).filter(Boolean);
+        if (!normalizedTags.includes(tag)) {
+          return page;
+        }
+
+        return {
+          ...page,
+          tags: normalizedTags.filter((currentTag) => currentTag !== tag),
+          updatedAt: new Date().toISOString()
+        };
+      })
     );
   };
 
@@ -783,6 +1244,65 @@ export const LibraryPage = ({
         "Date Used": normalized
       }
     });
+  };
+
+  const renameQuoteOption = (field: "Author" | "Source", currentValue: string, nextValue: string) => {
+    const currentNormalized = currentValue.trim();
+    const nextNormalized = nextValue.trim();
+    if (!currentNormalized || !nextNormalized || currentNormalized === nextNormalized) {
+      return;
+    }
+
+    setPages((current) =>
+      current.map((page) => {
+        if (page.collectionId !== "quotes") {
+          return page;
+        }
+
+        const value = getQuoteFieldValue(page, field).trim();
+        if (!value || value.toLowerCase() !== currentNormalized.toLowerCase()) {
+          return page;
+        }
+
+        return {
+          ...page,
+          properties: {
+            ...(page.properties ?? {}),
+            [field]: nextNormalized
+          },
+          updatedAt: new Date().toISOString()
+        };
+      })
+    );
+  };
+
+  const deleteQuoteOption = (field: "Author" | "Source", value: string) => {
+    const normalized = value.trim();
+    if (!normalized) {
+      return;
+    }
+
+    setPages((current) =>
+      current.map((page) => {
+        if (page.collectionId !== "quotes") {
+          return page;
+        }
+
+        const currentValue = getQuoteFieldValue(page, field).trim();
+        if (!currentValue || currentValue.toLowerCase() !== normalized.toLowerCase()) {
+          return page;
+        }
+
+        return {
+          ...page,
+          properties: {
+            ...(page.properties ?? {}),
+            [field]: ""
+          },
+          updatedAt: new Date().toISOString()
+        };
+      })
+    );
   };
 
   useEffect(() => {
@@ -857,8 +1377,15 @@ export const LibraryPage = ({
 
   const handleCreatePage = () => {
     const newPage = createLibraryPage(selectedCollectionId);
-    setPages((current) => [newPage, ...current]);
-    setSelectedPageId(newPage.id);
+    const seededPage =
+      selectedCollectionId === "idea-inbox"
+        ? { ...newPage, title: "New Note", tags: ["idea"] }
+        : newPage;
+    setPages((current) => [seededPage, ...current]);
+    if (selectedCollectionId === "idea-inbox") {
+      setNotesTab(DEFAULT_NOTES_TAB);
+    }
+    setSelectedPageId(seededPage.id);
     setCollectionView("page");
   };
 
@@ -880,6 +1407,10 @@ export const LibraryPage = ({
     setQuoteSearchQuery("");
     setQuoteCellEditor(null);
     setQuoteCellEditorSearchQuery("");
+    setNotesTypeEditor(null);
+    setNotesTypeSearchQuery("");
+    setNotesTagEditor(null);
+    setNotesTagSearchQuery("");
   };
 
   const handleDeletePage = (pageId: string) => {
@@ -904,6 +1435,10 @@ export const LibraryPage = ({
     setBookCellEditorSearchQuery("");
     setQuoteCellEditor(null);
     setQuoteCellEditorSearchQuery("");
+    setNotesTypeEditor(null);
+    setNotesTypeSearchQuery("");
+    setNotesTagEditor(null);
+    setNotesTagSearchQuery("");
   };
 
   const toggleBookSort = (key: BookSortKey) => {
@@ -934,7 +1469,7 @@ export const LibraryPage = ({
         <PageHero
           eyebrow="Library"
           title="Knowledge Library"
-          description="A Notion-style home for books, trading notes, replay reviews, signal mapping, and raw ideas."
+          description="A Notion-style home for books, trading notes, reviews, and raw ideas."
         >
           <div className="page-hero-stat-grid">
             <div className="page-hero-stat-card">
@@ -980,7 +1515,13 @@ export const LibraryPage = ({
                     setSelectedCollectionId(collection.id);
                     setSelectedPageId("");
                     setCollectionView("list");
+                    setNotesTab(DEFAULT_NOTES_TAB);
+                    setNotesTagFilterQuery("");
+                    setIsNotesTagFilterDrawerOpen(false);
+                    setNotesTagFilterSearchQuery("");
                     setBookSearchQuery("");
+                    setIsBookSearchDrawerOpen(false);
+                    setBookSearchDrawerQuery("");
                     setBookStatusFilter("");
                     setBookGenreFilter([]);
                     setBookCellEditor(null);
@@ -988,8 +1529,14 @@ export const LibraryPage = ({
                     setIsBookGenreFilterOpen(false);
                     setBookGenreFilterSearchQuery("");
                     setQuoteSearchQuery("");
+                    setIsQuoteSearchDrawerOpen(false);
+                    setQuoteSearchDrawerQuery("");
                     setQuoteCellEditor(null);
                     setQuoteCellEditorSearchQuery("");
+                    setNotesTypeEditor(null);
+                    setNotesTypeSearchQuery("");
+                    setNotesTagEditor(null);
+                    setNotesTagSearchQuery("");
                   }}
                 >
                   <span>{collection.accent}</span>
@@ -1008,13 +1555,26 @@ export const LibraryPage = ({
                 setActiveSection("playbooks");
                 setSelectedPageId("");
                 setCollectionView("list");
+                setNotesTab(DEFAULT_NOTES_TAB);
+                setNotesTagFilterQuery("");
+                setIsNotesTagFilterDrawerOpen(false);
+                setNotesTagFilterSearchQuery("");
+                setBookSearchQuery("");
+                setIsBookSearchDrawerOpen(false);
+                setBookSearchDrawerQuery("");
                 setBookCellEditor(null);
                 setBookCellEditorSearchQuery("");
                 setIsBookGenreFilterOpen(false);
                 setBookGenreFilterSearchQuery("");
                 setQuoteSearchQuery("");
+                setIsQuoteSearchDrawerOpen(false);
+                setQuoteSearchDrawerQuery("");
                 setQuoteCellEditor(null);
                 setQuoteCellEditorSearchQuery("");
+                setNotesTypeEditor(null);
+                setNotesTypeSearchQuery("");
+                setNotesTagEditor(null);
+                setNotesTagSearchQuery("");
               }}
             >
               <span>Setup</span>
@@ -1029,7 +1589,9 @@ export const LibraryPage = ({
             <PlaybooksPage
               embedded
               trades={trades}
+              journalPages={journalPages}
               onSelectTrade={onSelectTrade}
+              onOpenJournalDate={onOpenJournalDate}
               onViewReportsForPlaybook={onViewReportsForPlaybook}
             />
           ) : null}
@@ -1055,9 +1617,51 @@ export const LibraryPage = ({
                       ? "New Group"
                       : isQuotes
                         ? "New Quote"
-                      : "New Page"}
+                      : isNotesCollection
+                        ? "New Note"
+                        : "New Page"}
                 </button>
               </div>
+
+              {isNotesCollection ? (
+                <div className="library-notes-controls">
+                  <div className="library-notes-tabs" role="tablist" aria-label="Trading notes tabs">
+                    {notesTabs.map((tab) => (
+                      <button
+                        key={tab}
+                        type="button"
+                        role="tab"
+                        aria-selected={notesTab === tab}
+                        className={`library-notes-tab${notesTab === tab ? " library-notes-tab-active" : ""}`}
+                        onClick={() => setNotesTab(tab)}
+                      >
+                        {tab}
+                        <span>{notesTabCounts[tab] ?? 0}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="library-notes-tag-search">
+                    <label>Tag search</label>
+                    <div className="library-notes-tag-search-row">
+                      <button
+                        type="button"
+                        className={`library-notes-tag-search-trigger${notesTagFilterToken ? " library-notes-tag-search-trigger-active" : ""}`}
+                        onClick={() => {
+                          setNotesTagFilterSearchQuery(notesTagFilterQuery);
+                          setIsNotesTagFilterDrawerOpen(true);
+                        }}
+                      >
+                        {notesTagFilterToken ? `Tag: ${notesTagFilterLabel}` : "Open tag search"}
+                      </button>
+                      {notesTagFilterQuery.trim() ? (
+                        <button type="button" className="mini-action" onClick={() => setNotesTagFilterQuery("")}>
+                          Clear
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
 
               {isTickerGroups ? (
                 <div className="library-table-wrap" aria-label="Ticker groups database">
@@ -1125,12 +1729,21 @@ export const LibraryPage = ({
                 </div>
               </div>
               <div className="library-book-controls" aria-label="Book database controls">
-                <input
-                  className="library-book-search"
-                  value={bookSearchQuery}
-                  onChange={(event) => setBookSearchQuery(event.target.value)}
-                  placeholder="Search by book name or author"
-                />
+                <button
+                  type="button"
+                  className={`library-book-search library-search-trigger${bookSearchQuery.trim() ? " library-search-trigger-active" : ""}`}
+                  onClick={() => {
+                    setBookSearchDrawerQuery(bookSearchQuery);
+                    setIsBookSearchDrawerOpen(true);
+                  }}
+                >
+                  {bookSearchQuery.trim() ? `Search: ${bookSearchQuery}` : "Search by book name or author"}
+                </button>
+                {bookSearchQuery.trim() ? (
+                  <button type="button" className="mini-action" onClick={() => setBookSearchQuery("")}>
+                    Clear
+                  </button>
+                ) : null}
                 <FilterSelect
                   value={bookStatusFilter}
                   options={bookStatusFilterOptions}
@@ -1326,12 +1939,21 @@ export const LibraryPage = ({
                 </div>
               </div>
               <div className="library-quotes-controls" aria-label="Quotes database controls">
-                <input
-                  className="library-quotes-search"
-                  value={quoteSearchQuery}
-                  onChange={(event) => setQuoteSearchQuery(event.target.value)}
-                  placeholder="Search by author"
-                />
+                <button
+                  type="button"
+                  className={`library-quotes-search library-search-trigger${quoteSearchQuery.trim() ? " library-search-trigger-active" : ""}`}
+                  onClick={() => {
+                    setQuoteSearchDrawerQuery(quoteSearchQuery);
+                    setIsQuoteSearchDrawerOpen(true);
+                  }}
+                >
+                  {quoteSearchQuery.trim() ? `Author: ${quoteSearchQuery}` : "Search by author"}
+                </button>
+                {quoteSearchQuery.trim() ? (
+                  <button type="button" className="mini-action" onClick={() => setQuoteSearchQuery("")}>
+                    Clear
+                  </button>
+                ) : null}
                 <button className="button button-primary" type="button" onClick={handleCreateQuoteRow}>
                   New Quote
                 </button>
@@ -1439,6 +2061,105 @@ export const LibraryPage = ({
               selectedPageId={selectedPage?.id ?? ""}
               onOpenPage={openPage}
             />
+          ) : isNotesCollection ? (
+            <div className="library-table-wrap" aria-label="Trading notes table">
+              <table className="library-table">
+                <thead>
+                  <tr>
+                    <th>Title</th>
+                    <th>Type</th>
+                    <th>Tags</th>
+                    <th>Status</th>
+                    <th>Updated</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {databasePages.length > 0 ? (
+                    databasePages.map((page) => (
+                      <tr
+                        key={page.id}
+                        className={selectedPage?.id === page.id ? "library-table-row-active" : ""}
+                        onClick={() => openPage(page.id)}
+                      >
+                        <td>
+                          <button
+                            type="button"
+                            className="library-table-title"
+                            onClick={() => openPage(page.id)}
+                          >
+                            {page.title}
+                          </button>
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="library-note-type-cell"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedPageId(page.id);
+                              setNotesTypeEditor({ pageId: page.id });
+                              setNotesTypeSearchQuery("");
+                              setNotesTagEditor(null);
+                              setNotesTagSearchQuery("");
+                            }}
+                          >
+                            <span className={`library-note-type-pill ${
+                              page.status === "Archived" ? "library-note-type-pill-archived" : ""
+                            }`}
+                            >
+                              {resolveEditableNoteType(page)}
+                            </span>
+                          </button>
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="library-genre-cell"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedPageId(page.id);
+                              setNotesTypeEditor(null);
+                              setNotesTypeSearchQuery("");
+                              setNotesTagEditor({ pageId: page.id });
+                              setNotesTagSearchQuery("");
+                            }}
+                          >
+                            <div className="library-genre-list">
+                              {page.tags.length > 0 ? (
+                                <>
+                                  {page.tags.map(normalizeTagToken).filter(Boolean).slice(0, 4).map((tag) => (
+                                    <span key={tag}>{tag}</span>
+                                  ))}
+                                  {page.tags.map(normalizeTagToken).filter(Boolean).length > 4 ? (
+                                    <span className="library-genre-more">+{page.tags.map(normalizeTagToken).filter(Boolean).length - 4}</span>
+                                  ) : null}
+                                </>
+                              ) : (
+                                <span className="library-genre-empty">Add tags</span>
+                              )}
+                            </div>
+                          </button>
+                        </td>
+                        <td>
+                          <span className={`library-status-pill ${getLibraryStatusToneClass(page.status)}`}>
+                            {page.status || "Active"}
+                          </span>
+                        </td>
+                        <td>{formatUpdatedAt(page.updatedAt)}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={5}>
+                        {notesTagFilterToken
+                          ? `No notes in "${notesTab}" match tag "${notesTagFilterLabel}".`
+                          : "No notes match this tab yet."}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           ) : (
             <div className="library-table-wrap" aria-label={`${selectedCollection.name} database view`}>
               <table className="library-table">
@@ -1486,7 +2207,7 @@ export const LibraryPage = ({
             </div>
               )}
 
-          {!isBookClub && !isReviewCollection && !isTickerGroups ? (
+          {!isBookClub && !isReviewCollection && !isTickerGroups && !isNotesCollection ? (
             <div className="library-page-grid" aria-label={`${selectedCollection.name} cards`}>
               {collectionPages.length > 0 ? (
               collectionPages.map((page) => (
@@ -1941,20 +2662,12 @@ export const LibraryPage = ({
                       placeholder="Add genre"
                       allowCustom
                     />
-                    <label className="library-open-page-property library-open-page-property-wide">
-                      <span>Source URL</span>
-                      <input
-                        value={selectedPage.sourceUrl}
-                        onChange={(event) => updatePage(selectedPage.id, { sourceUrl: event.target.value })}
-                        placeholder="Paste source, video, article, or Notion link"
-                      />
-                    </label>
                   </div>
 
                   <div className="library-open-page-notes">
                     <label className="library-open-page-note">
                       <span>Summary</span>
-                      <textarea
+                      <AutoResizeTextarea
                         value={getBookFieldValue(selectedPage, "Summary")}
                         onChange={(event) => updatePageProperty(selectedPage, "Summary", event.target.value)}
                         placeholder="Key ideas, takeaways, and notes from the book."
@@ -1962,7 +2675,7 @@ export const LibraryPage = ({
                     </label>
                     <label className="library-open-page-note">
                       <span>Review</span>
-                      <textarea
+                      <AutoResizeTextarea
                         value={getBookFieldValue(selectedPage, "Review")}
                         onChange={(event) => updatePageProperty(selectedPage, "Review", event.target.value)}
                         placeholder="What stood out, what mattered, and how it applies to trading."
@@ -1988,35 +2701,27 @@ export const LibraryPage = ({
                     </label>
                     <label>
                       <span>Tags</span>
-                      <input
-                        value={selectedPage.tags.join(", ")}
-                        onChange={(event) => updatePage(selectedPage.id, { tags: parseTags(event.target.value) })}
-                        placeholder="mental-game, replay, lesson"
-                      />
-                    </label>
-                    <label>
-                      <span>Source URL</span>
-                      <input
-                        value={selectedPage.sourceUrl}
-                        onChange={(event) => updatePage(selectedPage.id, { sourceUrl: event.target.value })}
-                        placeholder="Paste source, video, article, or Notion link"
-                      />
-                    </label>
-                    <label>
-                      <span>Author / Owner</span>
-                      <input
-                        value={renderPropertyValue(selectedPage, "Author", "")}
-                        onChange={(event) => updatePageProperty(selectedPage, "Author", event.target.value)}
-                        placeholder="Author, creator, or owner"
-                      />
-                    </label>
-                    <label>
-                      <span>Rating</span>
-                      <input
-                        value={renderPropertyValue(selectedPage, "Rating", "")}
-                        onChange={(event) => updatePageProperty(selectedPage, "Rating", event.target.value)}
-                        placeholder="Optional rating"
-                      />
+                      <button
+                        type="button"
+                        className="library-property-pill-button"
+                        onClick={() => {
+                          setNotesTypeEditor(null);
+                          setNotesTypeSearchQuery("");
+                          setNotesTagEditor({ pageId: selectedPage.id });
+                          setNotesTagSearchQuery("");
+                        }}
+                      >
+                        <div className="library-genre-list">
+                          {selectedPage.tags.map(normalizeTagToken).filter(Boolean).length > 0 ? (
+                            selectedPage.tags
+                              .map(normalizeTagToken)
+                              .filter(Boolean)
+                              .map((tag, index) => <span key={`${tag}-${index}`}>{tag}</span>)
+                          ) : (
+                            <span className="library-genre-empty">Add tags</span>
+                          )}
+                        </div>
+                      </button>
                     </label>
                   </div>
 
@@ -2032,6 +2737,70 @@ export const LibraryPage = ({
           ) : null}
         </section>
       </section>
+      {isBookSearchDrawerOpen ? (
+        <TagDrawer
+          isOpen={isBookSearchDrawerOpen}
+          title="Search - Trading and Poker Books"
+          options={bookSearchOptions}
+          selectionMode="single"
+          currentValue={bookSearchQuery}
+          allowClear
+          clearLabel="All books"
+          searchValue={bookSearchDrawerQuery}
+          onSearchChange={setBookSearchDrawerQuery}
+          onSelect={(value) => {
+            if (typeof value === "string") {
+              setBookSearchQuery(value);
+            } else {
+              setBookSearchQuery("");
+            }
+
+            setIsBookSearchDrawerOpen(false);
+            setBookSearchDrawerQuery("");
+          }}
+          onCreateOption={(value) => {
+            setBookSearchQuery(value);
+            setIsBookSearchDrawerOpen(false);
+            setBookSearchDrawerQuery("");
+          }}
+          onClose={() => {
+            setIsBookSearchDrawerOpen(false);
+            setBookSearchDrawerQuery("");
+          }}
+        />
+      ) : null}
+      {isQuoteSearchDrawerOpen ? (
+        <TagDrawer
+          isOpen={isQuoteSearchDrawerOpen}
+          title="Search - Quotes"
+          options={quoteAuthorOptions}
+          selectionMode="single"
+          currentValue={quoteSearchQuery}
+          allowClear
+          clearLabel="All authors"
+          searchValue={quoteSearchDrawerQuery}
+          onSearchChange={setQuoteSearchDrawerQuery}
+          onSelect={(value) => {
+            if (typeof value === "string") {
+              setQuoteSearchQuery(value);
+            } else {
+              setQuoteSearchQuery("");
+            }
+
+            setIsQuoteSearchDrawerOpen(false);
+            setQuoteSearchDrawerQuery("");
+          }}
+          onCreateOption={(value) => {
+            setQuoteSearchQuery(value);
+            setIsQuoteSearchDrawerOpen(false);
+            setQuoteSearchDrawerQuery("");
+          }}
+          onClose={() => {
+            setIsQuoteSearchDrawerOpen(false);
+            setQuoteSearchDrawerQuery("");
+          }}
+        />
+      ) : null}
       {bookCellEditor && bookCellEditorPage ? (
         <TagDrawer
           isOpen={!!bookCellEditor}
@@ -2094,6 +2863,102 @@ export const LibraryPage = ({
           }}
         />
       ) : null}
+      {notesTypeEditor && notesTypeEditorPage ? (
+        <TagDrawer
+          isOpen={!!notesTypeEditor}
+          title={`Type - ${notesTypeEditorPage.title}`}
+          options={notesTypePickerOptions}
+          selectionMode="single"
+          currentValue={resolveEditableNoteType(notesTypeEditorPage)}
+          searchValue={notesTypeSearchQuery}
+          onSearchChange={setNotesTypeSearchQuery}
+          onSelect={(value) => {
+            if (typeof value === "string") {
+              updatePageNoteType(notesTypeEditorPage, value);
+            }
+
+            setNotesTypeEditor(null);
+            setNotesTypeSearchQuery("");
+          }}
+          onCreateOption={(value) => {
+            updatePageNoteType(notesTypeEditorPage, value);
+            setNotesTypeEditor(null);
+            setNotesTypeSearchQuery("");
+          }}
+          onRenameOption={renameNotesTypeOption}
+          onDeleteOption={deleteNotesTypeOption}
+          canManageOption={(value) => !noteTypeTagSet.has(resolveNoteTypeTokenFromInput(value))}
+          onClose={() => {
+            setNotesTypeEditor(null);
+            setNotesTypeSearchQuery("");
+          }}
+        />
+      ) : null}
+      {isNotesTagFilterDrawerOpen ? (
+        <TagDrawer
+          isOpen={isNotesTagFilterDrawerOpen}
+          title="Tag Filter - Trading Notes"
+          options={notesTagOptions}
+          selectionMode="single"
+          currentValue={notesTagFilterToken}
+          allowClear
+          clearLabel="All tags"
+          searchValue={notesTagFilterSearchQuery}
+          onSearchChange={setNotesTagFilterSearchQuery}
+          onSelect={(value) => {
+            if (typeof value === "string") {
+              setNotesTagFilterQuery(value);
+            } else {
+              setNotesTagFilterQuery("");
+            }
+
+            setIsNotesTagFilterDrawerOpen(false);
+            setNotesTagFilterSearchQuery("");
+          }}
+          onClose={() => {
+            setIsNotesTagFilterDrawerOpen(false);
+            setNotesTagFilterSearchQuery("");
+          }}
+        />
+      ) : null}
+      {notesTagEditor && notesTagEditorPage ? (
+        <TagDrawer
+          isOpen={!!notesTagEditor}
+          title={`Tags - ${notesTagEditorPage.title}`}
+          options={notesTagOptions}
+          selectionMode="multi"
+          currentValues={notesTagEditorPage.tags.map(normalizeTagToken).filter(Boolean)}
+          allowClear
+          clearLabel="Clear tags"
+          searchValue={notesTagSearchQuery}
+          onSearchChange={setNotesTagSearchQuery}
+          onSelect={(value) => {
+            const nextTags = Array.isArray(value)
+              ? Array.from(new Set(value.map(normalizeTagToken).filter(Boolean)))
+              : [];
+            updatePage(notesTagEditorPage.id, { tags: nextTags });
+          }}
+          onCreateOption={(value) => {
+            const normalizedValue = normalizeTagToken(value);
+            if (!normalizedValue) {
+              return;
+            }
+
+            const currentTags = notesTagEditorPage.tags.map(normalizeTagToken).filter(Boolean);
+            const nextTags = currentTags.includes(normalizedValue)
+              ? currentTags
+              : [...currentTags, normalizedValue];
+            updatePage(notesTagEditorPage.id, { tags: nextTags });
+          }}
+          onRenameOption={renameNotesTagOption}
+          onDeleteOption={deleteNotesTagOption}
+          canManageOption={(value) => !notesTypeTokensInUse.has(normalizeTagToken(value))}
+          onClose={() => {
+            setNotesTagEditor(null);
+            setNotesTagSearchQuery("");
+          }}
+        />
+      ) : null}
       {quoteCellEditor && quoteCellEditorPage ? (
         <TagDrawer
           isOpen={!!quoteCellEditor}
@@ -2120,6 +2985,10 @@ export const LibraryPage = ({
             setQuoteCellEditor(null);
             setQuoteCellEditorSearchQuery("");
           }}
+          onRenameOption={(currentValue, nextValue) =>
+            renameQuoteOption(quoteCellEditor.field, currentValue, nextValue)
+          }
+          onDeleteOption={(value) => deleteQuoteOption(quoteCellEditor.field, value)}
           onClose={() => {
             setQuoteCellEditor(null);
             setQuoteCellEditorSearchQuery("");

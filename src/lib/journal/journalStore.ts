@@ -1,5 +1,11 @@
 import type { JSONContent } from "@tiptap/core";
-import type { JournalBlock, JournalPageRecord, JournalBlockType } from "../../types/journal";
+import type {
+  JournalBlock,
+  JournalPageRecord,
+  JournalBlockType,
+  JournalScreenshotTagRecord,
+  JournalScreenshotTradeLink
+} from "../../types/journal";
 import {
   createClosingChecklistDoc,
   createEmptyJournalDoc,
@@ -98,6 +104,68 @@ const ensureBlocks = (blocks?: JournalBlock[], fallbackText = "") =>
       }))
     : parseLegacyContent(fallbackText);
 
+const createDefaultScreenshotTag = (tradeDate: string): JournalScreenshotTagRecord => ({
+  linkedTrades: [],
+  linkedTradeId: "",
+  linkedTradeDate: "",
+  ticker: "",
+  playbook: "",
+  taggedDate: normalizeTradeDate(tradeDate)
+});
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value && typeof value === "object");
+
+const dedupeScreenshotTradeLinks = (
+  links: JournalScreenshotTradeLink[]
+): JournalScreenshotTradeLink[] => {
+  const unique = new Map<string, JournalScreenshotTradeLink>();
+  for (const link of links) {
+    if (!link.tradeId || !link.tradeDate) {
+      continue;
+    }
+
+    unique.set(`${link.tradeId}::${link.tradeDate}`, link);
+  }
+
+  return Array.from(unique.values());
+};
+
+const normalizeScreenshotTradeLinks = (
+  value: unknown,
+  fallbackTradeDate: string
+): JournalScreenshotTradeLink[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalized = value
+    .map((entry) => {
+      if (!isRecord(entry)) {
+        return null;
+      }
+
+      const tradeId = typeof entry.tradeId === "string" ? entry.tradeId.trim() : "";
+      if (!tradeId) {
+        return null;
+      }
+
+      const tradeDateRaw = typeof entry.tradeDate === "string" ? entry.tradeDate : fallbackTradeDate;
+      const tradeDate = normalizeTradeDate(tradeDateRaw);
+      if (!tradeDate) {
+        return null;
+      }
+
+      return {
+        tradeId,
+        tradeDate
+      };
+    })
+    .filter((entry): entry is JournalScreenshotTradeLink => entry !== null);
+
+  return dedupeScreenshotTradeLinks(normalized);
+};
+
 const ensureContent = (
   content?: JSONContent,
   fallbackBlocks?: JournalBlock[],
@@ -193,6 +261,22 @@ const getJournalContentScore = (page: JournalPageRecord): number => {
     score += 10;
   }
 
+  if (!isEmptyJournalDoc(page.mppPlanContent) && readDocText(page.mppPlanContent).length > 0) {
+    score += 6;
+  }
+
+  if (!isEmptyJournalDoc(page.inPlayStocksContent) && readDocText(page.inPlayStocksContent).length > 0) {
+    score += 6;
+  }
+
+  if (!isEmptyJournalDoc(page.traderReachOutsContent) && readDocText(page.traderReachOutsContent).length > 0) {
+    score += 6;
+  }
+
+  if (!isEmptyJournalDoc(page.notesContent) && readDocText(page.notesContent).length > 0) {
+    score += 6;
+  }
+
   if (!isDefaultMorningChecklist(page.morningChecklistContent)) {
     score += 4;
   }
@@ -246,6 +330,8 @@ const normalizeJournalPage = (
     morningContent?: JSONContent;
     closingContent?: JSONContent;
     mppPlanContent?: JSONContent;
+    inPlayStocksContent?: JSONContent;
+    traderReachOutsContent?: JSONContent;
     notesContent?: JSONContent;
     sleepHours?: string;
     sleepScore?: string;
@@ -254,12 +340,56 @@ const normalizeJournalPage = (
     afternoonMood?: string;
     closeMood?: string;
     marketRegime?: string;
+    screenshotTags?: unknown;
   }
 ): JournalPageRecord => {
   const morningBlocks = ensureBlocks(page.morningBlocks, page.morningJournal ?? "");
   const closingBlocks = ensureBlocks(page.closingBlocks, page.closingJournal ?? "");
   const mppPlanBlocks = ensureBlocks(page.mppPlanBlocks, page.mppPlan ?? "");
   const blocks = ensureBlocks(page.blocks, page.content ?? "");
+  const screenshotUrls = Array.isArray((page as { screenshotUrls?: unknown }).screenshotUrls)
+    ? ((page as { screenshotUrls?: unknown[] }).screenshotUrls ?? []).filter(
+        (value): value is string => typeof value === "string" && value.trim().length > 0
+      )
+    : [];
+  const rawScreenshotTags = Array.isArray((page as { screenshotTags?: unknown }).screenshotTags)
+    ? ((page as { screenshotTags?: unknown[] }).screenshotTags ?? [])
+    : [];
+  const screenshotTags = screenshotUrls.map((_, index) => {
+    const raw = rawScreenshotTags[index];
+    if (!isRecord(raw)) {
+      return createDefaultScreenshotTag(page.tradeDate);
+    }
+
+    const legacyLinkedTradeId = typeof raw.linkedTradeId === "string" ? raw.linkedTradeId.trim() : "";
+    const legacyLinkedTradeDateRaw = typeof raw.linkedTradeDate === "string" ? raw.linkedTradeDate : "";
+    const legacyLinkedTradeDate = normalizeTradeDate(legacyLinkedTradeDateRaw || page.tradeDate);
+    const normalizedLinkedTrades = normalizeScreenshotTradeLinks(raw.linkedTrades, normalizeTradeDate(page.tradeDate));
+    const linkedTrades = dedupeScreenshotTradeLinks([
+      ...normalizedLinkedTrades,
+      ...(legacyLinkedTradeId && legacyLinkedTradeDate
+        ? [
+            {
+              tradeId: legacyLinkedTradeId,
+              tradeDate: legacyLinkedTradeDate
+            }
+          ]
+        : [])
+    ]);
+    const primaryLinkedTrade = linkedTrades[0] ?? null;
+
+    return {
+      linkedTrades,
+      linkedTradeId: primaryLinkedTrade?.tradeId ?? createDefaultScreenshotTag(page.tradeDate).linkedTradeId,
+      linkedTradeDate: primaryLinkedTrade?.tradeDate ?? createDefaultScreenshotTag(page.tradeDate).linkedTradeDate,
+      ticker: typeof raw.ticker === "string" ? raw.ticker : "",
+      playbook: typeof raw.playbook === "string" ? raw.playbook : "",
+      taggedDate:
+        typeof raw.taggedDate === "string" && raw.taggedDate.trim().length > 0
+          ? normalizeTradeDate(raw.taggedDate)
+          : normalizeTradeDate(page.tradeDate)
+    };
+  });
 
   return {
     id: page.id,
@@ -268,17 +398,14 @@ const normalizeJournalPage = (
     dayGrade: page.dayGrade ?? "",
     marketRegime: page.marketRegime ?? "",
     mpp: page.mpp ?? "",
-    sleepHours: page.sleepHours ?? "7.5",
+    sleepHours: page.sleepHours ?? "",
     sleepScore: page.sleepScore ?? "",
     morningMood: page.morningMood ?? "",
     openMood: page.openMood ?? "",
     afternoonMood: page.afternoonMood ?? "",
     closeMood: page.closeMood ?? "",
-    screenshotUrls: Array.isArray((page as { screenshotUrls?: unknown }).screenshotUrls)
-      ? ((page as { screenshotUrls?: unknown[] }).screenshotUrls ?? []).filter(
-          (value): value is string => typeof value === "string" && value.trim().length > 0
-        )
-      : [],
+    screenshotUrls,
+    screenshotTags,
     closingChecklistContent: hasJournalDocContent(page.closingChecklistContent)
       ? (page.closingChecklistContent as JSONContent)
       : createClosingChecklistDoc(),
@@ -288,6 +415,8 @@ const normalizeJournalPage = (
     morningContent: ensureContent(page.morningContent, morningBlocks, page.morningJournal ?? ""),
     closingContent: ensureContent(page.closingContent, closingBlocks, page.closingJournal ?? ""),
     mppPlanContent: ensureContent(page.mppPlanContent, mppPlanBlocks, page.mppPlan ?? ""),
+    inPlayStocksContent: ensureContent(page.inPlayStocksContent),
+    traderReachOutsContent: ensureContent(page.traderReachOutsContent),
     notesContent: ensureContent(page.notesContent, blocks, page.content ?? ""),
     morningBlocks,
     closingBlocks,

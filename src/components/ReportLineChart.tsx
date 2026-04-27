@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import type { PointerEvent } from "react";
 import type { TimeSeriesPoint } from "../lib/analytics/tradeAnalytics";
 
@@ -18,6 +18,59 @@ const formatAxisDate = (value: string): string => {
   });
 };
 
+const formatAxisValue = (value: number): string => {
+  const absolute = Math.abs(value);
+  const prefix = value < 0 ? "-" : "";
+
+  if (absolute >= 1_000_000) {
+    const compact = absolute >= 10_000_000 ? (absolute / 1_000_000).toFixed(0) : (absolute / 1_000_000).toFixed(1);
+    return `${prefix}${compact}m`;
+  }
+
+  if (absolute >= 1_000) {
+    const compact = absolute >= 10_000 ? (absolute / 1_000).toFixed(0) : (absolute / 1_000).toFixed(1);
+    return `${prefix}${compact}k`;
+  }
+
+  if (absolute >= 100) {
+    return `${Math.round(value)}`;
+  }
+
+  if (absolute >= 10) {
+    return value.toFixed(1);
+  }
+
+  return value.toFixed(2);
+};
+
+const buildSmoothPath = (points: Array<{ x: number; y: number }>): string => {
+  if (points.length === 0) {
+    return "";
+  }
+
+  if (points.length === 1) {
+    return `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`;
+  }
+
+  let path = `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`;
+
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const p0 = points[index - 1] ?? points[index];
+    const p1 = points[index];
+    const p2 = points[index + 1];
+    const p3 = points[index + 2] ?? p2;
+
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = p1.y + (p2.y - p0.y) / 6;
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = p2.y - (p3.y - p1.y) / 6;
+
+    path += ` C ${cp1x.toFixed(2)} ${cp1y.toFixed(2)}, ${cp2x.toFixed(2)} ${cp2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
+  }
+
+  return path;
+};
+
 export const ReportLineChart = ({
   points,
   color,
@@ -26,6 +79,7 @@ export const ReportLineChart = ({
   valueFormatter = (value) => value.toFixed(2)
 }: ReportLineChartProps) => {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const chartId = useId().replace(/:/g, "");
 
   const chart = useMemo(() => {
     const width = 1240;
@@ -52,9 +106,7 @@ export const ReportLineChart = ({
       x: xScale(index),
       y: yScale(point.value)
     }));
-    const linePath = chartPoints
-      .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
-      .join(" ");
+    const linePath = buildSmoothPath(chartPoints);
     const baselineY = yScale(baselineValue);
     const areaPath =
       chartPoints.length > 0
@@ -88,6 +140,7 @@ export const ReportLineChart = ({
       height,
       innerHeight,
       innerWidth,
+      latestPoint: chartPoints[chartPoints.length - 1] ?? null,
       linePath,
       paddingBottom,
       paddingLeft,
@@ -104,6 +157,7 @@ export const ReportLineChart = ({
   }
 
   const hoveredPoint = hoveredIndex === null ? null : chart.chartPoints[hoveredIndex] ?? null;
+  const shouldRenderPointSeries = chart.chartPoints.length <= 72;
   const tooltipX =
     hoveredPoint && hoveredPoint.x > chart.width - chart.paddingRight - 210 ? hoveredPoint.x - 204 : (hoveredPoint?.x ?? 0) + 14;
   const tooltipY =
@@ -131,12 +185,41 @@ export const ReportLineChart = ({
         <span className="report-line-chart-readout">
           {hoveredPoint
             ? `${formatAxisDate(hoveredPoint.label)} - ${valueFormatter(hoveredPoint.value)}`
-            : "Hover chart for point details"}
+            : chart.latestPoint
+              ? `Latest ${formatAxisDate(chart.latestPoint.label)} - ${valueFormatter(chart.latestPoint.value)}`
+              : "Hover chart for point details"}
         </span>
       </div>
       <div className="report-line-chart-shell">
         <span className="report-line-chart-axis-label">{yAxisLabel}</span>
         <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="report-line-chart-svg" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id={`${chartId}-line-gradient`} x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor={color} stopOpacity="0.88" />
+              <stop offset="55%" stopColor={color} stopOpacity="1" />
+              <stop offset="100%" stopColor={color} stopOpacity="0.72" />
+            </linearGradient>
+            <linearGradient id={`${chartId}-area-gradient`} x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stopColor={color} stopOpacity="0.24" />
+              <stop offset="65%" stopColor={color} stopOpacity="0.06" />
+              <stop offset="100%" stopColor={color} stopOpacity="0" />
+            </linearGradient>
+            <filter id={`${chartId}-line-glow`} x="-20%" y="-30%" width="140%" height="160%">
+              <feGaussianBlur stdDeviation="2.4" result="lineBlur" />
+              <feMerge>
+                <feMergeNode in="lineBlur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+          <rect
+            x={chart.paddingLeft}
+            y={chart.paddingTop}
+            width={chart.innerWidth}
+            height={chart.innerHeight}
+            rx="18"
+            className="report-line-chart-plot-bg"
+          />
           {chart.yTicks.map((tick) => (
             <g key={`y-${tick.value}`}>
               <line
@@ -147,7 +230,7 @@ export const ReportLineChart = ({
                 className="report-line-chart-grid"
               />
               <text x={chart.paddingLeft - 12} y={tick.y + 4} textAnchor="end" className="report-line-chart-tick">
-                {valueFormatter(tick.value)}
+                {formatAxisValue(tick.value)}
               </text>
             </g>
           ))}
@@ -194,11 +277,39 @@ export const ReportLineChart = ({
             y2={chart.height - chart.paddingBottom}
             className="report-line-chart-axis"
           />
-          <path d={chart.areaPath} fill={color} fillOpacity="0.09" />
-          <path d={chart.linePath} fill="none" stroke={color} strokeWidth="2.75" strokeLinejoin="round" strokeLinecap="round" />
-          {chart.chartPoints.map((point) => (
-            <circle key={point.label} cx={point.x} cy={point.y} r="4" fill={color} className="report-line-chart-point" />
-          ))}
+          <path d={chart.areaPath} className="report-line-chart-area" fill={`url(#${chartId}-area-gradient)`} />
+          <path
+            d={chart.linePath}
+            className="report-line-chart-path"
+            fill="none"
+            stroke={`url(#${chartId}-line-gradient)`}
+            strokeWidth="3.1"
+            strokeLinejoin="round"
+            strokeLinecap="round"
+            filter={`url(#${chartId}-line-glow)`}
+          />
+          {shouldRenderPointSeries
+            ? chart.chartPoints.map((point, index) => (
+                <circle
+                  key={`${point.label}-${index}`}
+                  cx={point.x}
+                  cy={point.y}
+                  r={hoveredIndex === index ? "5" : "3.5"}
+                  fill={color}
+                  className={`report-line-chart-point ${
+                    hoveredIndex === index ? "is-hovered" : hoveredIndex !== null ? "is-muted" : ""
+                  }`}
+                />
+              ))
+            : null}
+          {chart.latestPoint ? (
+            <circle
+              cx={chart.latestPoint.x}
+              cy={chart.latestPoint.y}
+              r="7.2"
+              className="report-line-chart-latest-ring"
+            />
+          ) : null}
           {hoveredPoint ? (
             <g className="report-line-chart-cursor">
               <line

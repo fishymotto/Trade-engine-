@@ -1,6 +1,6 @@
 -- Trade Engine: Supabase schema for cross-device sync
 -- Run this in the Supabase SQL editor for your project.
--- For safe backup + legacy migration steps, run scripts/supabase-multi-user-migration.sql first.
+-- For safe backup + legacy migration helpers, run scripts/supabase-multi-user-migration.sql after this script.
 
 -- User profiles (optional but used by the app to store username/email)
 create table if not exists public.user_profiles (

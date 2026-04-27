@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { JournalRichTextEditor } from "../../journal/components/JournalRichTextEditor";
 import { PageHero } from "../../../components/PageHero";
+import { FilterSelect } from "../../../components/FilterSelect";
+import { SymbolPills } from "../../../components/SymbolPills";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
 import { APlusExampleLibrary } from "../components/APlusExampleLibrary";
 import { getTradeSummary } from "../../../lib/analytics/tradeAnalytics";
@@ -12,12 +14,19 @@ import {
   updatePlaybookScreenshotUrls
 } from "../../../lib/playbooks/playbookStore";
 import { SYNC_HYDRATED_EVENT } from "../../../lib/sync/syncStore";
-import type { PlaybookRecord } from "../../../types/playbook";
+import type {
+  JournalPageRecord,
+  JournalScreenshotTagRecord,
+  JournalScreenshotTradeLink
+} from "../../../types/journal";
+import type { PlaybookRecord, PlaybookStatus } from "../../../types/playbook";
 import type { GroupedTrade } from "../../../types/trade";
 
 interface PlaybooksPageProps {
   trades: GroupedTrade[];
+  journalPages?: JournalPageRecord[];
   onSelectTrade: (tradeId: string, tradeDate: string) => void;
+  onOpenJournalDate?: (tradeDate: string) => void;
   onViewReportsForPlaybook?: (playbookName: string) => void;
   embedded?: boolean;
 }
@@ -25,12 +34,74 @@ interface PlaybooksPageProps {
 interface PlaybookCardData {
   playbook: PlaybookRecord;
   trades: GroupedTrade[];
+  summary: ReturnType<typeof getTradeSummary>;
+  status: PlaybookStatus;
+  confidence: PlaybookConfidence;
+  confidenceRank: number;
+  setupType: string;
+  setupTypes: string[];
+  topSymbols: string[];
+  uniqueSymbolCount: number;
+  averageWinner: number;
+  averageLoser: number;
+  searchText: string;
 }
 
+interface TaggedPlaybookChartData {
+  id: string;
+  screenshotUrl: string;
+  label: string;
+  rowLabel: string;
+  taggedDate: string;
+  journalDate: string;
+  ticker: string;
+  playbookLabel: string;
+  linkedTradeKeys: string[];
+  linkedTrades: GroupedTrade[];
+  missingLinkedTradeCount: number;
+}
+
+type PlaybookHeroWindow = "all" | "30d" | "7d";
+type PlaybookConfidence = "Low Confidence" | "Medium Confidence" | "High Confidence";
+type StatusFilterValue = "all" | PlaybookStatus;
+type ConfidenceFilterValue = "all" | PlaybookConfidence;
+type NetPnlFilterValue = "all" | "positive" | "negative";
+type PlaybookDetailPage = "playbook" | "tagged-charts" | "a-plus";
+
+const playbookStatusOptions: PlaybookStatus[] = [
+  "Testing",
+  "Active",
+  "Proven",
+  "Needs Review",
+  "Retired"
+];
+
+const playbookConfidenceOptions: PlaybookConfidence[] = [
+  "Low Confidence",
+  "Medium Confidence",
+  "High Confidence"
+];
+
+const playbookConfidenceRank: Record<PlaybookConfidence, number> = {
+  "Low Confidence": 1,
+  "Medium Confidence": 2,
+  "High Confidence": 3
+};
+
+const playbookHeroWindowOptions: { label: string; value: PlaybookHeroWindow }[] = [
+  { label: "All", value: "all" },
+  { label: "30D", value: "30d" },
+  { label: "7D", value: "7d" }
+];
+
 const playbookScreenshotColumnLabels = ["Open Example", "Close Example", "Context Chart"] as const;
+const TRADE_LINK_SEPARATOR = "::";
 
 const formatSignedMoney = (value: number): string =>
   `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`;
+
+const getSignedValueClassName = (value: number): "positive-value" | "negative-value" =>
+  value >= 0 ? "positive-value" : "negative-value";
 
 const formatUpdatedAt = (value: string): string => {
   const parsed = new Date(value);
@@ -45,7 +116,98 @@ const formatUpdatedAt = (value: string): string => {
   });
 };
 
+const parseCalendarDate = (value: string): Date | null => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const [year, month, day] = trimmed.split("-").map((token) => Number(token));
+    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+      return null;
+    }
+
+    const parsed = new Date(year, month - 1, day);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const parsed = new Date(trimmed);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const getCalendarSortValue = (value: string): number => parseCalendarDate(value)?.getTime() ?? 0;
+
+const formatCalendarDate = (value: string): string => {
+  const parsed = parseCalendarDate(value);
+  if (!parsed) {
+    return "-";
+  }
+
+  return parsed.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  });
+};
+
+const formatLinkedTradeLabel = (trade: GroupedTrade): string => {
+  const symbol = trade.symbol.trim();
+  const tradeName = trade.name.trim();
+  if (!tradeName) {
+    return symbol || "Trade";
+  }
+  if (!symbol) {
+    return tradeName;
+  }
+  return tradeName.toLowerCase().startsWith(symbol.toLowerCase()) ? tradeName : `${symbol} ${tradeName}`;
+};
+
 const normalizePlaybookName = (value: string): string => value.trim().toLowerCase();
+
+const toTradeLinkKey = (tradeId: string, tradeDate: string): string =>
+  tradeId && tradeDate ? `${tradeId}${TRADE_LINK_SEPARATOR}${tradeDate}` : "";
+
+const dedupeTradeLinks = (links: JournalScreenshotTradeLink[]): JournalScreenshotTradeLink[] => {
+  const unique = new Map<string, JournalScreenshotTradeLink>();
+  for (const link of links) {
+    if (!link.tradeId || !link.tradeDate) {
+      continue;
+    }
+
+    unique.set(toTradeLinkKey(link.tradeId, link.tradeDate), link);
+  }
+
+  return Array.from(unique.values());
+};
+
+const getScreenshotTradeLinks = (
+  screenshotTag: JournalScreenshotTagRecord | undefined
+): JournalScreenshotTradeLink[] => {
+  if (!screenshotTag) {
+    return [];
+  }
+
+  const normalizedLinkedTrades = Array.isArray(screenshotTag.linkedTrades)
+    ? screenshotTag.linkedTrades
+        .map((link) => ({
+          tradeId: typeof link.tradeId === "string" ? link.tradeId : "",
+          tradeDate: typeof link.tradeDate === "string" ? link.tradeDate : ""
+        }))
+        .filter((link) => link.tradeId && link.tradeDate)
+    : [];
+  const legacyLinkedTrade =
+    screenshotTag.linkedTradeId && screenshotTag.linkedTradeDate
+      ? [
+          {
+            tradeId: screenshotTag.linkedTradeId,
+            tradeDate: screenshotTag.linkedTradeDate
+          }
+        ]
+      : [];
+
+  return dedupeTradeLinks([...normalizedLinkedTrades, ...legacyLinkedTrade]);
+};
 
 const readFileAsDataUrl = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -100,12 +262,176 @@ const getAverageLoser = (trades: GroupedTrade[]): number => {
   return losers.reduce((sum, trade) => sum + trade.netPnlUsd, 0) / losers.length;
 };
 
+const getPlaybookConfidence = (tradeCount: number): PlaybookConfidence => {
+  if (tradeCount >= 50) {
+    return "High Confidence";
+  }
+
+  if (tradeCount >= 20) {
+    return "Medium Confidence";
+  }
+
+  return "Low Confidence";
+};
+
+const getPlaybookStatus = (
+  playbook: PlaybookRecord,
+  tradeCount: number,
+  totalNetPnl: number
+): PlaybookStatus => {
+  if (playbook.status !== "Testing") {
+    return playbook.status;
+  }
+
+  if (tradeCount >= 50 && totalNetPnl >= 0) {
+    return "Proven";
+  }
+
+  if (tradeCount >= 20 && totalNetPnl < 0) {
+    return "Needs Review";
+  }
+
+  if (tradeCount >= 20) {
+    return "Active";
+  }
+
+  return "Testing";
+};
+
+const getPlaybookStatusBadgeClassName = (status: PlaybookStatus): string => {
+  switch (status) {
+    case "Active":
+      return "playbook-status-badge playbook-status-badge-active";
+    case "Proven":
+      return "playbook-status-badge playbook-status-badge-proven";
+    case "Needs Review":
+      return "playbook-status-badge playbook-status-badge-review";
+    case "Retired":
+      return "playbook-status-badge playbook-status-badge-retired";
+    case "Testing":
+    default:
+      return "playbook-status-badge playbook-status-badge-testing";
+  }
+};
+
+const getPlaybookConfidenceBadgeClassName = (confidence: PlaybookConfidence): string => {
+  switch (confidence) {
+    case "High Confidence":
+      return "playbook-confidence-badge playbook-confidence-badge-high";
+    case "Medium Confidence":
+      return "playbook-confidence-badge playbook-confidence-badge-medium";
+    case "Low Confidence":
+    default:
+      return "playbook-confidence-badge playbook-confidence-badge-low";
+  }
+};
+
+const getAverageWinnerLoserLabel = (
+  averageWinner: number,
+  averageLoser: number,
+  tradeCount: number
+): string => {
+  if (tradeCount === 0) {
+    return "-";
+  }
+
+  const averageWinnerLabel = averageWinner !== 0 ? formatSignedMoney(averageWinner) : "-";
+  const averageLoserLabel = averageLoser !== 0 ? formatSignedMoney(averageLoser) : "-";
+  return `${averageWinnerLabel} / ${averageLoserLabel}`;
+};
+
+const getPlaybookSectionAnchorId = (playbookId: string, sectionId: string): string =>
+  `playbook-section-${playbookId}-${sectionId}`;
+
+const formatDateToTradeKey = (value: Date): string => {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const getPlaybookHeroWindowStart = (window: PlaybookHeroWindow): string | null => {
+  if (window === "all") {
+    return null;
+  }
+
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const lookbackDays = window === "30d" ? 29 : 6;
+  start.setDate(start.getDate() - lookbackDays);
+  return formatDateToTradeKey(start);
+};
+
 const matchesPlaybook = (trade: GroupedTrade, playbook: PlaybookRecord): boolean =>
   trade.setups.some((setup) =>
     playbook.aliases.some(
       (alias) => normalizePlaybookName(alias) === normalizePlaybookName(setup)
     )
   );
+
+const getPlaybookSetupTypes = (trades: GroupedTrade[], playbook: PlaybookRecord): string[] => {
+  const aliasSet = new Set(
+    [...playbook.aliases, playbook.name].map((alias) => normalizePlaybookName(alias))
+  );
+  const setupCounts = trades.reduce<Map<string, number>>((acc, trade) => {
+    trade.setups.forEach((setup) => {
+      const normalizedSetup = normalizePlaybookName(setup);
+      if (!aliasSet.has(normalizedSetup)) {
+        return;
+      }
+
+      const trimmed = setup.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      acc.set(trimmed, (acc.get(trimmed) ?? 0) + 1);
+    });
+    return acc;
+  }, new Map());
+
+  const sorted = Array.from(setupCounts.entries())
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([setup]) => setup);
+
+  return sorted.length > 0 ? sorted : [playbook.name];
+};
+
+const createPlaybookCardData = (playbook: PlaybookRecord, trades: GroupedTrade[]): PlaybookCardData => {
+  const summary = getTradeSummary(trades);
+  const setupTypes = getPlaybookSetupTypes(trades, playbook);
+  const setupType = setupTypes[0] ?? playbook.name;
+  const uniqueSymbols = Array.from(
+    new Set(trades.map((trade) => trade.symbol).filter((symbol) => symbol.trim().length > 0))
+  );
+  const confidence = getPlaybookConfidence(trades.length);
+  const status = getPlaybookStatus(playbook, trades.length, summary.totalNetPnl);
+  const averageWinner = getAverageWinner(trades);
+  const averageLoser = getAverageLoser(trades);
+  const searchTokens = [
+    playbook.name,
+    playbook.description,
+    setupType,
+    ...setupTypes,
+    ...uniqueSymbols
+  ];
+
+  return {
+    playbook,
+    trades,
+    summary,
+    status,
+    confidence,
+    confidenceRank: playbookConfidenceRank[confidence],
+    setupType,
+    setupTypes,
+    topSymbols: getTopSymbols(trades),
+    uniqueSymbolCount: uniqueSymbols.length,
+    averageWinner,
+    averageLoser,
+    searchText: searchTokens.join(" ").toLowerCase()
+  };
+};
 
 const PLACEHOLDER_DESCRIPTION = "Build this playbook out with your rules, examples, and chart notes.";
 
@@ -148,14 +474,24 @@ const shouldShowPlaybook = (entry: PlaybookCardData): boolean => {
 
 export const PlaybooksPage = ({
   trades,
+  journalPages = [],
   onSelectTrade,
+  onOpenJournalDate,
   onViewReportsForPlaybook,
   embedded = false
 }: PlaybooksPageProps) => {
   const Shell = embedded ? "div" : "main";
   const [playbooks, setPlaybooks] = useState<PlaybookRecord[]>(() => loadPlaybooks());
   const [selectedPlaybookId, setSelectedPlaybookId] = useState<string | null>(null);
-  const [activePlaybookPage, setActivePlaybookPage] = useState<"playbook" | "a-plus">("playbook");
+  const [lastOpenedPlaybookId, setLastOpenedPlaybookId] = useState<string | null>(null);
+  const [heroWindow, setHeroWindow] = useState<PlaybookHeroWindow>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilterValue>("all");
+  const [tickerFilter, setTickerFilter] = useState<string>("all");
+  const [setupTypeFilter, setSetupTypeFilter] = useState<string>("all");
+  const [confidenceFilter, setConfidenceFilter] = useState<ConfidenceFilterValue>("all");
+  const [netPnlFilter, setNetPnlFilter] = useState<NetPnlFilterValue>("all");
+  const [activePlaybookPage, setActivePlaybookPage] = useState<PlaybookDetailPage>("playbook");
   const [visibleScreenshotRows, setVisibleScreenshotRows] = useState(1);
   const [expandedScreenshotUrl, setExpandedScreenshotUrl] = useState("");
   const [pendingScreenshotSlotIndex, setPendingScreenshotSlotIndex] = useState<number | null>(null);
@@ -192,6 +528,7 @@ export const PlaybooksPage = ({
           playbook,
           trades: trades.filter((trade) => matchesPlaybook(trade, playbook))
         }))
+        .map(({ playbook, trades: matchedTrades }) => createPlaybookCardData(playbook, matchedTrades))
         .filter(shouldShowPlaybook),
     [playbooks, trades]
   );
@@ -199,6 +536,125 @@ export const PlaybooksPage = ({
   const selectedPlaybook = useMemo(
     () => playbookCards.find((entry) => entry.playbook.id === selectedPlaybookId) ?? null,
     [playbookCards, selectedPlaybookId]
+  );
+
+  const taggedCharts = useMemo<TaggedPlaybookChartData[]>(() => {
+    if (!selectedPlaybook) {
+      return [];
+    }
+
+    if (journalPages.length === 0) {
+      return [];
+    }
+
+    const playbookNameSet = new Set(
+      [selectedPlaybook.playbook.name, ...selectedPlaybook.playbook.aliases]
+        .map((name) => normalizePlaybookName(name))
+        .filter(Boolean)
+    );
+    if (playbookNameSet.size === 0) {
+      return [];
+    }
+
+    const linkedTradeByIdAndDate = new Map<string, GroupedTrade>();
+    const linkedTradeById = new Map<string, GroupedTrade>();
+    for (const trade of trades) {
+      linkedTradeByIdAndDate.set(toTradeLinkKey(trade.id, trade.tradeDate), trade);
+      if (!linkedTradeById.has(trade.id)) {
+        linkedTradeById.set(trade.id, trade);
+      }
+    }
+
+    const matches: TaggedPlaybookChartData[] = [];
+
+    for (const page of journalPages) {
+      const pageScreenshots = Array.isArray(page.screenshotUrls) ? page.screenshotUrls : [];
+      if (pageScreenshots.length === 0) {
+        continue;
+      }
+
+      const pageTags = Array.isArray(page.screenshotTags) ? page.screenshotTags : [];
+      for (const [index, screenshotUrl] of pageScreenshots.entries()) {
+        if (!screenshotUrl) {
+          continue;
+        }
+
+        const screenshotTag = pageTags[index];
+        const screenshotTradeLinks = getScreenshotTradeLinks(screenshotTag);
+        const linkedTradeKeys = screenshotTradeLinks.map((link) =>
+          toTradeLinkKey(link.tradeId, link.tradeDate)
+        );
+        const resolvedLinkedTradeMap = new Map<string, GroupedTrade>();
+        for (const link of screenshotTradeLinks) {
+          const resolvedTrade =
+            linkedTradeByIdAndDate.get(toTradeLinkKey(link.tradeId, link.tradeDate)) ??
+            linkedTradeById.get(link.tradeId) ??
+            null;
+          if (!resolvedTrade) {
+            continue;
+          }
+
+          resolvedLinkedTradeMap.set(toTradeLinkKey(resolvedTrade.id, resolvedTrade.tradeDate), resolvedTrade);
+        }
+        const linkedTrades = Array.from(resolvedLinkedTradeMap.values());
+        const linkedTrade = linkedTrades[0] ?? null;
+        const candidatePlaybookNames = [
+          screenshotTag && typeof screenshotTag.playbook === "string" ? screenshotTag.playbook : "",
+          ...linkedTrades.flatMap((trade) => trade.setups)
+        ]
+          .map((name) => normalizePlaybookName(name))
+          .filter(Boolean);
+        if (!candidatePlaybookNames.some((name) => playbookNameSet.has(name))) {
+          continue;
+        }
+
+        const slotMeta = getPlaybookScreenshotSlotMeta(index);
+        const taggedDate =
+          screenshotTag && typeof screenshotTag.taggedDate === "string" && screenshotTag.taggedDate.trim().length > 0
+            ? screenshotTag.taggedDate
+            : page.tradeDate;
+
+        matches.push({
+          id: `${page.id}-${index}`,
+          screenshotUrl,
+          label: slotMeta.label,
+          rowLabel: slotMeta.rowLabel,
+          taggedDate,
+          journalDate: page.tradeDate,
+          ticker:
+            screenshotTag && typeof screenshotTag.ticker === "string" && screenshotTag.ticker.trim().length > 0
+              ? screenshotTag.ticker.toUpperCase()
+              : linkedTrade?.symbol ?? "",
+          playbookLabel:
+            screenshotTag && typeof screenshotTag.playbook === "string" ? screenshotTag.playbook : "",
+          linkedTradeKeys,
+          linkedTrades,
+          missingLinkedTradeCount: Math.max(0, linkedTradeKeys.length - linkedTrades.length)
+        });
+      }
+    }
+
+    return matches.sort((left, right) => {
+      const taggedDateCompare = getCalendarSortValue(right.taggedDate) - getCalendarSortValue(left.taggedDate);
+      if (taggedDateCompare !== 0) {
+        return taggedDateCompare;
+      }
+
+      const journalDateCompare = getCalendarSortValue(right.journalDate) - getCalendarSortValue(left.journalDate);
+      if (journalDateCompare !== 0) {
+        return journalDateCompare;
+      }
+
+      return left.id.localeCompare(right.id);
+    });
+  }, [journalPages, selectedPlaybook, trades]);
+
+  const linkedTradeCount = useMemo(
+    () =>
+      new Set(
+        taggedCharts.flatMap((entry) => entry.linkedTradeKeys)
+      ).size,
+    [taggedCharts]
   );
 
   useEffect(() => {
@@ -218,15 +674,232 @@ export const PlaybooksPage = ({
     return Math.max(requiredSlots, visibleScreenshotRows * 3);
   }, [selectedPlaybook?.playbook.screenshotUrls.length, visibleScreenshotRows]);
 
-  const totalTaggedTrades = useMemo(
-    () => playbookCards.reduce((sum, entry) => sum + entry.trades.length, 0),
-    [playbookCards]
+  const heroWindowStart = useMemo(() => getPlaybookHeroWindowStart(heroWindow), [heroWindow]);
+
+  const playbookCardsInWindow = useMemo(
+    () =>
+      playbookCards
+        .map((entry) => {
+          const matchedTrades =
+            heroWindowStart === null
+              ? entry.trades
+              : entry.trades.filter((trade) => trade.tradeDate >= heroWindowStart);
+          return createPlaybookCardData(entry.playbook, matchedTrades);
+        })
+        .filter(shouldShowPlaybook),
+    [playbookCards, heroWindowStart]
   );
 
+  const statusFilterOptions = useMemo(
+    () => [
+      { label: "All Statuses", value: "all" },
+      ...playbookStatusOptions.map((status) => ({ label: status, value: status }))
+    ],
+    []
+  );
+
+  const tickerFilterOptions = useMemo(() => {
+    const tickers = Array.from(
+      new Set(playbookCards.flatMap((entry) => entry.trades.map((trade) => trade.symbol)))
+    ).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+    return [{ label: "All Tickers", value: "all" }, ...tickers.map((ticker) => ({ label: ticker, value: ticker }))];
+  }, [playbookCards]);
+
+  const setupTypeFilterOptions = useMemo(() => {
+    const setupTypes = Array.from(new Set(playbookCards.flatMap((entry) => entry.setupTypes))).sort(
+      (left, right) => left.localeCompare(right, undefined, { sensitivity: "base" })
+    );
+    return [{ label: "All Setup Types", value: "all" }, ...setupTypes.map((setupType) => ({ label: setupType, value: setupType }))];
+  }, [playbookCards]);
+
+  const confidenceFilterOptions = useMemo(
+    () => [
+      { label: "All Confidence", value: "all" },
+      ...playbookConfidenceOptions.map((confidence) => ({ label: confidence, value: confidence }))
+    ],
+    []
+  );
+
+  const netPnlFilterOptions = useMemo(
+    () => [
+      { label: "All P&L", value: "all" },
+      { label: "Positive", value: "positive" },
+      { label: "Negative", value: "negative" }
+    ],
+    []
+  );
+
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const filteredPlaybookCards = useMemo(
+    () =>
+      playbookCardsInWindow.filter((entry) => {
+        if (statusFilter !== "all" && entry.status !== statusFilter) {
+          return false;
+        }
+
+        if (tickerFilter !== "all" && !entry.trades.some((trade) => trade.symbol === tickerFilter)) {
+          return false;
+        }
+
+        if (
+          setupTypeFilter !== "all" &&
+          !entry.setupTypes.some(
+            (setupType) => normalizePlaybookName(setupType) === normalizePlaybookName(setupTypeFilter)
+          )
+        ) {
+          return false;
+        }
+
+        if (confidenceFilter !== "all" && entry.confidence !== confidenceFilter) {
+          return false;
+        }
+
+        if (netPnlFilter === "positive" && entry.summary.totalNetPnl <= 0) {
+          return false;
+        }
+
+        if (netPnlFilter === "negative" && entry.summary.totalNetPnl >= 0) {
+          return false;
+        }
+
+        if (!normalizedSearchQuery) {
+          return true;
+        }
+
+        return entry.searchText.includes(normalizedSearchQuery);
+      }),
+    [
+      playbookCardsInWindow,
+      statusFilter,
+      tickerFilter,
+      setupTypeFilter,
+      confidenceFilter,
+      netPnlFilter,
+      normalizedSearchQuery
+    ]
+  );
+
+  const totalTaggedTrades = useMemo(
+    () => filteredPlaybookCards.reduce((sum, entry) => sum + entry.trades.length, 0),
+    [filteredPlaybookCards]
+  );
+
+  const activePlaybookCount = useMemo(
+    () =>
+      filteredPlaybookCards.filter(
+        (entry) => entry.status === "Active" || entry.status === "Proven"
+      ).length,
+    [filteredPlaybookCards]
+  );
+
+  const playbooksWithTrades = useMemo(
+    () => filteredPlaybookCards.filter((entry) => entry.trades.length > 0),
+    [filteredPlaybookCards]
+  );
+
+  const comparePlaybookNames = (left: PlaybookCardData, right: PlaybookCardData): number =>
+    left.playbook.name.localeCompare(right.playbook.name, undefined, { sensitivity: "base" });
+
+  const bestPlaybook = useMemo(() => {
+    if (playbooksWithTrades.length === 0) {
+      return null;
+    }
+
+    return [...playbooksWithTrades].sort((left, right) => {
+      const pnlCompare = right.summary.totalNetPnl - left.summary.totalNetPnl;
+      if (pnlCompare !== 0) {
+        return pnlCompare;
+      }
+
+      const tradeCompare = right.trades.length - left.trades.length;
+      if (tradeCompare !== 0) {
+        return tradeCompare;
+      }
+
+      return comparePlaybookNames(left, right);
+    })[0];
+  }, [playbooksWithTrades]);
+
+  const worstPlaybook = useMemo(() => {
+    if (playbooksWithTrades.length === 0) {
+      return null;
+    }
+
+    return [...playbooksWithTrades].sort((left, right) => {
+      const pnlCompare = left.summary.totalNetPnl - right.summary.totalNetPnl;
+      if (pnlCompare !== 0) {
+        return pnlCompare;
+      }
+
+      const tradeCompare = right.trades.length - left.trades.length;
+      if (tradeCompare !== 0) {
+        return tradeCompare;
+      }
+
+      return comparePlaybookNames(left, right);
+    })[0];
+  }, [playbooksWithTrades]);
+
+  const mostTradedPlaybook = useMemo(() => {
+    if (playbooksWithTrades.length === 0) {
+      return null;
+    }
+
+    return [...playbooksWithTrades].sort((left, right) => {
+      const tradeCompare = right.trades.length - left.trades.length;
+      if (tradeCompare !== 0) {
+        return tradeCompare;
+      }
+
+      const pnlCompare = right.summary.totalNetPnl - left.summary.totalNetPnl;
+      if (pnlCompare !== 0) {
+        return pnlCompare;
+      }
+
+      return comparePlaybookNames(left, right);
+    })[0];
+  }, [playbooksWithTrades]);
+
+  const highestConfidencePlaybook = useMemo(() => {
+    if (filteredPlaybookCards.length === 0) {
+      return null;
+    }
+
+    return [...filteredPlaybookCards].sort((left, right) => {
+      const confidenceCompare = right.confidenceRank - left.confidenceRank;
+      if (confidenceCompare !== 0) {
+        return confidenceCompare;
+      }
+
+      const tradeCompare = right.trades.length - left.trades.length;
+      if (tradeCompare !== 0) {
+        return tradeCompare;
+      }
+
+      const pnlCompare = right.summary.totalNetPnl - left.summary.totalNetPnl;
+      if (pnlCompare !== 0) {
+        return pnlCompare;
+      }
+
+      return comparePlaybookNames(left, right);
+    })[0];
+  }, [filteredPlaybookCards]);
+
+  const bestPlaybookLabel = bestPlaybook
+    ? `${bestPlaybook.playbook.name} (${formatSignedMoney(bestPlaybook.summary.totalNetPnl)})`
+    : "-";
+  const worstPlaybookLabel = worstPlaybook
+    ? `${worstPlaybook.playbook.name} (${formatSignedMoney(worstPlaybook.summary.totalNetPnl)})`
+    : "-";
+  const mostTradedPlaybookLabel = mostTradedPlaybook
+    ? `${mostTradedPlaybook.playbook.name} (${mostTradedPlaybook.trades.length} trades)`
+    : "-";
+  const highestConfidenceLabel = highestConfidencePlaybook
+    ? `${highestConfidencePlaybook.playbook.name} (${highestConfidencePlaybook.confidence})`
+    : "-";
+
   const sortedPlaybookCards = useMemo(() => {
-    const compareStrings = (a: string, b: string) =>
-      a.localeCompare(b, undefined, { sensitivity: "base" });
-    return [...playbookCards].sort((left, right) => {
+    return [...filteredPlaybookCards].sort((left, right) => {
       const updatedCompare = right.playbook.updatedAt.localeCompare(left.playbook.updatedAt);
       if (updatedCompare !== 0) {
         return updatedCompare;
@@ -237,9 +910,22 @@ export const PlaybooksPage = ({
         return tradeCompare;
       }
 
-      return compareStrings(left.playbook.name, right.playbook.name);
+      return comparePlaybookNames(left, right);
     });
-  }, [playbookCards]);
+  }, [filteredPlaybookCards]);
+
+  const hasActiveFilters =
+    searchQuery.trim().length > 0 ||
+    statusFilter !== "all" ||
+    tickerFilter !== "all" ||
+    setupTypeFilter !== "all" ||
+    confidenceFilter !== "all" ||
+    netPnlFilter !== "all";
+
+  const handleOpenPlaybook = (playbookId: string) => {
+    setLastOpenedPlaybookId(playbookId);
+    setSelectedPlaybookId(playbookId);
+  };
 
   const handleAddPlaybook = () => {
     const nextName = window.prompt("New playbook name");
@@ -253,7 +939,7 @@ export const PlaybooksPage = ({
     }
 
     setPlaybooks(result.playbooks);
-    setSelectedPlaybookId(result.playbookId);
+    handleOpenPlaybook(result.playbookId);
   };
 
   useEffect(() => {
@@ -271,31 +957,76 @@ export const PlaybooksPage = ({
     setActivePlaybookPage("playbook");
   }, [selectedPlaybook?.playbook.id]);
 
+  const heroWindowLabel =
+    playbookHeroWindowOptions.find((option) => option.value === heroWindow)?.label ?? "All";
+
   if (!selectedPlaybook) {
     return (
       <Shell className="page-shell">
-        <PageHero
-          eyebrow="Playbooks"
-          title="Setup Library"
-          description="Define your setups clearly, connect them to tagged trades, and review examples in one place."
-        >
-          <div className="page-hero-stat-grid">
+        <PageHero eyebrow="Playbooks" title="Playbooks">
+          <div className="page-hero-stat-grid playbooks-hero-stat-grid">
             <div className="page-hero-stat-card">
-              <span>Playbooks</span>
-              <strong>{playbookCards.length}</strong>
+              <span>Total Playbooks</span>
+              <strong>{sortedPlaybookCards.length}</strong>
+              <small>{heroWindowLabel} window</small>
             </div>
             <div className="page-hero-stat-card">
-              <span>Tagged Trades</span>
-              <strong>{totalTaggedTrades}</strong>
+              <span>Active Playbooks</span>
+              <strong>{activePlaybookCount}</strong>
+              <small>Active plus Proven</small>
             </div>
-            <div className="page-hero-stat-card">
-              <span>Starter Focus</span>
-              <strong>Wide Spread Open Drive</strong>
-            </div>
-            <div className="page-hero-stat-card">
-              <span>Build Path</span>
-              <strong>Landing page first, deeper library next</strong>
-            </div>
+            <button
+              type="button"
+              className="page-hero-stat-card page-hero-stat-card-action"
+              onClick={() => {
+                if (bestPlaybook) {
+                  handleOpenPlaybook(bestPlaybook.playbook.id);
+                }
+              }}
+              disabled={!bestPlaybook}
+            >
+              <span>Best Performer</span>
+              <strong>{bestPlaybookLabel}</strong>
+            </button>
+            <button
+              type="button"
+              className="page-hero-stat-card page-hero-stat-card-action"
+              onClick={() => {
+                if (worstPlaybook) {
+                  handleOpenPlaybook(worstPlaybook.playbook.id);
+                }
+              }}
+              disabled={!worstPlaybook}
+            >
+              <span>Worst Performer</span>
+              <strong>{worstPlaybookLabel}</strong>
+            </button>
+            <button
+              type="button"
+              className="page-hero-stat-card page-hero-stat-card-action"
+              onClick={() => {
+                if (mostTradedPlaybook) {
+                  handleOpenPlaybook(mostTradedPlaybook.playbook.id);
+                }
+              }}
+              disabled={!mostTradedPlaybook}
+            >
+              <span>Most Traded</span>
+              <strong>{mostTradedPlaybookLabel}</strong>
+            </button>
+            <button
+              type="button"
+              className="page-hero-stat-card page-hero-stat-card-action"
+              onClick={() => {
+                if (highestConfidencePlaybook) {
+                  handleOpenPlaybook(highestConfidencePlaybook.playbook.id);
+                }
+              }}
+              disabled={!highestConfidencePlaybook}
+            >
+              <span>Highest Confidence</span>
+              <strong>{highestConfidenceLabel}</strong>
+            </button>
           </div>
         </PageHero>
 
@@ -306,7 +1037,12 @@ export const PlaybooksPage = ({
               <div>
                 <h3>Playbooks</h3>
                 <span>
-                  {sortedPlaybookCards.length} playbook{sortedPlaybookCards.length === 1 ? "" : "s"} · {totalTaggedTrades} tagged trade{totalTaggedTrades === 1 ? "" : "s"}
+                  {sortedPlaybookCards.length}
+                  {sortedPlaybookCards.length !== playbookCardsInWindow.length
+                    ? ` of ${playbookCardsInWindow.length}`
+                    : ""}{" "}
+                  playbook{sortedPlaybookCards.length === 1 ? "" : "s"} - {totalTaggedTrades} tagged trade
+                  {totalTaggedTrades === 1 ? "" : "s"} - {heroWindowLabel}
                 </span>
               </div>
             </div>
@@ -315,56 +1051,168 @@ export const PlaybooksPage = ({
             </button>
           </div>
 
+          <div className="playbook-database-controls" aria-label="Playbook database controls">
+            <div className="playbook-database-search-row">
+              <input
+                type="search"
+                className="playbook-search-input"
+                value={searchQuery}
+                placeholder="Search playbooks, tickers, setup types, and descriptions..."
+                onChange={(event) => setSearchQuery(event.target.value)}
+                aria-label="Search playbooks"
+              />
+              {searchQuery.trim().length > 0 ? (
+                <button type="button" className="mini-action" onClick={() => setSearchQuery("")}>
+                  Clear
+                </button>
+              ) : null}
+            </div>
+            <div className="playbook-database-filter-row">
+              <FilterSelect
+                value={statusFilter}
+                options={statusFilterOptions}
+                ariaLabel="Filter playbooks by status"
+                onChange={(value) => setStatusFilter(value as StatusFilterValue)}
+              />
+              <FilterSelect
+                value={tickerFilter}
+                options={tickerFilterOptions}
+                ariaLabel="Filter playbooks by ticker"
+                onChange={setTickerFilter}
+              />
+              <FilterSelect
+                value={setupTypeFilter}
+                options={setupTypeFilterOptions}
+                ariaLabel="Filter playbooks by setup type"
+                onChange={setSetupTypeFilter}
+              />
+              <FilterSelect
+                value={confidenceFilter}
+                options={confidenceFilterOptions}
+                ariaLabel="Filter playbooks by confidence"
+                onChange={(value) => setConfidenceFilter(value as ConfidenceFilterValue)}
+              />
+              <FilterSelect
+                value={netPnlFilter}
+                options={netPnlFilterOptions}
+                ariaLabel="Filter playbooks by net P&L sign"
+                onChange={(value) => setNetPnlFilter(value as NetPnlFilterValue)}
+              />
+            </div>
+            <div className="playbook-database-chip-row" aria-label="Playbook period controls">
+              {playbookHeroWindowOptions.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`playbooks-hero-window-chip${heroWindow === option.value ? " is-active" : ""}`}
+                  onClick={() => setHeroWindow(option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+              {hasActiveFilters ? (
+                <button
+                  type="button"
+                  className="mini-action mini-action-soft"
+                  onClick={() => {
+                    setSearchQuery("");
+                    setStatusFilter("all");
+                    setTickerFilter("all");
+                    setSetupTypeFilter("all");
+                    setConfidenceFilter("all");
+                    setNetPnlFilter("all");
+                  }}
+                >
+                  Reset Filters
+                </button>
+              ) : null}
+            </div>
+          </div>
+
           <div className="library-table-wrap playbook-table-wrap">
             <table className="library-table playbook-table">
               <thead>
                 <tr>
                   <th>Playbook Name</th>
+                  <th>Status</th>
+                  <th>Confidence</th>
                   <th>Tagged Trades</th>
                   <th>Win Rate</th>
                   <th>Net P&amp;L</th>
+                  <th>Avg Winner / Loser</th>
                   <th>Symbols</th>
                   <th>Last Updated</th>
                 </tr>
               </thead>
               <tbody>
                 {sortedPlaybookCards.length > 0 ? (
-                  sortedPlaybookCards.map(({ playbook, trades: matchedTrades }) => {
-                    const summary = getTradeSummary(matchedTrades);
-                    const uniqueSymbols = new Set(matchedTrades.map((trade) => trade.symbol));
-                    const topSymbols = getTopSymbols(matchedTrades);
-                    const symbolSuffix =
-                      uniqueSymbols.size > topSymbols.length ? ` +${uniqueSymbols.size - topSymbols.length}` : "";
-                    const symbolsLabel =
-                      topSymbols.length > 0 ? `${topSymbols.join(", ")}${symbolSuffix}` : "-";
+                  sortedPlaybookCards.map((entry) => {
+                    const { playbook, trades: matchedTrades, summary } = entry;
+                    const overflowSymbols = Math.max(
+                      0,
+                      entry.uniqueSymbolCount - entry.topSymbols.length
+                    );
 
                     return (
-                      <tr key={playbook.id} onClick={() => setSelectedPlaybookId(playbook.id)}>
+                      <tr
+                        key={playbook.id}
+                        className={
+                          lastOpenedPlaybookId === playbook.id
+                            ? "library-table-row-active playbook-table-row-active"
+                            : ""
+                        }
+                        onClick={() => handleOpenPlaybook(playbook.id)}
+                      >
                         <td>
                           <button
                             type="button"
                             className="library-table-title playbook-table-title"
                             onClick={(event) => {
                               event.stopPropagation();
-                              setSelectedPlaybookId(playbook.id);
+                              handleOpenPlaybook(playbook.id);
                             }}
                           >
                             {playbook.name}
                           </button>
                           <div className="playbook-table-description">{playbook.description}</div>
                         </td>
+                        <td>
+                          <span className={getPlaybookStatusBadgeClassName(entry.status)}>
+                            {entry.status}
+                          </span>
+                        </td>
+                        <td>
+                          <span className={getPlaybookConfidenceBadgeClassName(entry.confidence)}>
+                            {entry.confidence}
+                          </span>
+                        </td>
                         <td>{matchedTrades.length}</td>
                         <td>{summary.totalTrades > 0 ? `${summary.winRate.toFixed(1)}%` : "-"}</td>
-                        <td>{summary.totalTrades > 0 ? formatSignedMoney(summary.totalNetPnl) : "-"}</td>
-                        <td>{symbolsLabel}</td>
+                        <td
+                          className={summary.totalTrades > 0 ? getSignedValueClassName(summary.totalNetPnl) : ""}
+                        >
+                          {summary.totalTrades > 0 ? formatSignedMoney(summary.totalNetPnl) : "-"}
+                        </td>
+                        <td>
+                          {getAverageWinnerLoserLabel(
+                            entry.averageWinner,
+                            entry.averageLoser,
+                            matchedTrades.length
+                          )}
+                        </td>
+                        <td className="playbook-symbol-cell">
+                          <SymbolPills symbols={entry.topSymbols} overflowCount={overflowSymbols} />
+                        </td>
                         <td>{formatUpdatedAt(playbook.updatedAt)}</td>
                       </tr>
                     );
                   })
                 ) : (
                   <tr>
-                    <td colSpan={6} className="playbook-table-empty">
-                      No playbooks yet. Click “New Playbook” to create your first setup.
+                    <td colSpan={9} className="playbook-table-empty">
+                      {hasActiveFilters
+                        ? "No playbooks match the current search and filters."
+                        : "No playbooks yet. Click \"New Playbook\" to create your first setup."}
                     </td>
                   </tr>
                 )}
@@ -375,7 +1223,6 @@ export const PlaybooksPage = ({
       </Shell>
     );
   }
-
   const summary = getTradeSummary(selectedPlaybook.trades);
   const symbolCount = new Set(selectedPlaybook.trades.map((trade) => trade.symbol)).size;
   const topSymbols = getTopSymbols(selectedPlaybook.trades);
@@ -395,6 +1242,16 @@ export const PlaybooksPage = ({
     )
     .slice(0, 10);
 
+  const handleScrollToSection = (sectionId: string) => {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    const anchorId = getPlaybookSectionAnchorId(selectedPlaybook.playbook.id, sectionId);
+    const sectionElement = document.getElementById(anchorId);
+    sectionElement?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   return (
     <Shell className="page-shell">
       <PageHero
@@ -402,7 +1259,19 @@ export const PlaybooksPage = ({
         title={selectedPlaybook.playbook.name}
         description={selectedPlaybook.playbook.focus}
       >
-        <div className="page-hero-stat-grid">
+        <div className="playbook-hero-meta-row">
+          <span className={getPlaybookStatusBadgeClassName(selectedPlaybook.status)}>
+            {selectedPlaybook.status}
+          </span>
+          <span className={getPlaybookConfidenceBadgeClassName(selectedPlaybook.confidence)}>
+            {selectedPlaybook.confidence}
+          </span>
+          <span className="playbook-meta-pill">Setup: {selectedPlaybook.setupType}</span>
+          <span className="playbook-meta-pill">
+            Updated: {formatUpdatedAt(selectedPlaybook.playbook.updatedAt)}
+          </span>
+        </div>
+        <div className="page-hero-stat-grid playbook-detail-stat-grid">
           <div className="page-hero-stat-card">
             <span>Tagged Trades</span>
             <strong>{summary.totalTrades}</strong>
@@ -448,6 +1317,15 @@ export const PlaybooksPage = ({
             <button
               type="button"
               role="tab"
+              aria-selected={activePlaybookPage === "tagged-charts"}
+              className={`mini-action mini-action-soft${activePlaybookPage === "tagged-charts" ? " playbook-subnav-active" : ""}`}
+              onClick={() => setActivePlaybookPage("tagged-charts")}
+            >
+              Tagged Charts
+            </button>
+            <button
+              type="button"
+              role="tab"
               aria-selected={activePlaybookPage === "a-plus"}
               className={`mini-action mini-action-soft${activePlaybookPage === "a-plus" ? " playbook-subnav-active" : ""}`}
               onClick={() => setActivePlaybookPage("a-plus")}
@@ -468,24 +1346,58 @@ export const PlaybooksPage = ({
           </div>
         </div>
         <span>
-          {symbolCount} symbol{symbolCount === 1 ? "" : "s"} matched across tagged examples.
+          {activePlaybookPage === "tagged-charts"
+            ? `${taggedCharts.length} tagged chart${taggedCharts.length === 1 ? "" : "s"} in journal (${linkedTradeCount} linked trade${linkedTradeCount === 1 ? "" : "s"}).`
+            : `${symbolCount} symbol${symbolCount === 1 ? "" : "s"} matched across tagged examples - ${selectedPlaybook.playbook.sections.length} section${selectedPlaybook.playbook.sections.length === 1 ? "" : "s"}.`}
         </span>
       </section>
+
+      {activePlaybookPage === "playbook" ? (
+        <section className="playbook-section-nav" aria-label="Playbook section navigation">
+          <strong>Jump To</strong>
+          <div className="playbook-section-nav-list">
+            {selectedPlaybook.playbook.sections.map((section) => (
+              <button
+                key={`${selectedPlaybook.playbook.id}-${section.id}-nav`}
+                type="button"
+                className="playbook-section-nav-chip"
+                onClick={() => handleScrollToSection(section.id)}
+              >
+                {section.title}
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section className="playbook-detail-layout">
         {activePlaybookPage === "playbook" ? (
           <div className="playbook-sections-column">
             {selectedPlaybook.playbook.sections.map((section) => (
-              <article key={section.id} className="placeholder-panel journal-writing-section playbook-section-card">
+              <article
+                key={section.id}
+                id={getPlaybookSectionAnchorId(selectedPlaybook.playbook.id, section.id)}
+                className="placeholder-panel journal-writing-section playbook-section-card"
+              >
                 <div className="journal-writing-header">
-                  <div className="journal-writing-header-title">
+                  <div className="journal-writing-header-title playbook-section-title">
                     <WorkspaceIcon
                       icon="text"
                       alt={`${section.title} icon`}
                       className="mini-action-icon"
                     />
-                    <strong>{section.title}</strong>
+                    <div className="playbook-section-title-copy">
+                      <strong>{section.title}</strong>
+                      <span>{section.description}</span>
+                    </div>
                   </div>
+                  <button
+                    type="button"
+                    className="mini-action mini-action-soft playbook-section-top-action"
+                    onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+                  >
+                    Top
+                  </button>
                 </div>
                 <JournalRichTextEditor
                   content={section.content}
@@ -505,10 +1417,112 @@ export const PlaybooksPage = ({
               </article>
             ))}
           </div>
+        ) : activePlaybookPage === "tagged-charts" ? (
+          <div className="playbook-sections-column">
+            <article className="placeholder-panel playbook-section-card playbook-tagged-charts-panel">
+              <div className="panel-header">
+                <WorkspaceIcon
+                  icon="journal"
+                  alt="Tagged charts icon"
+                  className="panel-header-icon"
+                />
+                <h2>Tagged Charts</h2>
+              </div>
+              <span className="playbook-example-subtitle">
+                Journal screenshots tagged to {selectedPlaybook.playbook.name}.
+              </span>
+              {taggedCharts.length > 0 ? (
+                <div className="playbook-tagged-chart-grid">
+                  {taggedCharts.map((entry, index) => {
+                    const linkedTradePreview = entry.linkedTrades
+                      .slice(0, 2)
+                      .map((trade) => formatLinkedTradeLabel(trade))
+                      .join(", ");
+                    const extraLinkedTradeCount = Math.max(0, entry.linkedTrades.length - 2);
+                    const linkedTradeStatus =
+                      entry.linkedTrades.length > 0
+                        ? `Linked trade${entry.linkedTrades.length === 1 ? "" : "s"}: ${linkedTradePreview}${
+                            extraLinkedTradeCount > 0 ? ` (+${extraLinkedTradeCount} more)` : ""
+                          }${entry.missingLinkedTradeCount > 0 ? ` (${entry.missingLinkedTradeCount} missing)` : ""}`
+                        : entry.playbookLabel.trim().length > 0
+                          ? `Tagged playbook: ${entry.playbookLabel}`
+                          : "No trade linked on this chart yet.";
+
+                    return (
+                      <article key={entry.id} className="journal-screenshot-card playbook-tagged-chart-card">
+                        <div className="journal-screenshot-card-header">
+                          <div className="journal-screenshot-card-title">
+                            <strong>{entry.label}</strong>
+                            <span>{entry.rowLabel}</span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="journal-screenshot-preview-button"
+                          onClick={() => setExpandedScreenshotUrl(entry.screenshotUrl)}
+                        >
+                          <img
+                            className="journal-screenshot-image"
+                            src={entry.screenshotUrl}
+                            alt={`${selectedPlaybook.playbook.name} tagged chart ${index + 1}`}
+                          />
+                        </button>
+                        <div className="playbook-tagged-chart-meta">
+                          <span className="playbook-meta-pill">Tagged {formatCalendarDate(entry.taggedDate)}</span>
+                          <span className="playbook-meta-pill">
+                            Journal {formatCalendarDate(entry.journalDate)}
+                          </span>
+                          {entry.ticker ? <span className="playbook-meta-pill">{entry.ticker}</span> : null}
+                        </div>
+                        <span className="journal-screenshot-link-status playbook-tagged-chart-link-status">
+                          {linkedTradeStatus}
+                        </span>
+                        <div className="journal-screenshot-actions playbook-tagged-chart-actions">
+                          {entry.linkedTrades.slice(0, 3).map((trade) => (
+                            <button
+                              key={`${entry.id}-${trade.id}-${trade.tradeDate}`}
+                              type="button"
+                              className="mini-action mini-action-soft"
+                              onClick={() => onSelectTrade(trade.id, trade.tradeDate)}
+                            >
+                              Open {formatLinkedTradeLabel(trade)}
+                            </button>
+                          ))}
+                          {onOpenJournalDate ? (
+                            <button
+                              type="button"
+                              className="mini-action mini-action-soft"
+                              onClick={() => onOpenJournalDate(entry.journalDate)}
+                            >
+                              Open Journal Day
+                            </button>
+                          ) : null}
+                          <a
+                            className="mini-action mini-action-soft"
+                            href={entry.screenshotUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Open Image
+                          </a>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="empty-state">
+                  No journal screenshots are tagged to this playbook yet. Tag screenshots in Journal and they will
+                  appear here.
+                </div>
+              )}
+            </article>
+          </div>
         ) : (
           <APlusExampleLibrary
             playbook={selectedPlaybook.playbook}
             matchedTrades={selectedPlaybook.trades}
+            taggedCharts={taggedCharts}
             onSelectTrade={onSelectTrade}
             onExpandImage={setExpandedScreenshotUrl}
             setPlaybooks={setPlaybooks}
@@ -527,9 +1541,17 @@ export const PlaybooksPage = ({
             </div>
             <div className="playbook-aside-stat-grid">
               <div className="playbook-aside-stat-tile">
+                <span>Status</span>
+                <strong>{selectedPlaybook.status}</strong>
+              </div>
+              <div className="playbook-aside-stat-tile">
+                <span>Confidence</span>
+                <strong>{selectedPlaybook.confidence}</strong>
+              </div>
+              <div className="playbook-aside-stat-tile">
                 <span>Wins / Losses</span>
                 <strong>
-                  {summary.winCount}W · {summary.lossCount}L
+                  {summary.winCount}W - {summary.lossCount}L
                 </strong>
               </div>
               <div className="playbook-aside-stat-tile">
@@ -798,10 +1820,10 @@ export const PlaybooksPage = ({
                       </span>
                     </div>
                     <span>
-                      {trade.symbol} · {trade.openTime} to {trade.closeTime}
+                      {trade.symbol} - {trade.openTime} to {trade.closeTime}
                     </span>
                     <span>
-                      {trade.side} · {trade.status}
+                      {trade.side} - {trade.status}
                     </span>
                   </button>
                 ))
@@ -847,3 +1869,4 @@ export const PlaybooksPage = ({
     </Shell>
   );
 };
+

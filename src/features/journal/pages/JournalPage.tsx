@@ -2,12 +2,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { JournalRichTextEditor } from "../components/JournalRichTextEditor";
 import { PageHero } from "../../../components/PageHero";
 import { PreviewTable } from "../../../components/PreviewTable";
+import { TagDrawer } from "../../../components/TagDrawer";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
+import { MPP_FORMULA_TOOLTIP, calculateMPPWindow } from "../../../lib/analytics/mppAnalytics";
 import { getDatabaseStats, getTradeSummary } from "../../../lib/analytics/tradeAnalytics";
 import type { JournalChecklistTemplates, NamedChecklistTemplate } from "../../../lib/journal/journalTemplateStore";
 import { getTickerIcon as getTickerIconSrc, getTickerSector } from "../../../lib/tickers/tickerIcons";
 import { useEditableSelectOptions } from "../../../lib/select/useEditableSelectOptions";
-import type { JournalContentField, JournalPageRecord } from "../../../types/journal";
+import { tradeTagOptionsByField as defaultTradeTagOptionsByField } from "../../../lib/trades/tradeTagCatalog";
+import type {
+  JournalContentField,
+  JournalPageRecord,
+  JournalScreenshotTagRecord,
+  JournalScreenshotTradeLink
+} from "../../../types/journal";
 import type { EditableTradeRow, EditableTradeTagField } from "../../../types/tradeTags";
 import { HeadlinesBar } from "../../headlines/components/HeadlinesBar";
 
@@ -37,6 +45,7 @@ interface JournalPageProps {
         | "afternoonMood"
         | "closeMood"
         | "screenshotUrls"
+        | "screenshotTags"
       >
     >
   ) => void;
@@ -54,10 +63,13 @@ interface JournalPageProps {
   onDeleteChecklistTemplate: (type: "morning" | "closing" | "mpp", templateId: string) => void;
   onUpdateTradeTag: (trade: EditableTradeRow, field: EditableTradeTagField, value: string | string[] | null) => void;
   onCreateTradeTagOption: (field: EditableTradeTagField, value: string) => void;
+  onRenameTradeTagOption: (field: EditableTradeTagField, currentValue: string, nextValue: string) => void;
+  onDeleteTradeTagOption: (field: EditableTradeTagField, value: string) => void;
+  onAttachScreenshotToTrade: (tradeId: string, screenshotUrl: string) => void;
 }
 
 const dayGradeOptions = ["", "A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-"];
-const sleepHourOptions = Array.from({ length: 11 }, (_, index) => (4 + index * 0.5).toString());
+const sleepHourOptions = ["", ...Array.from({ length: 11 }, (_, index) => (4 + index * 0.5).toString())];
 const sleepScoreOptions = ["", "1", "2", "3", "4", "5"];
 const ADD_OPTION_VALUE = "__add_option__";
 
@@ -96,6 +108,146 @@ const defaultMoodOptions = [
 
 const defaultMarketRegimeOptions = ["", "Trend", "Chop", "Range", "High Vol", "Low Vol", "News", "Earnings"];
 const screenshotColumnLabels = ["Open Chart", "Close Chart", "Context Chart"] as const;
+const TRADE_LINK_SEPARATOR = "::";
+const journalDateIconModules = import.meta.glob<string>("../../../assets/ui-icons/date-calendar/*.png", {
+  eager: true,
+  import: "default"
+});
+const journalDateIconsByFileName = Object.fromEntries(
+  Object.entries(journalDateIconModules).map(([path, iconSrc]) => [path.split("/").pop() ?? "", iconSrc])
+) as Record<string, string>;
+const journalDateIconFallback =
+  journalDateIconsByFileName["Daily-Calendar--Streamline-Core-Neon.png"] ??
+  journalDateIconsByFileName["Monthly-Calendar--Streamline-Core-Neon.png"] ??
+  "";
+
+const createDefaultScreenshotTag = (tradeDate: string): JournalScreenshotTagRecord => ({
+  linkedTrades: [],
+  linkedTradeId: "",
+  linkedTradeDate: "",
+  ticker: "",
+  playbook: "",
+  taggedDate: tradeDate
+});
+
+const dedupeScreenshotTradeLinks = (
+  links: JournalScreenshotTradeLink[]
+): JournalScreenshotTradeLink[] => {
+  const unique = new Map<string, JournalScreenshotTradeLink>();
+  for (const link of links) {
+    if (!link.tradeId || !link.tradeDate) {
+      continue;
+    }
+
+    unique.set(`${link.tradeId}${TRADE_LINK_SEPARATOR}${link.tradeDate}`, link);
+  }
+
+  return Array.from(unique.values());
+};
+
+const getScreenshotTradeLinks = (
+  screenshotTag: JournalScreenshotTagRecord
+): JournalScreenshotTradeLink[] => {
+  const normalizedLinkedTrades = Array.isArray(screenshotTag.linkedTrades)
+    ? screenshotTag.linkedTrades
+        .map((link) => ({
+          tradeId: typeof link.tradeId === "string" ? link.tradeId : "",
+          tradeDate: typeof link.tradeDate === "string" ? link.tradeDate : ""
+        }))
+        .filter((link) => link.tradeId && link.tradeDate)
+    : [];
+
+  const legacyLink =
+    screenshotTag.linkedTradeId && screenshotTag.linkedTradeDate
+      ? [
+          {
+            tradeId: screenshotTag.linkedTradeId,
+            tradeDate: screenshotTag.linkedTradeDate
+          }
+        ]
+      : [];
+
+  return dedupeScreenshotTradeLinks([...normalizedLinkedTrades, ...legacyLink]);
+};
+
+const normalizeScreenshotTag = (
+  screenshotTag: JournalScreenshotTagRecord
+): JournalScreenshotTagRecord => {
+  const linkedTrades = getScreenshotTradeLinks(screenshotTag);
+  const primaryLinkedTrade = linkedTrades[0] ?? null;
+
+  return {
+    ...screenshotTag,
+    linkedTrades,
+    linkedTradeId: primaryLinkedTrade?.tradeId ?? "",
+    linkedTradeDate: primaryLinkedTrade?.tradeDate ?? ""
+  };
+};
+
+const getAlignedScreenshotTags = (page: JournalPageRecord): JournalScreenshotTagRecord[] => {
+  const tags = Array.isArray(page.screenshotTags) ? page.screenshotTags : [];
+  return page.screenshotUrls.map(
+    (_, index) =>
+      normalizeScreenshotTag(tags[index] ?? createDefaultScreenshotTag(page.tradeDate))
+  );
+};
+
+const serializeTradeLink = (tradeId: string, tradeDate: string): string =>
+  tradeId && tradeDate ? `${tradeId}${TRADE_LINK_SEPARATOR}${tradeDate}` : "";
+
+const parseTradeLinkValue = (value: string): { tradeId: string; tradeDate: string } | null => {
+  if (!value) {
+    return null;
+  }
+
+  const separatorIndex = value.indexOf(TRADE_LINK_SEPARATOR);
+  if (separatorIndex <= 0) {
+    return null;
+  }
+
+  const tradeId = value.slice(0, separatorIndex);
+  const tradeDate = value.slice(separatorIndex + TRADE_LINK_SEPARATOR.length);
+  if (!tradeId || !tradeDate) {
+    return null;
+  }
+
+  return { tradeId, tradeDate };
+};
+
+const parseTradeLinkValues = (values: string[]): JournalScreenshotTradeLink[] =>
+  dedupeScreenshotTradeLinks(
+    values
+      .map((value) => parseTradeLinkValue(value))
+      .filter((value): value is JournalScreenshotTradeLink => value !== null)
+  );
+
+const buildScreenshotTagFromTradeLinks = (
+  currentTag: JournalScreenshotTagRecord,
+  nextLinks: JournalScreenshotTradeLink[],
+  tradeLookup: Map<string, EditableTradeRow>
+): JournalScreenshotTagRecord => {
+  const primaryLink = nextLinks[0] ?? null;
+  const matchedTrade = primaryLink
+    ? tradeLookup.get(serializeTradeLink(primaryLink.tradeId, primaryLink.tradeDate)) ?? null
+    : null;
+  const tickerFromTrades = Array.from(
+    new Set(
+      nextLinks
+        .map((link) => tradeLookup.get(serializeTradeLink(link.tradeId, link.tradeDate))?.symbol.trim() ?? "")
+        .filter(Boolean)
+    )
+  );
+
+  return {
+    ...currentTag,
+    linkedTrades: nextLinks,
+    linkedTradeId: primaryLink?.tradeId ?? "",
+    linkedTradeDate: primaryLink?.tradeDate ?? "",
+    ticker: tickerFromTrades.join(", "),
+    playbook: matchedTrade?.setups[0] ?? currentTag.playbook,
+    taggedDate: primaryLink?.tradeDate ?? currentTag.taggedDate
+  };
+};
 
 const getScreenshotSlotMeta = (index: number) => {
   const rowNumber = Math.floor(index / 3) + 1;
@@ -146,6 +298,16 @@ const getSortableTimestamp = (value: string) => {
 
 const formatSignedMoney = (value: number) => `${value >= 0 ? "+" : ""}$${value.toFixed(2)}`;
 
+const getJournalDateIcon = (tradeDate: string): string => {
+  const dayToken = tradeDate.trim().split("-")[2] ?? "";
+  const dayOfMonth = Number.parseInt(dayToken, 10);
+  if (Number.isNaN(dayOfMonth)) {
+    return journalDateIconFallback;
+  }
+
+  return journalDateIconsByFileName[`Date-${dayOfMonth}-Calendar--Streamline-Core-Neon.png`] ?? journalDateIconFallback;
+};
+
 const normalizeDateForInput = (value: string) => {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -190,6 +352,9 @@ const groupPagesByMonth = (pages: JournalPageRecord[]): Map<string, JournalPageR
   return grouped;
 };
 
+const getTagToneIndex = (value: string): number =>
+  value.split("").reduce((sum, character) => sum + character.charCodeAt(0), 0) % 6;
+
 export const JournalPage = ({
   pages,
   selectedPageId,
@@ -206,12 +371,18 @@ export const JournalPage = ({
   onUpdateChecklistTemplate,
   onDeleteChecklistTemplate,
   onUpdateTradeTag,
-  onCreateTradeTagOption
+  onCreateTradeTagOption,
+  onRenameTradeTagOption,
+  onDeleteTradeTagOption,
+  onAttachScreenshotToTrade
 }: JournalPageProps) => {
   const [draftTradeDate, setDraftTradeDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [visibleScreenshotRows, setVisibleScreenshotRows] = useState(1);
   const [expandedScreenshotUrl, setExpandedScreenshotUrl] = useState("");
   const [pendingScreenshotSlotIndex, setPendingScreenshotSlotIndex] = useState<number | null>(null);
+  const [openTradePickerIndex, setOpenTradePickerIndex] = useState<number | null>(null);
+  const [openPlaybookPickerIndex, setOpenPlaybookPickerIndex] = useState<number | null>(null);
+  const [playbookPickerSearchQuery, setPlaybookPickerSearchQuery] = useState("");
   const [selectedMorningTemplateId, setSelectedMorningTemplateId] = useState("");
   const [selectedClosingTemplateId, setSelectedClosingTemplateId] = useState("");
   const [selectedMppTemplateId, setSelectedMppTemplateId] = useState("");
@@ -232,6 +403,10 @@ export const JournalPage = ({
     () => pages.find((page) => page.id === selectedPageId) ?? pages[0] ?? null,
     [pages, selectedPageId]
   );
+  const selectedPageHeaderIcon = useMemo(
+    () => getJournalDateIcon(selectedPage?.tradeDate ?? ""),
+    [selectedPage?.tradeDate]
+  );
 
   const { options: moodOptions, addOption: addMoodOption } = useEditableSelectOptions(
     "journal.options.moods",
@@ -240,6 +415,14 @@ export const JournalPage = ({
   const { options: marketRegimeOptions, addOption: addMarketRegimeOption } = useEditableSelectOptions(
     "journal.options.marketRegimes",
     defaultMarketRegimeOptions
+  );
+  const nonEmptyMoodOptions = useMemo(
+    () => moodOptions.filter((option) => option.trim().length > 0),
+    [moodOptions]
+  );
+  const nonEmptyMarketRegimeOptions = useMemo(
+    () => marketRegimeOptions.filter((option) => option.trim().length > 0),
+    [marketRegimeOptions]
   );
 
   const handleAddableSelectChange = (
@@ -409,6 +592,30 @@ export const JournalPage = ({
 
   const linkedTradeSummary = useMemo(() => getTradeSummary(linkedTrades), [linkedTrades]);
   const linkedDatabaseStats = useMemo(() => getDatabaseStats(linkedTrades), [linkedTrades]);
+  const mppTradeDays = useMemo(
+    () =>
+      Array.from(
+        trades.reduce((byTradeDate, trade) => {
+          byTradeDate.set(trade.tradeDate, (byTradeDate.get(trade.tradeDate) ?? 0) + trade.netPnlUsd);
+          return byTradeDate;
+        }, new Map<string, number>())
+      )
+        .map(([tradeDate, netPnl]) => ({ tradeDate, netPnl }))
+        .sort((left, right) => left.tradeDate.localeCompare(right.tradeDate)),
+    [trades]
+  );
+  const selectedPageMPP = useMemo(
+    () =>
+      calculateMPPWindow(mppTradeDays, {
+        anchorTradeDate: selectedPage?.tradeDate ?? ""
+      }),
+    [mppTradeDays, selectedPage?.tradeDate]
+  );
+  const selectedPageMPPNote = selectedPageMPP.isPartialWindow
+    ? `Not enough days yet (${selectedPageMPP.formulaBreakdown.eligibleDayCount}/${selectedPageMPP.formulaBreakdown.windowSize})`
+    : `${selectedPageMPP.formulaBreakdown.excludedDaysRemoved} worst day${
+        selectedPageMPP.formulaBreakdown.excludedDaysRemoved === 1 ? "" : "s"
+      } removed`;
   const linkedTickerStats = useMemo(() => {
     const grouped = new Map<string, EditableTradeRow[]>();
 
@@ -467,6 +674,81 @@ export const JournalPage = ({
     const requiredSlots = Math.max(3, selectedPage?.screenshotUrls.length ?? 0);
     return Math.max(requiredSlots, visibleScreenshotRows * 3);
   }, [selectedPage?.screenshotUrls.length, visibleScreenshotRows]);
+  const journalScreenshotTags = useMemo(
+    () => (selectedPage ? getAlignedScreenshotTags(selectedPage) : []),
+    [selectedPage]
+  );
+  const screenshotTradeOptions = useMemo(
+    () =>
+      linkedTrades.map((trade) => ({
+        value: serializeTradeLink(trade.id, trade.tradeDate),
+        trade
+      })),
+    [linkedTrades]
+  );
+  const linkedTradeByLink = useMemo(
+    () =>
+      new Map(
+        linkedTrades.map((trade) => [serializeTradeLink(trade.id, trade.tradeDate), trade])
+      ),
+    [linkedTrades]
+  );
+  const screenshotPlaybookOptions = useMemo(() => {
+    const fromTrades = linkedTrades.flatMap((trade) =>
+      trade.setups
+        .map((setup) => setup.trim())
+        .filter((setup) => setup && setup !== "No Setup")
+    );
+    const fromTagOptions = tagOptionsByField.playbook ?? [];
+    return Array.from(new Set([...fromTrades, ...fromTagOptions])).sort((left, right) =>
+      left.localeCompare(right)
+    );
+  }, [linkedTrades, tagOptionsByField.playbook]);
+
+  useEffect(() => {
+    setOpenTradePickerIndex(null);
+    setOpenPlaybookPickerIndex(null);
+    setPlaybookPickerSearchQuery("");
+  }, [selectedPage?.id]);
+
+  useEffect(() => {
+    if (!selectedPage || openPlaybookPickerIndex === null) {
+      return;
+    }
+
+    if (openPlaybookPickerIndex >= selectedPage.screenshotUrls.length) {
+      setOpenPlaybookPickerIndex(null);
+      setPlaybookPickerSearchQuery("");
+    }
+  }, [openPlaybookPickerIndex, selectedPage]);
+
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+
+      if (target.closest(".journal-screenshot-trade-picker")) {
+        return;
+      }
+
+      setOpenTradePickerIndex(null);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, []);
+
+  const activePlaybookPickerTag = useMemo(() => {
+    if (!selectedPage || openPlaybookPickerIndex === null) {
+      return null;
+    }
+
+    return journalScreenshotTags[openPlaybookPickerIndex] ?? createDefaultScreenshotTag(selectedPage.tradeDate);
+  }, [journalScreenshotTags, openPlaybookPickerIndex, selectedPage]);
   const selectedMorningTemplate = useMemo(
     () =>
       checklistTemplates.morningTemplates.find((template) => template.id === selectedMorningTemplateId) ??
@@ -593,8 +875,54 @@ export const JournalPage = ({
     onDeleteChecklistTemplate(type, template.id);
   };
 
+  const updateSelectedPageScreenshots = (
+    screenshotUrls: string[],
+    screenshotTags: JournalScreenshotTagRecord[]
+  ) => {
+    if (!selectedPage) {
+      return;
+    }
+
+    onUpdatePage(selectedPage.id, {
+      screenshotUrls,
+      screenshotTags
+    });
+  };
+
+  const attachScreenshotIfLinked = (
+    screenshotUrl: string,
+    screenshotTag: JournalScreenshotTagRecord | undefined
+  ) => {
+    if (!screenshotTag || !screenshotUrl) {
+      return;
+    }
+
+    const tradeIds = Array.from(
+      new Set(getScreenshotTradeLinks(screenshotTag).map((link) => link.tradeId).filter(Boolean))
+    );
+    for (const tradeId of tradeIds) {
+      onAttachScreenshotToTrade(tradeId, screenshotUrl);
+    }
+  };
+
+  const handleScreenshotTagUpdate = (
+    screenshotIndex: number,
+    updater: (current: JournalScreenshotTagRecord) => JournalScreenshotTagRecord
+  ) => {
+    if (!selectedPage) {
+      return;
+    }
+
+    const nextTags = [...journalScreenshotTags];
+    const currentTag = nextTags[screenshotIndex] ?? createDefaultScreenshotTag(selectedPage.tradeDate);
+    nextTags[screenshotIndex] = normalizeScreenshotTag(updater(currentTag));
+
+    updateSelectedPageScreenshots(selectedPage.screenshotUrls, nextTags);
+    attachScreenshotIfLinked(selectedPage.screenshotUrls[screenshotIndex] ?? "", nextTags[screenshotIndex]);
+  };
+
   return (
-    <main className="page-shell">
+    <main className="page-shell journal-page-shell">
       <PageHero
         eyebrow="Journal"
         title="Trading Journal"
@@ -713,7 +1041,15 @@ export const JournalPage = ({
               <header className="journal-page-header">
                 <div className="journal-page-header-top">
                   <div className="journal-page-title-row">
-                    <WorkspaceIcon icon="journal" alt="Journal page icon" className="journal-page-header-icon" />
+                    {selectedPageHeaderIcon ? (
+                      <img
+                        src={selectedPageHeaderIcon}
+                        alt={`${formatJournalDate(selectedPage.tradeDate)} calendar icon`}
+                        className="journal-page-header-icon journal-page-header-icon-date"
+                      />
+                    ) : (
+                      <WorkspaceIcon icon="journal" alt="Journal page icon" className="journal-page-header-icon" />
+                    )}
                     <div>
                       <div className="journal-section-heading">Daily Journal</div>
                       <h2>{formatJournalDate(selectedPage.tradeDate)}</h2>
@@ -728,9 +1064,10 @@ export const JournalPage = ({
                             )
                           }
                         >
-                          {marketRegimeOptions.map((option) => (
-                            <option key={option || "empty"} value={option}>
-                              {option || "Select Regime"}
+                          <option value="">Select Regime</option>
+                          {nonEmptyMarketRegimeOptions.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
                             </option>
                           ))}
                           <option value={ADD_OPTION_VALUE}>Add…</option>
@@ -782,8 +1119,8 @@ export const JournalPage = ({
                         onChange={(event) => onUpdatePage(selectedPage.id, { sleepHours: event.target.value })}
                       >
                         {sleepHourOptions.map((option) => (
-                          <option key={option} value={option}>
-                            {option}
+                          <option key={option || "empty"} value={option}>
+                            {option || "Select Hours"}
                           </option>
                         ))}
                       </select>
@@ -816,16 +1153,16 @@ export const JournalPage = ({
                         ))}
                       </select>
                     </label>
-                    <label className="journal-header-stat-card">
-                      <span>MPP</span>
+                    <label className="journal-header-stat-card" title={MPP_FORMULA_TOOLTIP}>
+                      <span>{selectedPageMPP.isPartialWindow ? "MPP partial" : "MPP"}</span>
                       <input
-                        type="number"
-                        step="1"
+                        type="text"
                         className="journal-header-stat-input"
-                        value={selectedPage.mpp}
-                        onChange={(event) => onUpdatePage(selectedPage.id, { mpp: event.target.value })}
-                        placeholder="0"
+                        value={selectedPageMPP.currentMPP.toLocaleString()}
+                        aria-label="Calculated MPP value"
+                        readOnly
                       />
+                      <small className="journal-header-stat-note">{selectedPageMPPNote}</small>
                     </label>
                     <label className="journal-header-stat-card">
                       <span>Morning</span>
@@ -838,8 +1175,9 @@ export const JournalPage = ({
                           )
                         }
                       >
-                        {moodOptions.map((option) => (
-                          <option key={option || "empty"} value={option}>
+                        <option value="">Select Mood</option>
+                        {nonEmptyMoodOptions.map((option) => (
+                          <option key={option} value={option}>
                             {option}
                           </option>
                         ))}
@@ -857,8 +1195,9 @@ export const JournalPage = ({
                           )
                         }
                       >
-                        {moodOptions.map((option) => (
-                          <option key={option || "empty"} value={option}>
+                        <option value="">Select Mood</option>
+                        {nonEmptyMoodOptions.map((option) => (
+                          <option key={option} value={option}>
                             {option}
                           </option>
                         ))}
@@ -876,8 +1215,9 @@ export const JournalPage = ({
                           )
                         }
                       >
-                        {moodOptions.map((option) => (
-                          <option key={option || "empty"} value={option}>
+                        <option value="">Select Mood</option>
+                        {nonEmptyMoodOptions.map((option) => (
+                          <option key={option} value={option}>
                             {option}
                           </option>
                         ))}
@@ -895,8 +1235,9 @@ export const JournalPage = ({
                           )
                         }
                       >
-                        {moodOptions.map((option) => (
-                          <option key={option || "empty"} value={option}>
+                        <option value="">Select Mood</option>
+                        {nonEmptyMoodOptions.map((option) => (
+                          <option key={option} value={option}>
                             {option}
                           </option>
                         ))}
@@ -1076,86 +1417,97 @@ export const JournalPage = ({
                       <WorkspaceIcon icon="checklist" alt="Morning checklist icon" className="mini-action-icon" />
                       <strong>Morning Checklist</strong>
                     </div>
-                    <div className="journal-writing-header-actions">
-                      <select
-                        className="calendar-date-select"
-                        value={selectedMorningTemplate?.id ?? ""}
-                        onChange={(event) => setSelectedMorningTemplateId(event.target.value)}
-                      >
-                        {checklistTemplates.morningTemplates.map((template) => (
-                          <option key={template.id} value={template.id}>
-                            {template.name}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        className="mini-action mini-action-soft"
-                        onClick={() => {
-                          if (!selectedMorningTemplate) {
-                            return;
-                          }
+                    <div className="journal-writing-header-actions journal-template-disclosure-wrap">
+                      <details className="journal-template-disclosure">
+                        <summary className="mini-action mini-action-soft journal-template-disclosure-toggle">
+                          Manage Templates
+                        </summary>
+                        <div className="journal-writing-header-actions journal-template-toolbar">
+                          <div className="journal-template-toolbar-primary">
+                            <select
+                              className="calendar-date-select journal-template-select"
+                              value={selectedMorningTemplate?.id ?? ""}
+                              onChange={(event) => setSelectedMorningTemplateId(event.target.value)}
+                            >
+                              {checklistTemplates.morningTemplates.map((template) => (
+                                <option key={template.id} value={template.id}>
+                                  {template.name}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              className="mini-action mini-action-soft"
+                              onClick={() => {
+                                if (!selectedMorningTemplate) {
+                                  return;
+                                }
 
-                          onUpdateContent(
-                            selectedPage.id,
-                            "morningChecklistContent",
-                            selectedMorningTemplate.content
-                          );
-                        }}
-                      >
-                        Load Template
-                      </button>
-                      <button
-                        type="button"
-                        className="mini-action"
-                        disabled={!selectedMorningTemplate}
-                        onClick={() => {
-                          if (!selectedMorningTemplate) {
-                            return;
-                          }
+                                onUpdateContent(
+                                  selectedPage.id,
+                                  "morningChecklistContent",
+                                  selectedMorningTemplate.content
+                                );
+                              }}
+                            >
+                              Load Template
+                            </button>
+                          </div>
+                          <div className="journal-template-toolbar-secondary">
+                            <button
+                              type="button"
+                              className="mini-action"
+                              disabled={!selectedMorningTemplate}
+                              onClick={() => {
+                                if (!selectedMorningTemplate) {
+                                  return;
+                                }
 
-                          const confirmed = window.confirm(
-                            `Overwrite template "${selectedMorningTemplate.name}" with the current checklist?`
-                          );
-                          if (!confirmed) {
-                            return;
-                          }
+                                const confirmed = window.confirm(
+                                  `Overwrite template "${selectedMorningTemplate.name}" with the current checklist?`
+                                );
+                                if (!confirmed) {
+                                  return;
+                                }
 
-                          onUpdateChecklistTemplate(
-                            "morning",
-                            selectedMorningTemplate.id,
-                            selectedPage.morningChecklistContent
-                          );
-                        }}
-                      >
-                        Save
-                      </button>
-                      <button
-                        type="button"
-                        className="mini-action"
-                        onClick={() => {
-                          const templateName = promptForTemplateName("morning");
-                          if (!templateName) {
-                            return;
-                          }
+                                onUpdateChecklistTemplate(
+                                  "morning",
+                                  selectedMorningTemplate.id,
+                                  selectedPage.morningChecklistContent
+                                );
+                              }}
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              className="mini-action"
+                              onClick={() => {
+                                const templateName = promptForTemplateName("morning");
+                                if (!templateName) {
+                                  return;
+                                }
 
-                          onSaveChecklistTemplateAs(
-                            "morning",
-                            templateName,
-                            selectedPage.morningChecklistContent
-                          );
-                        }}
-                      >
-                        Save As
-                      </button>
-                      <button
-                        type="button"
-                        className="mini-action mini-action-danger"
-                        disabled={checklistTemplates.morningTemplates.length <= 1 || !selectedMorningTemplate}
-                        onClick={() => confirmDeleteTemplate("morning", selectedMorningTemplate)}
-                      >
-                        Delete Template
-                      </button>
+                                onSaveChecklistTemplateAs(
+                                  "morning",
+                                  templateName,
+                                  selectedPage.morningChecklistContent
+                                );
+                              }}
+                            >
+                              Save As
+                            </button>
+                            <button
+                              type="button"
+                              className="mini-action mini-action-danger"
+                              disabled={checklistTemplates.morningTemplates.length <= 1 || !selectedMorningTemplate}
+                              onClick={() => confirmDeleteTemplate("morning", selectedMorningTemplate)}
+                            >
+                              Delete Template
+                            </button>
+                          </div>
+                        </div>
+                      </details>
                     </div>
                   </div>
                     <JournalRichTextEditor
@@ -1164,8 +1516,10 @@ export const JournalPage = ({
                       onChange={(content) => onUpdateContent(selectedPage.id, "morningChecklistContent", content)}
                       onImageInsert={handleImageInsert}
                       placeholder="Type '/' for commands"
+                      appearance="notion"
                       taskListColumns={2}
                       compact
+                      autosize
                     />
                   </section>
 
@@ -1181,8 +1535,10 @@ export const JournalPage = ({
                       content={selectedPage.morningContent}
                       onChange={(content) => onUpdateContent(selectedPage.id, "morningContent", content)}
                       onImageInsert={handleImageInsert}
-                      placeholder="Type '/' for commands"
+                      placeholder=""
+                      appearance="notion"
                       compact
+                      autosize
                     />
                 </section>
               </section>
@@ -1200,86 +1556,97 @@ export const JournalPage = ({
                       <WorkspaceIcon icon="checklist" alt="Closing checklist icon" className="mini-action-icon" />
                       <strong>Closing Checklist</strong>
                     </div>
-                    <div className="journal-writing-header-actions">
-                      <select
-                        className="calendar-date-select"
-                        value={selectedClosingTemplate?.id ?? ""}
-                        onChange={(event) => setSelectedClosingTemplateId(event.target.value)}
-                      >
-                        {checklistTemplates.closingTemplates.map((template) => (
-                          <option key={template.id} value={template.id}>
-                            {template.name}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        className="mini-action mini-action-soft"
-                        onClick={() => {
-                          if (!selectedClosingTemplate) {
-                            return;
-                          }
+                    <div className="journal-writing-header-actions journal-template-disclosure-wrap">
+                      <details className="journal-template-disclosure">
+                        <summary className="mini-action mini-action-soft journal-template-disclosure-toggle">
+                          Manage Templates
+                        </summary>
+                        <div className="journal-writing-header-actions journal-template-toolbar">
+                          <div className="journal-template-toolbar-primary">
+                            <select
+                              className="calendar-date-select journal-template-select"
+                              value={selectedClosingTemplate?.id ?? ""}
+                              onChange={(event) => setSelectedClosingTemplateId(event.target.value)}
+                            >
+                              {checklistTemplates.closingTemplates.map((template) => (
+                                <option key={template.id} value={template.id}>
+                                  {template.name}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              className="mini-action mini-action-soft"
+                              onClick={() => {
+                                if (!selectedClosingTemplate) {
+                                  return;
+                                }
 
-                          onUpdateContent(
-                            selectedPage.id,
-                            "closingChecklistContent",
-                            selectedClosingTemplate.content
-                          );
-                        }}
-                      >
-                        Load Template
-                      </button>
-                      <button
-                        type="button"
-                        className="mini-action"
-                        disabled={!selectedClosingTemplate}
-                        onClick={() => {
-                          if (!selectedClosingTemplate) {
-                            return;
-                          }
+                                onUpdateContent(
+                                  selectedPage.id,
+                                  "closingChecklistContent",
+                                  selectedClosingTemplate.content
+                                );
+                              }}
+                            >
+                              Load Template
+                            </button>
+                          </div>
+                          <div className="journal-template-toolbar-secondary">
+                            <button
+                              type="button"
+                              className="mini-action"
+                              disabled={!selectedClosingTemplate}
+                              onClick={() => {
+                                if (!selectedClosingTemplate) {
+                                  return;
+                                }
 
-                          const confirmed = window.confirm(
-                            `Overwrite template "${selectedClosingTemplate.name}" with the current checklist?`
-                          );
-                          if (!confirmed) {
-                            return;
-                          }
+                                const confirmed = window.confirm(
+                                  `Overwrite template "${selectedClosingTemplate.name}" with the current checklist?`
+                                );
+                                if (!confirmed) {
+                                  return;
+                                }
 
-                          onUpdateChecklistTemplate(
-                            "closing",
-                            selectedClosingTemplate.id,
-                            selectedPage.closingChecklistContent
-                          );
-                        }}
-                      >
-                        Save
-                      </button>
-                      <button
-                        type="button"
-                        className="mini-action"
-                        onClick={() => {
-                          const templateName = promptForTemplateName("closing");
-                          if (!templateName) {
-                            return;
-                          }
+                                onUpdateChecklistTemplate(
+                                  "closing",
+                                  selectedClosingTemplate.id,
+                                  selectedPage.closingChecklistContent
+                                );
+                              }}
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              className="mini-action"
+                              onClick={() => {
+                                const templateName = promptForTemplateName("closing");
+                                if (!templateName) {
+                                  return;
+                                }
 
-                          onSaveChecklistTemplateAs(
-                            "closing",
-                            templateName,
-                            selectedPage.closingChecklistContent
-                          );
-                        }}
-                      >
-                        Save As
-                      </button>
-                      <button
-                        type="button"
-                        className="mini-action mini-action-danger"
-                        disabled={checklistTemplates.closingTemplates.length <= 1 || !selectedClosingTemplate}
-                        onClick={() => confirmDeleteTemplate("closing", selectedClosingTemplate)}
-                      >
-                        Delete Template
-                      </button>
+                                onSaveChecklistTemplateAs(
+                                  "closing",
+                                  templateName,
+                                  selectedPage.closingChecklistContent
+                                );
+                              }}
+                            >
+                              Save As
+                            </button>
+                            <button
+                              type="button"
+                              className="mini-action mini-action-danger"
+                              disabled={checklistTemplates.closingTemplates.length <= 1 || !selectedClosingTemplate}
+                              onClick={() => confirmDeleteTemplate("closing", selectedClosingTemplate)}
+                            >
+                              Delete Template
+                            </button>
+                          </div>
+                        </div>
+                      </details>
                     </div>
                   </div>
                     <JournalRichTextEditor
@@ -1288,8 +1655,10 @@ export const JournalPage = ({
                       onChange={(content) => onUpdateContent(selectedPage.id, "closingChecklistContent", content)}
                       onImageInsert={handleImageInsert}
                       placeholder="Type '/' for commands"
+                      appearance="notion"
                       taskListColumns={2}
                       compact
+                      autosize
                     />
                   </section>
 
@@ -1306,93 +1675,163 @@ export const JournalPage = ({
                       onChange={(content) => onUpdateContent(selectedPage.id, "closingContent", content)}
                       onImageInsert={handleImageInsert}
                       placeholder="Type '/' for commands"
+                      appearance="notion"
                       compact
+                      autosize
                     />
                 </section>
               </section>
 
-              <section className="journal-writing-section">
-                <div className="journal-writing-header">
-                  <div className="journal-writing-header-title">
-                    <WorkspaceIcon icon="plan" alt="MPP plan icon" className="mini-action-icon" />
-                    <strong>MPP Plan</strong>
+              <section className="journal-writing-split-grid">
+                <section className="journal-writing-section">
+                  <div className="journal-writing-header">
+                    <div className="journal-writing-header-title">
+                      <WorkspaceIcon icon="plan" alt="MPP plan icon" className="mini-action-icon" />
+                      <strong>MPP Plan</strong>
+                    </div>
+                    <div className="journal-writing-header-actions journal-template-disclosure-wrap">
+                      <details className="journal-template-disclosure">
+                        <summary className="mini-action mini-action-soft journal-template-disclosure-toggle">
+                          Manage Templates
+                        </summary>
+                        <div className="journal-writing-header-actions journal-template-toolbar">
+                          <div className="journal-template-toolbar-primary">
+                            <select
+                              className="calendar-date-select journal-template-select"
+                              value={selectedMppTemplate?.id ?? ""}
+                              onChange={(event) => setSelectedMppTemplateId(event.target.value)}
+                            >
+                              {checklistTemplates.mppTemplates.map((template) => (
+                                <option key={template.id} value={template.id}>
+                                  {template.name}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              className="mini-action mini-action-soft"
+                              onClick={() => {
+                                if (!selectedMppTemplate) {
+                                  return;
+                                }
+
+                                onUpdateContent(selectedPage.id, "mppPlanContent", selectedMppTemplate.content);
+                              }}
+                            >
+                              Load Template
+                            </button>
+                          </div>
+                          <div className="journal-template-toolbar-secondary">
+                            <button
+                              type="button"
+                              className="mini-action"
+                              disabled={!selectedMppTemplate}
+                              onClick={() => {
+                                if (!selectedMppTemplate) {
+                                  return;
+                                }
+
+                                const confirmed = window.confirm(
+                                  `Overwrite template "${selectedMppTemplate.name}" with the current plan?`
+                                );
+                                if (!confirmed) {
+                                  return;
+                                }
+
+                                onUpdateChecklistTemplate("mpp", selectedMppTemplate.id, selectedPage.mppPlanContent);
+                              }}
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              className="mini-action"
+                              onClick={() => {
+                                const templateName = promptForTemplateName("mpp");
+                                if (!templateName) {
+                                  return;
+                                }
+
+                                onSaveChecklistTemplateAs("mpp", templateName, selectedPage.mppPlanContent);
+                              }}
+                            >
+                              Save As
+                            </button>
+                            <button
+                              type="button"
+                              className="mini-action mini-action-danger"
+                              disabled={checklistTemplates.mppTemplates.length <= 1 || !selectedMppTemplate}
+                              onClick={() => confirmDeleteTemplate("mpp", selectedMppTemplate)}
+                            >
+                              Delete Template
+                            </button>
+                          </div>
+                        </div>
+                      </details>
+                    </div>
                   </div>
-                  <div className="journal-writing-header-actions">
-                    <select
-                      className="calendar-date-select"
-                      value={selectedMppTemplate?.id ?? ""}
-                      onChange={(event) => setSelectedMppTemplateId(event.target.value)}
-                    >
-                      {checklistTemplates.mppTemplates.map((template) => (
-                        <option key={template.id} value={template.id}>
-                          {template.name}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      className="mini-action mini-action-soft"
-                      onClick={() => {
-                        if (!selectedMppTemplate) {
-                          return;
-                        }
+                  <JournalRichTextEditor
+                    key={`${selectedPage.id}-mpp`}
+                    content={selectedPage.mppPlanContent}
+                    onChange={(content) => onUpdateContent(selectedPage.id, "mppPlanContent", content)}
+                    placeholder="Type '/' for commands"
+                    appearance="notion"
+                    autosize
+                  />
+                </section>
 
-                        onUpdateContent(selectedPage.id, "mppPlanContent", selectedMppTemplate.content);
-                      }}
-                    >
-                      Load Template
-                    </button>
-                    <button
-                      type="button"
-                      className="mini-action"
-                      disabled={!selectedMppTemplate}
-                      onClick={() => {
-                        if (!selectedMppTemplate) {
-                          return;
-                        }
-
-                        const confirmed = window.confirm(
-                          `Overwrite template "${selectedMppTemplate.name}" with the current plan?`
-                        );
-                        if (!confirmed) {
-                          return;
-                        }
-
-                        onUpdateChecklistTemplate("mpp", selectedMppTemplate.id, selectedPage.mppPlanContent);
-                      }}
-                    >
-                      Save
-                    </button>
-                    <button
-                      type="button"
-                      className="mini-action"
-                      onClick={() => {
-                        const templateName = promptForTemplateName("mpp");
-                        if (!templateName) {
-                          return;
-                        }
-
-                        onSaveChecklistTemplateAs("mpp", templateName, selectedPage.mppPlanContent);
-                      }}
-                    >
-                      Save As
-                    </button>
-                    <button
-                      type="button"
-                      className="mini-action mini-action-danger"
-                      disabled={checklistTemplates.mppTemplates.length <= 1 || !selectedMppTemplate}
-                      onClick={() => confirmDeleteTemplate("mpp", selectedMppTemplate)}
-                    >
-                      Delete Template
-                    </button>
+                <section className="journal-writing-section">
+                  <div className="journal-writing-header">
+                    <div className="journal-writing-header-title">
+                      <WorkspaceIcon icon="trades" alt="In play stocks icon" className="mini-action-icon" />
+                      <strong>In Play Stocks</strong>
+                    </div>
                   </div>
-                </div>
-                <JournalRichTextEditor
-                  key={`${selectedPage.id}-mpp`}
-                  content={selectedPage.mppPlanContent}
-                  onChange={(content) => onUpdateContent(selectedPage.id, "mppPlanContent", content)}
-                  placeholder="Type '/' for commands"
-                />
+                  <JournalRichTextEditor
+                    key={`${selectedPage.id}-in-play-stocks`}
+                    content={selectedPage.inPlayStocksContent}
+                    onChange={(content) => onUpdateContent(selectedPage.id, "inPlayStocksContent", content)}
+                    placeholder="Type '/' for commands"
+                    appearance="notion"
+                    autosize
+                  />
+                </section>
+              </section>
+
+              <section className="journal-writing-split-grid">
+                <section className="journal-writing-section">
+                  <div className="journal-writing-header">
+                    <div className="journal-writing-header-title">
+                      <WorkspaceIcon icon="journal" alt="Trader reach outs icon" className="mini-action-icon" />
+                      <strong>Trader Reach Outs</strong>
+                    </div>
+                  </div>
+                  <JournalRichTextEditor
+                    key={`${selectedPage.id}-trader-reach-outs`}
+                    content={selectedPage.traderReachOutsContent}
+                    onChange={(content) => onUpdateContent(selectedPage.id, "traderReachOutsContent", content)}
+                    placeholder="Type '/' for commands"
+                    appearance="notion"
+                    autosize
+                  />
+                </section>
+
+                <section className="journal-writing-section">
+                  <div className="journal-writing-header">
+                    <div className="journal-writing-header-title">
+                      <WorkspaceIcon icon="text" alt="Day notes icon" className="mini-action-icon" />
+                      <strong>Day Notes</strong>
+                    </div>
+                  </div>
+                  <JournalRichTextEditor
+                    key={`${selectedPage.id}-day-notes`}
+                    content={selectedPage.notesContent}
+                    onChange={(content) => onUpdateContent(selectedPage.id, "notesContent", content)}
+                    placeholder="Type '/' for commands"
+                    appearance="notion"
+                    autosize
+                  />
+                </section>
               </section>
 
                 <section className="journal-writing-section">
@@ -1420,15 +1859,29 @@ export const JournalPage = ({
 
                         void Promise.all(files.map((file) => readFileAsDataUrl(file)))
                           .then((dataUrls) => {
+                            const currentTags = getAlignedScreenshotTags(selectedPage);
                             if (pendingScreenshotSlotIndex !== null) {
                               const nextScreenshotUrls = [...selectedPage.screenshotUrls];
+                              const nextScreenshotTags = [...currentTags];
                               nextScreenshotUrls[pendingScreenshotSlotIndex] = dataUrls[0];
+                              nextScreenshotTags[pendingScreenshotSlotIndex] =
+                                nextScreenshotTags[pendingScreenshotSlotIndex] ??
+                                createDefaultScreenshotTag(selectedPage.tradeDate);
                               if (dataUrls.length > 1) {
                                 nextScreenshotUrls.splice(pendingScreenshotSlotIndex + 1, 0, ...dataUrls.slice(1));
+                                nextScreenshotTags.splice(
+                                  pendingScreenshotSlotIndex + 1,
+                                  0,
+                                  ...dataUrls.slice(1).map(() =>
+                                    createDefaultScreenshotTag(selectedPage.tradeDate)
+                                  )
+                                );
                               }
-                              onUpdatePage(selectedPage.id, {
-                                screenshotUrls: nextScreenshotUrls
-                              });
+                              updateSelectedPageScreenshots(nextScreenshotUrls, nextScreenshotTags);
+                              attachScreenshotIfLinked(
+                                dataUrls[0],
+                                nextScreenshotTags[pendingScreenshotSlotIndex]
+                              );
                               setVisibleScreenshotRows((current) =>
                                 Math.max(current, Math.ceil(Math.max(nextScreenshotUrls.length, 3) / 3))
                               );
@@ -1436,9 +1889,12 @@ export const JournalPage = ({
                               return;
                             }
 
-                            onUpdatePage(selectedPage.id, {
-                              screenshotUrls: [...selectedPage.screenshotUrls, ...dataUrls]
-                            });
+                            const nextScreenshotUrls = [...selectedPage.screenshotUrls, ...dataUrls];
+                            const nextScreenshotTags = [
+                              ...currentTags,
+                              ...dataUrls.map(() => createDefaultScreenshotTag(selectedPage.tradeDate))
+                            ];
+                            updateSelectedPageScreenshots(nextScreenshotUrls, nextScreenshotTags);
                           })
                           .catch(() => undefined);
 
@@ -1469,7 +1925,9 @@ export const JournalPage = ({
                       type="button"
                       className="mini-action"
                       disabled={selectedPage.screenshotUrls.length === 0}
-                      onClick={() => onUpdatePage(selectedPage.id, { screenshotUrls: [] })}
+                      onClick={() =>
+                        onUpdatePage(selectedPage.id, { screenshotUrls: [], screenshotTags: [] })
+                      }
                     >
                       <WorkspaceIcon icon="data" alt="Clear screenshots icon" className="mini-action-icon" />
                       Clear All
@@ -1513,46 +1971,254 @@ export const JournalPage = ({
                             className="journal-screenshot-preview-button"
                             onClick={() => setExpandedScreenshotUrl(screenshotUrl)}
                           >
-                          <img
-                            className="journal-screenshot-image"
-                            src={screenshotUrl}
-                            alt={`${formatJournalDate(selectedPage.tradeDate)} screenshot ${index + 1}`}
-                          />
-                        </button>
-                        <div className="journal-screenshot-actions">
-                          <button
-                            type="button"
-                            className="mini-action"
-                            onClick={() => {
-                              setPendingScreenshotSlotIndex(index);
-                              screenshotInputRef.current?.click();
-                            }}
-                          >
-                            Replace
+                            <img
+                              className="journal-screenshot-image"
+                              src={screenshotUrl}
+                              alt={`${formatJournalDate(selectedPage.tradeDate)} screenshot ${index + 1}`}
+                            />
                           </button>
-                          <a
-                            className="review-link"
-                            href={screenshotUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Open
-                          </a>
-                          <button
-                            type="button"
-                            className="mini-action mini-action-danger"
-                            onClick={() =>
-                              onUpdatePage(selectedPage.id, {
-                                screenshotUrls: selectedPage.screenshotUrls.filter((_, screenshotIndex) => screenshotIndex !== index)
-                              })
-                            }
-                          >
-                            Remove
-                          </button>
+                          {(() => {
+                            const screenshotTag =
+                              journalScreenshotTags[index] ??
+                              createDefaultScreenshotTag(selectedPage.tradeDate);
+                            const screenshotTradeLinks = getScreenshotTradeLinks(screenshotTag);
+                            const selectedTradeValues = screenshotTradeLinks.map((link) =>
+                              serializeTradeLink(link.tradeId, link.tradeDate)
+                            );
+                            const selectedTradeValueSet = new Set(selectedTradeValues);
+                            const resolvedLinkedTrades = screenshotTradeLinks
+                              .map((link) =>
+                                linkedTradeByLink.get(serializeTradeLink(link.tradeId, link.tradeDate)) ?? null
+                              )
+                              .filter((trade): trade is EditableTradeRow => trade !== null);
+                            const missingLinkedTradeCount = screenshotTradeLinks.length - resolvedLinkedTrades.length;
+                            const linkedTradeSummary = resolvedLinkedTrades
+                              .slice(0, 2)
+                              .map((trade) => `${trade.symbol} ${trade.name}`)
+                              .join(", ");
+                            const extraLinkedTradeCount = resolvedLinkedTrades.length - 2;
+                            const tradePickerSummary =
+                              resolvedLinkedTrades.length > 0
+                                ? `${resolvedLinkedTrades.length} trade${resolvedLinkedTrades.length === 1 ? "" : "s"} selected`
+                                : "Choose trades";
+                            const tickerPills =
+                              resolvedLinkedTrades.length > 0
+                                ? Array.from(
+                                    new Set(
+                                      resolvedLinkedTrades
+                                        .map((trade) => trade.symbol.trim().toUpperCase())
+                                        .filter(Boolean)
+                                    )
+                                  )
+                                : screenshotTag.ticker
+                                    .split(",")
+                                    .map((ticker) => ticker.trim().toUpperCase())
+                                    .filter(Boolean);
+
+                            return (
+                              <>
+                                <div className="journal-screenshot-tag-grid">
+                                  <div className="journal-screenshot-tag-field journal-screenshot-tag-field-wide">
+                                    <span>Attach Trades</span>
+                                    <details
+                                      className="journal-screenshot-trade-picker"
+                                      open={openTradePickerIndex === index}
+                                    >
+                                      <summary
+                                        className="journal-screenshot-trade-picker-summary"
+                                        onClick={(event) => {
+                                          event.preventDefault();
+                                          setOpenTradePickerIndex((current) => (current === index ? null : index));
+                                        }}
+                                      >
+                                        <span>{tradePickerSummary}</span>
+                                        <span className="journal-screenshot-trade-picker-caret" aria-hidden="true">
+                                          ▾
+                                        </span>
+                                      </summary>
+                                      <div className="journal-screenshot-trade-picker-controls">
+                                        <button
+                                          type="button"
+                                          className="mini-action mini-action-soft"
+                                          disabled={screenshotTradeOptions.length === 0}
+                                          onClick={() =>
+                                            handleScreenshotTagUpdate(index, (currentTag) =>
+                                              buildScreenshotTagFromTradeLinks(
+                                                currentTag,
+                                                parseTradeLinkValues(
+                                                  screenshotTradeOptions.map((option) => option.value)
+                                                ),
+                                                linkedTradeByLink
+                                              )
+                                            )
+                                          }
+                                        >
+                                          Select All
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="mini-action mini-action-soft"
+                                          disabled={selectedTradeValues.length === 0}
+                                          onClick={() =>
+                                            handleScreenshotTagUpdate(index, (currentTag) =>
+                                              buildScreenshotTagFromTradeLinks(currentTag, [], linkedTradeByLink)
+                                            )
+                                          }
+                                        >
+                                          Clear
+                                        </button>
+                                      </div>
+                                      {screenshotTradeOptions.length > 0 ? (
+                                        <div className="journal-screenshot-trade-picker-list">
+                                          {screenshotTradeOptions.map(({ value, trade }) => {
+                                            const isChecked = selectedTradeValueSet.has(value);
+                                            return (
+                                              <label
+                                                key={`${selectedPage.id}-${value}`}
+                                                className={`journal-screenshot-trade-option${isChecked ? " is-checked" : ""}`}
+                                              >
+                                                <input
+                                                  type="checkbox"
+                                                  checked={isChecked}
+                                                  onChange={() => {
+                                                    const nextValues = isChecked
+                                                      ? selectedTradeValues.filter((currentValue) => currentValue !== value)
+                                                      : [...selectedTradeValues, value];
+                                                    const nextLinks = parseTradeLinkValues(nextValues);
+                                                    handleScreenshotTagUpdate(index, (currentTag) =>
+                                                      buildScreenshotTagFromTradeLinks(currentTag, nextLinks, linkedTradeByLink)
+                                                    );
+                                                  }}
+                                                />
+                                                <span className="journal-screenshot-trade-option-main">
+                                                  <strong>{trade.symbol}</strong>
+                                                  <span>{trade.name}</span>
+                                                </span>
+                                                <span className="journal-screenshot-trade-option-meta">
+                                                  {formatSignedMoney(trade.netPnlUsd)}
+                                                </span>
+                                              </label>
+                                            );
+                                          })}
+                                        </div>
+                                      ) : (
+                                        <div className="empty-inline-state">
+                                          No trades found for this journal date.
+                                        </div>
+                                      )}
+                                    </details>
+                                  </div>
+                                  <div className="journal-screenshot-tag-field">
+                                    <span>Ticker</span>
+                                    <div className="journal-screenshot-ticker-pill-row">
+                                      {tickerPills.length > 0 ? (
+                                        tickerPills.map((ticker) => (
+                                          <span key={`${selectedPage.id}-${index}-ticker-${ticker}`} className="journal-screenshot-ticker-pill">
+                                            {ticker}
+                                          </span>
+                                        ))
+                                      ) : (
+                                        <span className="journal-screenshot-ticker-empty">No linked tickers</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="journal-screenshot-tag-field">
+                                    <span>Playbook</span>
+                                    <button
+                                      type="button"
+                                      className={`journal-screenshot-playbook-trigger${screenshotTag.playbook ? "" : " is-empty"}`}
+                                      onClick={() => {
+                                        setOpenPlaybookPickerIndex(index);
+                                        setPlaybookPickerSearchQuery("");
+                                        setOpenTradePickerIndex(null);
+                                      }}
+                                    >
+                                      {screenshotTag.playbook ? (
+                                        <span className={`tag-option-pill tag-option-pill-${getTagToneIndex(screenshotTag.playbook)}`}>
+                                          {screenshotTag.playbook}
+                                        </span>
+                                      ) : (
+                                        <span>Select playbook</span>
+                                      )}
+                                    </button>
+                                  </div>
+                                  <label className="journal-screenshot-tag-field">
+                                    <span>Tagged Date</span>
+                                    <input
+                                      type="date"
+                                      value={normalizeDateForInput(screenshotTag.taggedDate)}
+                                      onChange={(event) =>
+                                        handleScreenshotTagUpdate(index, (currentTag) => ({
+                                          ...currentTag,
+                                          taggedDate:
+                                            normalizeDateForInput(event.target.value) || selectedPage.tradeDate
+                                        }))
+                                      }
+                                    />
+                                  </label>
+                                </div>
+                                <div className="journal-screenshot-tag-actions">
+                                  <span className="journal-screenshot-link-status">
+                                    {resolvedLinkedTrades.length > 0
+                                      ? `Attached to ${linkedTradeSummary}${extraLinkedTradeCount > 0 ? ` (+${extraLinkedTradeCount} more)` : ""}${
+                                          missingLinkedTradeCount > 0 ? ` (${missingLinkedTradeCount} missing)` : ""
+                                        }`
+                                      : screenshotTradeLinks.length > 0
+                                        ? "Linked trades not found on this date."
+                                        : "Not attached to a trade yet."}
+                                  </span>
+                                  {resolvedLinkedTrades.slice(0, 3).map((trade) => (
+                                    <button
+                                      key={`${selectedPage.id}-${trade.id}-${trade.tradeDate}`}
+                                      type="button"
+                                      className="mini-action mini-action-soft"
+                                      onClick={() => onSelectTrade(trade.id, trade.tradeDate)}
+                                    >
+                                      Open {trade.symbol}
+                                    </button>
+                                  ))}
+                                </div>
+                              </>
+                            );
+                          })()}
+                          <div className="journal-screenshot-actions">
+                            <button
+                              type="button"
+                              className="mini-action"
+                              onClick={() => {
+                                setPendingScreenshotSlotIndex(index);
+                                screenshotInputRef.current?.click();
+                              }}
+                            >
+                              Replace
+                            </button>
+                            <a
+                              className="review-link"
+                              href={screenshotUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Open
+                            </a>
+                            <button
+                              type="button"
+                              className="mini-action mini-action-danger"
+                              onClick={() => {
+                                const nextScreenshotUrls = selectedPage.screenshotUrls.filter(
+                                  (_, screenshotIndex) => screenshotIndex !== index
+                                );
+                                const nextScreenshotTags = journalScreenshotTags.filter(
+                                  (_, screenshotIndex) => screenshotIndex !== index
+                                );
+                                updateSelectedPageScreenshots(nextScreenshotUrls, nextScreenshotTags);
+                              }}
+                            >
+                              Remove
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
                 </div>
               </section>
 
@@ -1583,6 +2249,8 @@ export const JournalPage = ({
                   }
                   onUpdateTradeTag={onUpdateTradeTag}
                   onCreateTradeTagOption={onCreateTradeTagOption}
+                  onRenameTradeTagOption={onRenameTradeTagOption}
+                  onDeleteTradeTagOption={onDeleteTradeTagOption}
                 />
               </section>
             </>
@@ -1641,6 +2309,71 @@ export const JournalPage = ({
           </div>
         </aside>
       </section>
+      {selectedPage && openPlaybookPickerIndex !== null && activePlaybookPickerTag ? (
+        <TagDrawer
+          isOpen
+          title={`Playbook - ${getScreenshotSlotMeta(openPlaybookPickerIndex).label} ${getScreenshotSlotMeta(openPlaybookPickerIndex).rowLabel}`}
+          options={screenshotPlaybookOptions}
+          currentValue={activePlaybookPickerTag.playbook}
+          allowClear
+          clearLabel="Clear Playbook"
+          searchValue={playbookPickerSearchQuery}
+          onSearchChange={setPlaybookPickerSearchQuery}
+          onSelect={(value) => {
+            const nextValue = typeof value === "string" ? value : "";
+            handleScreenshotTagUpdate(openPlaybookPickerIndex, (currentTag) => ({
+              ...currentTag,
+              playbook: nextValue
+            }));
+            setOpenPlaybookPickerIndex(null);
+            setPlaybookPickerSearchQuery("");
+          }}
+          onCreateOption={(value) => {
+            onCreateTradeTagOption("playbook", value);
+            handleScreenshotTagUpdate(openPlaybookPickerIndex, (currentTag) => ({
+              ...currentTag,
+              playbook: value
+            }));
+            setOpenPlaybookPickerIndex(null);
+            setPlaybookPickerSearchQuery("");
+          }}
+          onRenameOption={(currentValue, nextValue) => {
+            onRenameTradeTagOption("playbook", currentValue, nextValue);
+            handleScreenshotTagUpdate(openPlaybookPickerIndex, (currentTag) => {
+              if (currentTag.playbook.trim().toLowerCase() !== currentValue.trim().toLowerCase()) {
+                return currentTag;
+              }
+
+              return {
+                ...currentTag,
+                playbook: nextValue
+              };
+            });
+          }}
+          onDeleteOption={(value) => {
+            onDeleteTradeTagOption("playbook", value);
+            handleScreenshotTagUpdate(openPlaybookPickerIndex, (currentTag) => {
+              if (currentTag.playbook.trim().toLowerCase() !== value.trim().toLowerCase()) {
+                return currentTag;
+              }
+
+              return {
+                ...currentTag,
+                playbook: ""
+              };
+            });
+          }}
+          canManageOption={(value) =>
+            !defaultTradeTagOptionsByField.playbook.some(
+              (option) => option.toLowerCase() === value.toLowerCase()
+            )
+          }
+          onClose={() => {
+            setOpenPlaybookPickerIndex(null);
+            setPlaybookPickerSearchQuery("");
+          }}
+        />
+      ) : null}
       {expandedScreenshotUrl ? (
         <div
           className="journal-lightbox"
@@ -1669,3 +2402,4 @@ export const JournalPage = ({
     </main>
   );
 };
+

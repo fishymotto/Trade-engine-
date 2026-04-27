@@ -1,10 +1,12 @@
 import { useMemo, useState } from "react";
+import type { ReactNode } from "react";
 
 interface AnalyticsColumn<T> {
   key: string;
   label: string;
-  render: (row: T) => string | number;
+  render: (row: T) => ReactNode;
   align?: "left" | "right";
+  className?: string | ((row: T) => string | undefined);
   sortValue?: (row: T) => string | number | null | undefined;
 }
 
@@ -110,7 +112,15 @@ export const AnalyticsTable = <T,>({ columns, rows, emptyMessage }: AnalyticsTab
             sortedRows.map((row, index) => (
               <tr key={index}>
                 {columns.map((column) => (
-                  <td key={column.key} className={column.align === "right" ? "align-right" : ""}>
+                  <td
+                    key={column.key}
+                    className={[
+                      column.align === "right" ? "align-right" : "",
+                      typeof column.className === "function" ? (column.className(row) ?? "") : column.className ?? ""
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                  >
                     {column.render(row)}
                   </td>
                 ))}

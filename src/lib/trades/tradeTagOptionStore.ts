@@ -12,7 +12,7 @@ const normalizeTradeTagOptions = (value: unknown): TradeTagOptionsRecord => {
   const record = value as Partial<Record<EditableTradeTagField, unknown>>;
   const normalized: TradeTagOptionsRecord = {};
 
-  (["status", "mistake", "playbook", "game", "outTag", "execution"] as EditableTradeTagField[]).forEach(
+  (["status", "mistake", "playbook", "catalyst", "game", "outTag", "execution"] as EditableTradeTagField[]).forEach(
     (field) => {
       const fieldValue = record[field];
       if (!Array.isArray(fieldValue)) {

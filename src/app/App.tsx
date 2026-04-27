@@ -36,7 +36,10 @@ import {
 import { parseHistoricalBarsCsv } from "../lib/parser/historicalBarsParser";
 import { loadTradeSessions, mergeTradesIntoSessions, saveTradeSessions } from "../lib/sessions/tradeSessionStore";
 import { processTradeFile } from "../features/import/lib/tradePipeline";
-import { buildTradeTagOptionsByField, tradeTagFields } from "../lib/trades/tradeTagCatalog";
+import {
+  buildTradeTagOptionsByField,
+  tradeTagFields
+} from "../lib/trades/tradeTagCatalog";
 import { loadTradeTagOptions, saveTradeTagOptions } from "../lib/trades/tradeTagOptionStore";
 import { loadTradeTagOverrides, saveTradeTagOverrides } from "../lib/trades/tradeTagOverrideStore";
 import {
@@ -104,18 +107,21 @@ const buildJournalTemplate = (checklistTemplates: JournalChecklistTemplates) => 
   dayGrade: "",
   marketRegime: "",
   mpp: "",
-  sleepHours: "7.5",
+  sleepHours: "",
   sleepScore: "",
   morningMood: "",
   openMood: "",
   afternoonMood: "",
   closeMood: "",
   screenshotUrls: [],
+  screenshotTags: [],
   closingChecklistContent: getDefaultChecklistContent(checklistTemplates, "closing"),
   morningChecklistContent: getDefaultChecklistContent(checklistTemplates, "morning"),
   morningContent: createEmptyJournalDoc(),
   closingContent: createEmptyJournalDoc(),
   mppPlanContent: getDefaultChecklistContent(checklistTemplates, "mpp"),
+  inPlayStocksContent: createEmptyJournalDoc(),
+  traderReachOutsContent: createEmptyJournalDoc(),
   notesContent: createEmptyJournalDoc()
 });
 
@@ -125,6 +131,14 @@ const createExportFileName = (): string => {
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");
   return `notion_ready_${year}-${month}-${day}.csv`;
+};
+
+const toErrorMessage = (error: unknown, fallback: string): string => {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  return fallback;
 };
 
 const normalizeJournalTradeDate = (value: string) => {
@@ -143,6 +157,9 @@ const normalizeJournalTradeDate = (value: string) => {
 
   return parsed.toISOString().slice(0, 10);
 };
+
+const equalsOptionValue = (left: string, right: string): boolean =>
+  left.trim().toLowerCase() === right.trim().toLowerCase();
 
 const createJournalPageRecord = (
   tradeDate: string,
@@ -165,11 +182,14 @@ const createJournalPageRecord = (
     afternoonMood: templateContent.afternoonMood,
     closeMood: templateContent.closeMood,
     screenshotUrls: templateContent.screenshotUrls,
+    screenshotTags: templateContent.screenshotTags,
     closingChecklistContent: templateContent.closingChecklistContent,
     morningChecklistContent: templateContent.morningChecklistContent,
     morningContent: templateContent.morningContent,
     closingContent: templateContent.closingContent,
     mppPlanContent: templateContent.mppPlanContent,
+    inPlayStocksContent: templateContent.inPlayStocksContent,
+    traderReachOutsContent: templateContent.traderReachOutsContent,
     notesContent: templateContent.notesContent,
     morningBlocks: [],
     closingBlocks: [],
@@ -236,6 +256,7 @@ function App() {
   const [isCurrentImportSaved, setIsCurrentImportSaved] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("Load one PPro8 Trade Detail CSV file, then export the cleaned CSV.");
+  const [bootError, setBootError] = useState<string | null>(null);
 
   const hydrateWorkspaceFromStores = async () => {
     const loadedSettings = await loadSettings();
@@ -281,8 +302,10 @@ function App() {
 
     const boot = async () => {
       setSyncing(true);
+      let existingUser: User | null = null;
       try {
-        const existingUser = await authService.getCurrentUser();
+        setBootError(null);
+        existingUser = await authService.getCurrentUser();
         if (cancelled) {
           return;
         }
@@ -290,7 +313,7 @@ function App() {
         if (!existingUser) {
           setUserIdForSync(undefined);
           setUser(null);
-          setAuthChecked(true);
+          setBootError(null);
           return;
         }
 
@@ -305,9 +328,30 @@ function App() {
         }
 
         setUser(existingUser);
-        setAuthChecked(true);
+        setBootError(null);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+
+        const errorMessage = toErrorMessage(
+          error,
+          "Workspace failed to load. Restart the app and sign in again."
+        );
+        console.error("[app] Failed to bootstrap workspace.", error);
+        setBootError(errorMessage);
+        setMessage(errorMessage);
+
+        if (existingUser) {
+          setUser(existingUser);
+          return;
+        }
+
+        setUserIdForSync(undefined);
+        setUser(null);
       } finally {
         if (!cancelled) {
+          setAuthChecked(true);
           setSyncing(false);
         }
       }
@@ -500,6 +544,7 @@ function App() {
     try {
       await requestFlushDebouncedSaves();
       await authService.logout();
+      setBootError(null);
       setUserIdForSync(undefined);
       setUser(null);
       setMessage("Signed out. Sign in to open your private workspace.");
@@ -892,6 +937,7 @@ function App() {
         | "afternoonMood"
         | "closeMood"
         | "screenshotUrls"
+        | "screenshotTags"
       >
     >
   ) => {
@@ -1087,6 +1133,189 @@ function App() {
     setMessage(`Added "${value}" to the ${field} tag list.`);
   };
 
+  const renameTradeTagOption = (
+    field: EditableTradeTagField,
+    currentValue: string,
+    rawNextValue: string
+  ) => {
+    const sourceValue = currentValue.trim();
+    const nextValue = rawNextValue.trim();
+    if (!sourceValue || !nextValue || sourceValue === nextValue) {
+      return;
+    }
+    const isCaseOnlyRename = equalsOptionValue(sourceValue, nextValue);
+
+    const customOptionsForField = tradeTagOptions[field] ?? [];
+    if (!customOptionsForField.some((option) => equalsOptionValue(option, sourceValue))) {
+      setMessage(`Only custom ${field} options can be renamed here.`);
+      return;
+    }
+
+    if (
+      !isCaseOnlyRename &&
+      mergedTradeTagOptionsByField[field].some((option) => equalsOptionValue(option, nextValue))
+    ) {
+      setMessage(`"${nextValue}" already exists in the ${field} tag list.`);
+      return;
+    }
+
+    setTradeTagOptions((current) => {
+      const existing = current[field] ?? [];
+      const filtered = existing.filter((option) => !equalsOptionValue(option, sourceValue));
+      return {
+        ...current,
+        [field]: [...filtered, nextValue]
+      };
+    });
+
+    setTradeTagOverrides((current) =>
+      current.map((override) => {
+        const now = new Date().toISOString();
+
+        if (field === "mistake") {
+          let changed = false;
+          let nextMistakes = override.mistakes;
+          let nextMistake = override.mistake;
+
+          if (Array.isArray(override.mistakes)) {
+            const renamed = override.mistakes.map((value) =>
+              equalsOptionValue(value, sourceValue) ? nextValue : value
+            );
+            changed = renamed.some((value, index) => value !== override.mistakes?.[index]);
+            nextMistakes = renamed;
+          }
+
+          if (typeof override.mistake === "string" && equalsOptionValue(override.mistake, sourceValue)) {
+            nextMistake = nextValue;
+            changed = true;
+          }
+
+          return changed
+            ? {
+                ...override,
+                mistakes: nextMistakes,
+                mistake: nextMistake,
+                updatedAt: now
+              }
+            : override;
+        }
+
+        if (field === "catalyst") {
+          if (!Array.isArray(override.catalyst)) {
+            return override;
+          }
+
+          const renamed = override.catalyst.map((value) =>
+            equalsOptionValue(value, sourceValue) ? nextValue : value
+          );
+          const changed = renamed.some((value, index) => value !== override.catalyst?.[index]);
+          return changed
+            ? {
+                ...override,
+                catalyst: renamed,
+                updatedAt: now
+              }
+            : override;
+        }
+
+        const currentFieldValue = override[field];
+        if (typeof currentFieldValue === "string" && equalsOptionValue(currentFieldValue, sourceValue)) {
+          return {
+            ...override,
+            [field]: nextValue,
+            updatedAt: now
+          };
+        }
+
+        return override;
+      })
+    );
+
+    if (field === "playbook") {
+      const { playbooks, addedPlaybookIds } = ensurePlaybooksForNames(loadPlaybooks(), [nextValue]);
+      if (addedPlaybookIds.length > 0) {
+        savePlaybooks(playbooks);
+      }
+    }
+
+    setMessage(`Renamed "${sourceValue}" to "${nextValue}" in the ${field} tag list.`);
+  };
+
+  const deleteTradeTagOption = (field: EditableTradeTagField, rawValue: string) => {
+    const value = rawValue.trim();
+    if (!value) {
+      return;
+    }
+
+    const customOptionsForField = tradeTagOptions[field] ?? [];
+    if (!customOptionsForField.some((option) => equalsOptionValue(option, value))) {
+      setMessage(`Only custom ${field} options can be removed here.`);
+      return;
+    }
+
+    setTradeTagOptions((current) => ({
+      ...current,
+      [field]: (current[field] ?? []).filter((option) => !equalsOptionValue(option, value))
+    }));
+
+    setTradeTagOverrides((current) =>
+      current.map((override) => {
+        const now = new Date().toISOString();
+
+        if (field === "mistake") {
+          const nextMistakes = Array.isArray(override.mistakes)
+            ? override.mistakes.filter((option) => !equalsOptionValue(option, value))
+            : override.mistakes;
+          const mistakeCleared =
+            typeof override.mistake === "string" && equalsOptionValue(override.mistake, value) ? null : override.mistake;
+
+          const mistakesChanged =
+            Array.isArray(override.mistakes) &&
+            nextMistakes &&
+            nextMistakes.length !== override.mistakes.length;
+          const mistakeChanged = mistakeCleared !== override.mistake;
+
+          return mistakesChanged || mistakeChanged
+            ? {
+                ...override,
+                mistakes: nextMistakes,
+                mistake: mistakeCleared,
+                updatedAt: now
+              }
+            : override;
+        }
+
+        if (field === "catalyst") {
+          if (!Array.isArray(override.catalyst)) {
+            return override;
+          }
+
+          const nextCatalyst = override.catalyst.filter((option) => !equalsOptionValue(option, value));
+          return nextCatalyst.length !== override.catalyst.length
+            ? {
+                ...override,
+                catalyst: nextCatalyst,
+                updatedAt: now
+              }
+            : override;
+        }
+
+        const currentFieldValue = override[field];
+        if (typeof currentFieldValue === "string" && equalsOptionValue(currentFieldValue, value)) {
+          return {
+            ...override,
+            [field]: null,
+            updatedAt: now
+          };
+        }
+
+        return override;
+      })
+    );
+
+    setMessage(`Removed "${value}" from the ${field} tag list.`);
+  };
+
   const bulkUpdateTradeTags = (
     tradeIds: string[],
     field: EditableTradeTagField,
@@ -1189,6 +1418,8 @@ function App() {
               onUpdateTradeTag={updateTradeTag}
               onBulkUpdateTradeTags={bulkUpdateTradeTags}
               onCreateTradeTagOption={createTradeTagOption}
+              onRenameTradeTagOption={renameTradeTagOption}
+              onDeleteTradeTagOption={deleteTradeTagOption}
               onClearExternalSelectedTrade={() => setDashboardSelectedTradeId("")}
             />
         );
@@ -1223,12 +1454,18 @@ function App() {
               onDeleteChecklistTemplate={deleteJournalChecklistTemplate}
               onUpdateTradeTag={updateTradeTag}
               onCreateTradeTagOption={createTradeTagOption}
+              onRenameTradeTagOption={renameTradeTagOption}
+              onDeleteTradeTagOption={deleteTradeTagOption}
+              onAttachScreenshotToTrade={(tradeId, screenshotUrl) =>
+                updateTradeReview(tradeId, { screenshotUrl })
+              }
             />
           );
       case "library":
         return (
           <LibraryPage
             trades={allStoredTrades}
+            journalPages={journalPages}
             settings={settings}
             onSelectTrade={(tradeId, tradeDate) => {
               setDashboardTradeDateFilterStart(tradeDate);
@@ -1259,6 +1496,7 @@ function App() {
         return (
           <LibraryPage
             trades={allStoredTrades}
+            journalPages={journalPages}
             settings={settings}
             initialSection="playbooks"
             onSelectTrade={(tradeId, tradeDate) => {
@@ -1323,6 +1561,8 @@ function App() {
             tagOptionsByField={activeTradeTagOptionsByField}
             onUpdateTradeTag={updateTradeTag}
             onCreateTradeTagOption={createTradeTagOption}
+            onRenameTradeTagOption={renameTradeTagOption}
+            onDeleteTradeTagOption={deleteTradeTagOption}
           />
         );
       case "data":
@@ -1366,13 +1606,26 @@ function App() {
       ) : null}
       {authChecked && !syncing && !user ? (
         <AuthModal
+          externalError={bootError}
           onAuthenticated={async (authenticatedUser) => {
             setSyncing(true);
+            setBootError(null);
             try {
               await syncUserDataOnLogin(authenticatedUser.id);
               await hydrateWorkspaceFromStores();
               setUser(authenticatedUser);
+              setBootError(null);
+            } catch (error) {
+              const errorMessage = toErrorMessage(
+                error,
+                "Workspace failed to initialize after sign in. Restart the app and try again."
+              );
+              console.error("[app] Failed to initialize workspace after sign in.", error);
+              setBootError(errorMessage);
+              setMessage(errorMessage);
+              setUser(authenticatedUser);
             } finally {
+              setAuthChecked(true);
               setSyncing(false);
             }
           }}

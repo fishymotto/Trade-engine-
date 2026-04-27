@@ -2,10 +2,11 @@ import { useState } from 'react';
 import { authService, type AuthUser } from '../lib/auth';
 
 interface AuthModalProps {
-  onAuthenticated: (user: AuthUser) => void;
+  externalError?: string | null;
+  onAuthenticated: (user: AuthUser) => Promise<void> | void;
 }
 
-export const AuthModal = ({ onAuthenticated }: AuthModalProps) => {
+export const AuthModal = ({ externalError = null, onAuthenticated }: AuthModalProps) => {
   const [isSignup, setIsSignup] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -35,7 +36,7 @@ export const AuthModal = ({ onAuthenticated }: AuthModalProps) => {
           setSuccess(false);
         }, 2000);
       } else {
-        onAuthenticated(user);
+        await onAuthenticated(user);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed');
@@ -102,7 +103,7 @@ export const AuthModal = ({ onAuthenticated }: AuthModalProps) => {
             />
           </div>
 
-          {error && <div className="auth-error">{error}</div>}
+          {(error || externalError) && <div className="auth-error">{error || externalError}</div>}
 
           <button type="submit" disabled={loading} className="auth-submit">
             {loading ? 'Loading...' : isSignup ? 'Create Account' : 'Sign In'}

@@ -4,6 +4,7 @@ interface JournalSlashMenuProps {
   items: JournalSlashCommandItem[];
   query: string;
   activeIndex: number;
+  appearance?: "default" | "notion";
   onSelect: (item: JournalSlashCommandItem) => void;
   onHover: (index: number) => void;
 }
@@ -12,6 +13,7 @@ export const JournalSlashMenu = ({
   items,
   query,
   activeIndex,
+  appearance = "default",
   onSelect,
   onHover
 }: JournalSlashMenuProps) => {
@@ -20,7 +22,7 @@ export const JournalSlashMenu = ({
   }
 
   return (
-    <div className="journal-slash-menu">
+    <div className={`journal-slash-menu${appearance === "notion" ? " journal-slash-menu-notion" : ""}`}>
       <div className="journal-slash-menu-header">
         <strong>Insert block</strong>
         <span>{query ? `/${query}` : "/"}</span>

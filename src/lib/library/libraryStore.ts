@@ -9,14 +9,14 @@ import type {
 import { syncStores } from "../sync/syncStore";
 
 const SEED_VERSION_KEY = "trade-engine-library-seed-version";
-const CURRENT_SEED_VERSION = "notion-book-club-v6";
+const CURRENT_SEED_VERSION = "notion-book-club-v7";
 
 export const libraryCollections: LibraryCollectionDefinition[] = [
   {
     id: "idea-inbox",
     name: "Trading Notes",
-    description: "Quick captures, future app ideas, and loose trading thoughts before they have a home.",
-    accent: "Inbox"
+    description: "Organize trading ideas, market notes, mental-game notes, and book takeaways in one place.",
+    accent: "Notes"
   },
   {
     id: "book-club",
@@ -31,12 +31,6 @@ export const libraryCollections: LibraryCollectionDefinition[] = [
     accent: "Quotes"
   },
   {
-    id: "trading-notes",
-    name: "Book Club Notes",
-    description: "Long-form notes, lessons, mental game work, and observations that are bigger than one day.",
-    accent: "Notes"
-  },
-  {
     id: "weekly-review",
     name: "Weekly Review",
     description: "Weekly performance snapshots, shutdown-risk breach tracking, and reflection templates for planning the next week.",
@@ -47,18 +41,6 @@ export const libraryCollections: LibraryCollectionDefinition[] = [
     name: "Monthly Review",
     description: "Monthly versions of Weekly Review entries for bigger-picture reflection and planning.",
     accent: "Monthly"
-  },
-  {
-    id: "replay",
-    name: "Replay",
-    description: "Replay sessions, what you saw, what you missed, and what should be repeated.",
-    accent: "Review"
-  },
-  {
-    id: "signal-mapping",
-    name: "Signal Mapping",
-    description: "Mapped signals, triggers, context clues, and the conditions that make them worth acting on.",
-    accent: "Signals"
   },
   {
     id: "ticker-groups",
@@ -79,10 +61,19 @@ const TICKER_GROUP_PROPERTY_KEYS = {
   tickers: "Tickers"
 } as const;
 
-const normalizeCollectionId = (value: string): LibraryCollectionId =>
-  libraryCollections.some((collection) => collection.id === value)
-    ? (value as LibraryCollectionId)
+const LEGACY_COLLECTION_ID_MAP: Record<string, LibraryCollectionId> = {
+  "trading-notes": "idea-inbox",
+  replay: "idea-inbox",
+  "signal-mapping": "idea-inbox"
+};
+
+const normalizeCollectionId = (value: string): LibraryCollectionId => {
+  const normalizedValue = LEGACY_COLLECTION_ID_MAP[value] ?? value;
+
+  return libraryCollections.some((collection) => collection.id === normalizedValue)
+    ? (normalizedValue as LibraryCollectionId)
     : "idea-inbox";
+};
 
 const createStarterPage = (
   collectionId: LibraryCollectionId,
@@ -372,7 +363,7 @@ const notionSeedPages: LibraryPageRecord[] = [
   ),
   createSeedPage(
     "notion-mental-game-notes",
-    "trading-notes",
+    "idea-inbox",
     "The Mental Game of Trading Notes",
     ["mental-game", "book-notes", "notion-import"],
     "https://www.notion.so/The-Mental-Game-of-Trading-Notes-31cc45aecf4980fd9813f07c830c9c30",
@@ -536,7 +527,7 @@ const notionSeedPages: LibraryPageRecord[] = [
   ),
   createSeedPage(
     "notion-replay",
-    "replay",
+    "idea-inbox",
     "The Replay",
     ["replay", "mental-game", "notion-import"],
     "https://www.notion.so/The-Replay-32bc45aecf4980858ce4e889fb9e24dc",
@@ -608,7 +599,7 @@ const notionSeedPages: LibraryPageRecord[] = [
   ),
   createSeedPage(
     "notion-mapping-signals",
-    "signal-mapping",
+    "idea-inbox",
     "Mapping Your Signals",
     ["signals", "greed", "fear", "notion-import"],
     "https://www.notion.so/Mapping-Your-Signals-32bc45aecf498025aba8faf7ed10d0cb",
@@ -892,24 +883,18 @@ export const createDefaultLibraryPages = (): LibraryPageRecord[] => [
   createWorkspaceTemplatePage(
     "workspace-template-idea-inbox",
     "idea-inbox",
-    "Trading Notes Template",
-    "Add your notes here."
-  ),
-  createWorkspaceTemplatePage(
-    "workspace-template-trading-notes",
-    "trading-notes",
-    "Book Club Notes Template",
+    "Trading Note Template",
     "Add your notes here."
   ),
   createWorkspaceTemplatePage(
     "workspace-template-replay",
-    "replay",
+    "idea-inbox",
     "Replay Review Template",
     "Add your trade review here."
   ),
   createWorkspaceTemplatePage(
     "workspace-template-signal-mapping",
-    "signal-mapping",
+    "idea-inbox",
     "Signal Mapping Template",
     "Add your setup rules here."
   ),

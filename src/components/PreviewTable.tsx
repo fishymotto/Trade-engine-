@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { getTickerIcon, getTickerSector } from "../lib/tickers/tickerIcons";
-import { tradeTagFieldLabels } from "../lib/trades/tradeTagCatalog";
+import { tradeTagFieldLabels, tradeTagOptionsByField as defaultTradeTagOptionsByField } from "../lib/trades/tradeTagCatalog";
 import type { EditableTradeRow, EditableTradeTagField } from "../types/tradeTags";
 import { TagDrawer } from "./TagDrawer";
 
@@ -16,6 +16,8 @@ interface PreviewTableProps {
   enableTagEditing?: boolean;
   onUpdateTradeTag?: (trade: EditableTradeRow, field: EditableTradeTagField, value: string | string[] | null) => void;
   onCreateTradeTagOption?: (field: EditableTradeTagField, value: string) => void;
+  onRenameTradeTagOption?: (field: EditableTradeTagField, currentValue: string, nextValue: string) => void;
+  onDeleteTradeTagOption?: (field: EditableTradeTagField, value: string) => void;
   visibleColumnKeys?: PreviewSortKey[];
   emptyStateLabel?: string;
 }
@@ -200,6 +202,8 @@ export const PreviewTable = ({
   enableTagEditing = true,
   onUpdateTradeTag,
   onCreateTradeTagOption,
+  onRenameTradeTagOption,
+  onDeleteTradeTagOption,
   visibleColumnKeys,
   emptyStateLabel = "No trades match the current filters."
 }: PreviewTableProps) => {
@@ -212,6 +216,8 @@ export const PreviewTable = ({
   const toggleSelectAll = onToggleSelectAll ?? (() => undefined);
   const updateTradeTag = onUpdateTradeTag ?? (() => undefined);
   const createTradeTagOption = onCreateTradeTagOption ?? (() => undefined);
+  const renameTradeTagOption = onRenameTradeTagOption ?? (() => undefined);
+  const deleteTradeTagOption = onDeleteTradeTagOption ?? (() => undefined);
 
   const visibleColumns = useMemo(
     () => {
@@ -442,6 +448,17 @@ export const PreviewTable = ({
               setCellEditorSearchQuery("");
             }
           }}
+          onRenameOption={(currentValue, nextValue) => {
+            renameTradeTagOption(cellEditor.field, currentValue, nextValue);
+          }}
+          onDeleteOption={(value) => {
+            deleteTradeTagOption(cellEditor.field, value);
+          }}
+          canManageOption={(value) =>
+            !defaultTradeTagOptionsByField[cellEditor.field].some(
+              (option) => option.toLowerCase() === value.toLowerCase()
+            )
+          }
           onClose={() => {
             setCellEditor(null);
             setCellEditorSearchQuery("");
