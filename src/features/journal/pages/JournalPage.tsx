@@ -221,15 +221,44 @@ const parseTradeLinkValues = (values: string[]): JournalScreenshotTradeLink[] =>
       .filter((value): value is JournalScreenshotTradeLink => value !== null)
   );
 
+const collectPlaybooksFromTradeLinks = (
+  links: JournalScreenshotTradeLink[],
+  tradeLookup: Map<string, EditableTradeRow>
+): string[] => {
+  const playbooks: string[] = [];
+  const seen = new Set<string>();
+
+  for (const link of links) {
+    const trade = tradeLookup.get(serializeTradeLink(link.tradeId, link.tradeDate));
+    if (!trade) {
+      continue;
+    }
+
+    for (const setup of trade.setups) {
+      const playbook = setup.trim();
+      if (!playbook || playbook === "No Setup") {
+        continue;
+      }
+
+      const key = playbook.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      playbooks.push(playbook);
+    }
+  }
+
+  return playbooks;
+};
+
 const buildScreenshotTagFromTradeLinks = (
   currentTag: JournalScreenshotTagRecord,
   nextLinks: JournalScreenshotTradeLink[],
   tradeLookup: Map<string, EditableTradeRow>
 ): JournalScreenshotTagRecord => {
   const primaryLink = nextLinks[0] ?? null;
-  const matchedTrade = primaryLink
-    ? tradeLookup.get(serializeTradeLink(primaryLink.tradeId, primaryLink.tradeDate)) ?? null
-    : null;
   const tickerFromTrades = Array.from(
     new Set(
       nextLinks
@@ -237,6 +266,12 @@ const buildScreenshotTagFromTradeLinks = (
         .filter(Boolean)
     )
   );
+  const linkedPlaybooks = collectPlaybooksFromTradeLinks(nextLinks, tradeLookup);
+  const currentPlaybook = currentTag.playbook.trim();
+  const matchingPlaybook =
+    currentPlaybook.length > 0
+      ? linkedPlaybooks.find((playbook) => playbook.toLowerCase() === currentPlaybook.toLowerCase())
+      : undefined;
 
   return {
     ...currentTag,
@@ -244,7 +279,7 @@ const buildScreenshotTagFromTradeLinks = (
     linkedTradeId: primaryLink?.tradeId ?? "",
     linkedTradeDate: primaryLink?.tradeDate ?? "",
     ticker: tickerFromTrades.join(", "),
-    playbook: matchedTrade?.setups[0] ?? currentTag.playbook,
+    playbook: matchingPlaybook ?? linkedPlaybooks[0] ?? currentTag.playbook,
     taggedDate: primaryLink?.tradeDate ?? currentTag.taggedDate
   };
 };
@@ -379,6 +414,7 @@ export const JournalPage = ({
   const [draftTradeDate, setDraftTradeDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [visibleScreenshotRows, setVisibleScreenshotRows] = useState(1);
   const [expandedScreenshotUrl, setExpandedScreenshotUrl] = useState("");
+  const [isScreenshotZoomed, setIsScreenshotZoomed] = useState(false);
   const [pendingScreenshotSlotIndex, setPendingScreenshotSlotIndex] = useState<number | null>(null);
   const [openTradePickerIndex, setOpenTradePickerIndex] = useState<number | null>(null);
   const [openPlaybookPickerIndex, setOpenPlaybookPickerIndex] = useState<number | null>(null);
@@ -794,6 +830,12 @@ export const JournalPage = ({
     setExpandedScreenshotUrl("");
     setPendingScreenshotSlotIndex(null);
   }, [selectedPage?.id, selectedPage?.screenshotUrls.length]);
+
+  useEffect(() => {
+    if (!expandedScreenshotUrl) {
+      setIsScreenshotZoomed(false);
+    }
+  }, [expandedScreenshotUrl]);
 
   useEffect(() => {
     setSelectedJournalTradeIds([]);
@@ -2014,6 +2056,17 @@ export const JournalPage = ({
                                     .split(",")
                                     .map((ticker) => ticker.trim().toUpperCase())
                                     .filter(Boolean);
+                            const linkedPlaybookPills = collectPlaybooksFromTradeLinks(
+                              screenshotTradeLinks,
+                              linkedTradeByLink
+                            );
+                            const fallbackPlaybook = screenshotTag.playbook.trim();
+                            const playbookPills =
+                              linkedPlaybookPills.length > 0
+                                ? linkedPlaybookPills
+                                : fallbackPlaybook
+                                  ? [fallbackPlaybook]
+                                  : [];
 
                             return (
                               <>
@@ -2126,16 +2179,23 @@ export const JournalPage = ({
                                     <span>Playbook</span>
                                     <button
                                       type="button"
-                                      className={`journal-screenshot-playbook-trigger${screenshotTag.playbook ? "" : " is-empty"}`}
+                                      className={`journal-screenshot-playbook-trigger${playbookPills.length > 0 ? "" : " is-empty"}`}
                                       onClick={() => {
                                         setOpenPlaybookPickerIndex(index);
                                         setPlaybookPickerSearchQuery("");
                                         setOpenTradePickerIndex(null);
                                       }}
                                     >
-                                      {screenshotTag.playbook ? (
-                                        <span className={`tag-option-pill tag-option-pill-${getTagToneIndex(screenshotTag.playbook)}`}>
-                                          {screenshotTag.playbook}
+                                      {playbookPills.length > 0 ? (
+                                        <span className="journal-screenshot-playbook-pill-row">
+                                          {playbookPills.map((playbook) => (
+                                            <span
+                                              key={`${selectedPage.id}-${index}-playbook-${playbook.toLowerCase()}`}
+                                              className={`tag-option-pill tag-option-pill-${getTagToneIndex(playbook)}`}
+                                            >
+                                              {playbook}
+                                            </span>
+                                          ))}
                                         </span>
                                       ) : (
                                         <span>Select playbook</span>
@@ -2395,7 +2455,25 @@ export const JournalPage = ({
             >
               Close
             </button>
-            <img className="journal-lightbox-image" src={expandedScreenshotUrl} alt="Expanded journal screenshot" />
+            <span className="journal-lightbox-hint">
+              {isScreenshotZoomed ? "Click image to reset zoom." : "Click image to zoom in."}
+            </span>
+            <div className="journal-lightbox-image-frame">
+              <img
+                className={`journal-lightbox-image${isScreenshotZoomed ? " is-zoomed" : ""}`}
+                src={expandedScreenshotUrl}
+                alt="Expanded journal screenshot"
+                role="button"
+                tabIndex={0}
+                onClick={() => setIsScreenshotZoomed((current) => !current)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setIsScreenshotZoomed((current) => !current);
+                  }
+                }}
+              />
+            </div>
           </div>
         </div>
       ) : null}

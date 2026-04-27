@@ -60,6 +60,27 @@ const formatSignedPerShare = (value: number): string =>
 const getSignedValueClassName = (value: number): "positive-value" | "negative-value" =>
   value >= 0 ? "positive-value" : "negative-value";
 
+const parseSortableDate = (value: string): number | null => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const parsed = Date.parse(trimmed);
+  return Number.isNaN(parsed) ? null : parsed;
+};
+
+const compareDateStrings = (leftValue: string, rightValue: string): number => {
+  const leftParsed = parseSortableDate(leftValue);
+  const rightParsed = parseSortableDate(rightValue);
+  if (leftParsed !== null && rightParsed !== null && leftParsed !== rightParsed) {
+    return leftParsed - rightParsed;
+  }
+  if (leftValue !== rightValue) {
+    return leftValue.localeCompare(rightValue);
+  }
+  return 0;
+};
+
 const toComparableScreenshotPath = (value: string): string => {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -173,6 +194,9 @@ export const APlusExampleLibrary = ({
     "screenshot"
   );
   const [dismissedTradeIds, setDismissedTradeIds] = useState<string[]>([]);
+  const [exampleSearchQuery, setExampleSearchQuery] = useState("");
+  const [exampleDateSort, setExampleDateSort] = useState<"date-desc" | "date-asc">("date-desc");
+  const [relinkFeedbackByExampleId, setRelinkFeedbackByExampleId] = useState<Record<string, string>>({});
   const screenshotInputRef = useRef<HTMLInputElement | null>(null);
   const dismissedTradeIdSet = useMemo(() => new Set(dismissedTradeIds), [dismissedTradeIds]);
 
@@ -244,6 +268,46 @@ export const APlusExampleLibrary = ({
     () => eligibleTrades.filter((trade) => !existingTradeIds.has(trade.id)),
     [eligibleTrades, existingTradeIds]
   );
+
+  const visibleExamples = useMemo(() => {
+    const normalizedQuery = exampleSearchQuery.trim().toLowerCase();
+    const filtered = (playbook.aPlusExamples ?? []).filter((entry) => {
+      if (!normalizedQuery) {
+        return true;
+      }
+      const trade = tradeById.get(entry.tradeId);
+      const searchTokens = [
+        trade?.name ?? "",
+        trade?.symbol ?? "",
+        trade?.tradeDate ?? "",
+        entry.tradeDate,
+        entry.rating,
+        trade?.status ?? "",
+        trade?.side ?? "",
+        trade?.game ?? "",
+        ...(trade?.setups ?? [])
+      ];
+      return searchTokens.join(" ").toLowerCase().includes(normalizedQuery);
+    });
+
+    return filtered.sort((left, right) => {
+      const leftTrade = tradeById.get(left.tradeId);
+      const rightTrade = tradeById.get(right.tradeId);
+      const leftDate = leftTrade?.tradeDate || left.tradeDate || "";
+      const rightDate = rightTrade?.tradeDate || right.tradeDate || "";
+      const dateComparison = compareDateStrings(leftDate, rightDate);
+      if (dateComparison !== 0) {
+        return exampleDateSort === "date-asc" ? dateComparison : -dateComparison;
+      }
+
+      const updatedAtComparison = compareDateStrings(left.updatedAt, right.updatedAt);
+      if (updatedAtComparison !== 0) {
+        return exampleDateSort === "date-asc" ? updatedAtComparison : -updatedAtComparison;
+      }
+
+      return left.id.localeCompare(right.id);
+    });
+  }, [exampleDateSort, exampleSearchQuery, playbook.aPlusExamples, tradeById]);
 
   useEffect(() => {
     if (autoExampleScreenshotsByTrade.size === 0) {
@@ -559,6 +623,50 @@ export const APlusExampleLibrary = ({
     setPlaybooks((current) => removePlaybookAPlusExample(current, playbook.id, exampleId));
   };
 
+  const relinkExampleByDate = (entry: ExampleRecord) => {
+    const exactDateMatches = matchedTrades.filter((candidate) => candidate.tradeDate === entry.tradeDate);
+    if (exactDateMatches.length === 0) {
+      setRelinkFeedbackByExampleId((current) => ({
+        ...current,
+        [entry.id]: `No matching trade found for ${entry.tradeDate}.`
+      }));
+      return;
+    }
+
+    if (exactDateMatches.length > 1) {
+      setRelinkFeedbackByExampleId((current) => ({
+        ...current,
+        [entry.id]: `Found ${exactDateMatches.length} trades on ${entry.tradeDate}. Open Trades and relink manually.`
+      }));
+      return;
+    }
+
+    const candidate = exactDateMatches[0];
+    const isLinkedElsewhere = playbook.aPlusExamples.some(
+      (existing) => existing.id !== entry.id && existing.tradeId === candidate.id
+    );
+    if (isLinkedElsewhere) {
+      setRelinkFeedbackByExampleId((current) => ({
+        ...current,
+        [entry.id]: `Trade ${candidate.symbol} ${candidate.tradeDate} is already linked to another example.`
+      }));
+      return;
+    }
+
+    clearDismissedTradeId(candidate.id);
+    setPlaybooks((current) =>
+      updatePlaybookAPlusExample(current, playbook.id, entry.id, {
+        tradeId: candidate.id,
+        tradeDate: candidate.tradeDate,
+        rating: getSyncedExampleRating(candidate) ?? entry.rating
+      })
+    );
+    setRelinkFeedbackByExampleId((current) => ({
+      ...current,
+      [entry.id]: `Relinked to ${candidate.symbol} on ${candidate.tradeDate}.`
+    }));
+  };
+
   return (
     <div className="playbook-sections-column">
       <input
@@ -598,14 +706,53 @@ export const APlusExampleLibrary = ({
           Curate your best B+ and A game trades with screenshots, recordings, and notes. Tagged chart screenshots for
           B+ and A game trades are added here automatically.
         </span>
+        {playbook.aPlusExamples.length > 0 ? (
+          <div className="playbook-aplus-controls">
+            <div className="playbook-database-search-row">
+              <input
+                type="search"
+                className="playbook-search-input playbook-aplus-search-input"
+                value={exampleSearchQuery}
+                onChange={(event) => setExampleSearchQuery(event.target.value)}
+                placeholder="Search examples by trade, symbol, setup, rating, or date"
+                aria-label="Search A plus examples"
+              />
+              <label className="playbook-aplus-sort-field">
+                <span>Sort Date</span>
+                <select
+                  className="journal-header-select"
+                  value={exampleDateSort}
+                  onChange={(event) => setExampleDateSort(event.target.value as "date-desc" | "date-asc")}
+                  aria-label="Sort examples by date"
+                >
+                  <option value="date-desc">Newest first</option>
+                  <option value="date-asc">Oldest first</option>
+                </select>
+              </label>
+              {exampleSearchQuery.trim().length > 0 ? (
+                <button type="button" className="mini-action mini-action-soft" onClick={() => setExampleSearchQuery("")}>
+                  Clear
+                </button>
+              ) : null}
+            </div>
+            <span className="playbook-aplus-controls-meta">
+              Showing {visibleExamples.length} of {playbook.aPlusExamples.length} example
+              {playbook.aPlusExamples.length === 1 ? "" : "s"}
+            </span>
+          </div>
+        ) : null}
 
         <div className="playbook-aplus-entry-list">
           {playbook.aPlusExamples.length === 0 ? (
             <div className="empty-state">
               No examples yet. Add a tagged B+ or A game trade below to start building your A+ library.
             </div>
+          ) : visibleExamples.length === 0 ? (
+            <div className="empty-state">
+              No examples match the current search. Try a different symbol, setup, or date.
+            </div>
           ) : (
-            playbook.aPlusExamples.map((entry) => {
+            visibleExamples.map((entry) => {
               const trade = tradeById.get(entry.tradeId);
               const screenshotSrcs = entry.screenshotPaths.map((path) =>
                 path.startsWith("data:") ? path : resolvePlaybookAttachmentSrc(path)
@@ -627,6 +774,7 @@ export const APlusExampleLibrary = ({
                 : 0;
               const setupLabel =
                 trade?.setups.find((candidate) => candidate.trim().length > 0)?.trim() ?? playbook.name;
+              const headerDate = trade?.tradeDate || entry.tradeDate || "-";
               const priceEdgePerShare = trade
                 ? trade.side === "Long"
                   ? trade.exitPrice - trade.entryPrice
@@ -641,6 +789,15 @@ export const APlusExampleLibrary = ({
                       <span className="playbook-aplus-entry-subtitle">
                         {trade ? `${trade.symbol} - ${trade.tradeDate}` : `Trade date ${entry.tradeDate} - link missing`}
                       </span>
+                      <div className="playbook-aplus-entry-meta">
+                        <span className="playbook-meta-pill">Date {headerDate}</span>
+                        <span className="playbook-meta-pill">
+                          {trade ? `Setup ${setupLabel}` : "Awaiting relink"}
+                        </span>
+                        <span className="playbook-meta-pill">
+                          {trade ? `${trade.side} ${trade.status}` : "Link missing"}
+                        </span>
+                      </div>
                     </div>
                     <div className="playbook-aplus-entry-actions">
                       <label className="playbook-aplus-rating">
@@ -663,22 +820,32 @@ export const APlusExampleLibrary = ({
                           ))}
                         </select>
                       </label>
-                      {trade ? (
+                      <div className="playbook-aplus-entry-action-buttons">
+                        {trade ? (
+                          <button
+                            type="button"
+                            className="mini-action mini-action-soft"
+                            onClick={() => onSelectTrade(trade.id, trade.tradeDate)}
+                          >
+                            Open Trade
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="mini-action mini-action-soft"
+                            onClick={() => relinkExampleByDate(entry)}
+                          >
+                            Relink by Date
+                          </button>
+                        )}
                         <button
                           type="button"
-                          className="mini-action mini-action-soft"
-                          onClick={() => onSelectTrade(trade.id, trade.tradeDate)}
+                          className="mini-action mini-action-danger"
+                          onClick={() => removeExample(entry.id)}
                         >
-                          Open Trade
+                          Remove
                         </button>
-                      ) : null}
-                      <button
-                        type="button"
-                        className="mini-action mini-action-danger"
-                        onClick={() => removeExample(entry.id)}
-                      >
-                        Remove
-                      </button>
+                      </div>
                     </div>
                   </header>
 
@@ -709,7 +876,10 @@ export const APlusExampleLibrary = ({
                   </div>
 
                   <div className="playbook-aplus-highlight-grid">
-                    <section className="playbook-aplus-media-panel" aria-label="Example media">
+                    <section
+                      className={`playbook-aplus-media-panel${recordingSrc ? "" : " playbook-aplus-media-panel-single"}`}
+                      aria-label="Example media"
+                    >
                       {screenshotSrcs.length > 0 ? (
                         <div className="playbook-aplus-screenshot-grid">
                           {screenshotSrcs.map((src, index) => (
@@ -858,6 +1028,9 @@ export const APlusExampleLibrary = ({
                           <p className="playbook-aplus-missing-copy">
                             This example is still saved, but its original trade record is no longer in the library.
                           </p>
+                          {relinkFeedbackByExampleId[entry.id] ? (
+                            <p className="playbook-aplus-relink-feedback">{relinkFeedbackByExampleId[entry.id]}</p>
+                          ) : null}
                         </>
                       )}
                     </section>

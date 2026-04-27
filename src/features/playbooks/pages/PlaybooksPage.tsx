@@ -494,6 +494,7 @@ export const PlaybooksPage = ({
   const [activePlaybookPage, setActivePlaybookPage] = useState<PlaybookDetailPage>("playbook");
   const [visibleScreenshotRows, setVisibleScreenshotRows] = useState(1);
   const [expandedScreenshotUrl, setExpandedScreenshotUrl] = useState("");
+  const [isScreenshotZoomed, setIsScreenshotZoomed] = useState(false);
   const [pendingScreenshotSlotIndex, setPendingScreenshotSlotIndex] = useState<number | null>(null);
   const screenshotInputRef = useRef<HTMLInputElement | null>(null);
   const skipNextSaveRef = useRef(true);
@@ -948,6 +949,12 @@ export const PlaybooksPage = ({
     setExpandedScreenshotUrl("");
     setPendingScreenshotSlotIndex(null);
   }, [selectedPlaybook?.playbook.id, selectedPlaybook?.playbook.screenshotUrls.length]);
+
+  useEffect(() => {
+    if (!expandedScreenshotUrl) {
+      setIsScreenshotZoomed(false);
+    }
+  }, [expandedScreenshotUrl]);
 
   useEffect(() => {
     if (!selectedPlaybook?.playbook.id) {
@@ -1858,11 +1865,25 @@ export const PlaybooksPage = ({
             >
               Close
             </button>
-            <img
-              className="journal-lightbox-image"
-              src={expandedScreenshotUrl}
-              alt="Expanded playbook screenshot"
-            />
+            <span className="journal-lightbox-hint">
+              {isScreenshotZoomed ? "Click image to reset zoom." : "Click image to zoom in."}
+            </span>
+            <div className="journal-lightbox-image-frame">
+              <img
+                className={`journal-lightbox-image${isScreenshotZoomed ? " is-zoomed" : ""}`}
+                src={expandedScreenshotUrl}
+                alt="Expanded playbook screenshot"
+                role="button"
+                tabIndex={0}
+                onClick={() => setIsScreenshotZoomed((current) => !current)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setIsScreenshotZoomed((current) => !current);
+                  }
+                }}
+              />
+            </div>
           </div>
         </div>
       ) : null}

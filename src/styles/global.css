@@ -5865,8 +5865,9 @@ body {
   text-align: left;
   cursor: pointer;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
+  padding: 6px 10px;
 }
 
 .journal-screenshot-playbook-trigger:hover {
@@ -5882,6 +5883,13 @@ body {
 
 .journal-screenshot-playbook-trigger.is-empty {
   color: var(--text-muted);
+}
+
+.journal-screenshot-playbook-pill-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .journal-screenshot-tag-field select[multiple] {
@@ -6033,13 +6041,43 @@ body {
   justify-items: end;
 }
 
+.journal-lightbox-hint {
+  font-size: 0.78rem;
+  color: var(--text-soft);
+}
+
+.journal-lightbox-image-frame {
+  width: 100%;
+  max-height: calc(100vh - 120px);
+  overflow: auto;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(3, 5, 8, 0.96);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
 .journal-lightbox-image {
   width: 100%;
   max-height: calc(100vh - 120px);
   object-fit: contain;
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(3, 5, 8, 0.96);
+  display: block;
+  cursor: zoom-in;
+  transition: width 0.16s ease, max-height 0.16s ease;
+}
+
+.journal-lightbox-image:focus-visible {
+  outline: 2px solid rgba(123, 187, 255, 0.95);
+  outline-offset: -4px;
+}
+
+.journal-lightbox-image.is-zoomed {
+  width: 180%;
+  max-width: none;
+  max-height: none;
+  object-fit: unset;
+  cursor: zoom-out;
 }
 
 .journal-rich-editor-status {
@@ -7798,6 +7836,39 @@ body {
   padding: 22px;
 }
 
+.playbook-aplus-controls {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(93, 168, 255, 0.18);
+  background:
+    linear-gradient(180deg, rgba(93, 168, 255, 0.08), rgba(93, 168, 255, 0.02)),
+    rgba(7, 10, 14, 0.58);
+}
+
+.playbook-aplus-search-input {
+  flex: 1 1 360px;
+}
+
+.playbook-aplus-sort-field {
+  display: grid;
+  gap: 4px;
+}
+
+.playbook-aplus-sort-field span {
+  color: var(--text-soft);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.playbook-aplus-controls-meta {
+  color: var(--text-soft);
+  font-size: 0.84rem;
+}
+
 .playbook-aplus-entry-list,
 .playbook-aplus-eligible-list {
   display: grid;
@@ -7815,11 +7886,10 @@ body {
 }
 
 .playbook-aplus-entry-header {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto;
   align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 12px 18px;
 }
 
 .playbook-aplus-entry-title {
@@ -7837,10 +7907,33 @@ body {
   font-size: 0.9rem;
 }
 
-.playbook-aplus-entry-actions {
+.playbook-aplus-entry-meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  gap: 6px;
+}
+
+.playbook-aplus-entry-meta .playbook-meta-pill {
+  min-height: 24px;
+  max-width: 240px;
+  padding: 1px 7px;
+  font-size: 0.66rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.playbook-aplus-entry-actions {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.playbook-aplus-entry-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 10px;
 }
 
@@ -7871,7 +7964,7 @@ body {
 
 .playbook-aplus-highlight-grid {
   display: grid;
-  grid-template-columns: minmax(320px, 1.05fr) minmax(320px, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   align-items: stretch;
 }
@@ -7882,12 +7975,18 @@ body {
 
 .playbook-aplus-media-panel {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   gap: 12px;
   padding: 12px;
   border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.02);
   min-height: 300px;
+}
+
+.playbook-aplus-media-panel-single {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .playbook-aplus-screenshot-grid {
@@ -7952,11 +8051,21 @@ body {
 .playbook-aplus-recording {
   display: grid;
   gap: 10px;
+  align-items: start;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.18);
+  padding: 12px;
+  min-height: 0;
 }
 
 .playbook-aplus-recording-player {
   width: 100%;
-  border-radius: 16px;
+  aspect-ratio: 16 / 9;
+  min-height: clamp(240px, 26vw, 360px);
+  max-height: clamp(240px, 26vw, 360px);
+  object-fit: contain;
+  border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(0, 0, 0, 0.2);
 }
@@ -8034,6 +8143,12 @@ body {
   line-height: 1.5;
 }
 
+.playbook-aplus-relink-feedback {
+  margin: 2px 0 0;
+  color: #b8cdef;
+  font-size: 0.84rem;
+}
+
 .playbook-aplus-stat-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -8063,21 +8178,40 @@ body {
 }
 
 @media (max-width: 1300px) {
-  .playbook-aplus-highlight-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .playbook-aplus-screenshot-button,
   .playbook-aplus-screenshot-image,
-  .playbook-aplus-media-empty {
+  .playbook-aplus-media-empty,
+  .playbook-aplus-recording-player {
     height: clamp(240px, 34vw, 380px);
+    max-height: clamp(240px, 34vw, 380px);
+    min-height: clamp(240px, 34vw, 380px);
   }
 }
 
 @media (max-width: 900px) {
+  .playbook-aplus-entry-header {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .playbook-aplus-entry-actions {
+    justify-items: start;
+  }
+
+  .playbook-aplus-entry-action-buttons {
+    justify-content: flex-start;
+  }
+
   .playbook-aplus-meta-grid,
   .playbook-aplus-stat-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .playbook-aplus-media-panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .playbook-aplus-recording {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
