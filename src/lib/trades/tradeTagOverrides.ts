@@ -8,6 +8,21 @@ import type {
 const hasOwn = <T extends object>(value: T, key: keyof T): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
 
+const normalizeStringList = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+      .filter(Boolean);
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : [];
+  }
+
+  return [];
+};
+
 export const getTradeOverrideKey = (trade: Pick<GroupedTrade, "tradeDate" | "symbol" | "openTime" | "closeTime">): string =>
   `${trade.tradeDate}__${trade.symbol}__${trade.openTime}__${trade.closeTime}`;
 
@@ -50,7 +65,7 @@ export const applyTradeTagOverrides = (
     }
 
     if (hasOwn(override, "mistakes")) {
-      nextTrade.mistakes = override.mistakes ?? [];
+      nextTrade.mistakes = normalizeStringList(override.mistakes);
     } else if (hasOwn(override, "mistake")) {
       nextTrade.mistakes = override.mistake ? [override.mistake] : [];
     }
@@ -60,7 +75,7 @@ export const applyTradeTagOverrides = (
     }
 
     if (hasOwn(override, "catalyst")) {
-      nextTrade.catalyst = override.catalyst ?? [];
+      nextTrade.catalyst = normalizeStringList(override.catalyst);
     }
 
     if (hasOwn(override, "game")) {
@@ -68,11 +83,11 @@ export const applyTradeTagOverrides = (
     }
 
     if (hasOwn(override, "outTag")) {
-      nextTrade.outTag = override.outTag ? [override.outTag] : [];
+      nextTrade.outTag = normalizeStringList(override.outTag);
     }
 
     if (hasOwn(override, "execution")) {
-      nextTrade.execution = override.execution ? [override.execution] : [];
+      nextTrade.execution = normalizeStringList(override.execution);
     }
 
     return nextTrade;

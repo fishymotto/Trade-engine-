@@ -21,6 +21,11 @@ import {
   testNotionConnection
 } from "../features/notion/lib/notionClient";
 import { loadTradeReviews, saveTradeReviews } from "../lib/reviews/tradeReviewStore";
+import {
+  loadEmbeddedJournalPagesSeed,
+  loadEmbeddedTradeSessionsSeed,
+  loadEmbeddedTradeTagOverridesSeed
+} from "../lib/recovery/embeddedRecoverySeed";
 import { ensurePlaybooksForNames, loadPlaybooks, savePlaybooks } from "../lib/playbooks/playbookStore";
 import {
   buildBarSetKey,
@@ -55,7 +60,12 @@ import { requestFlushDebouncedSaves } from "../lib/sync/pendingSaveFlush";
 import { retryDirtyUserData, setUserIdForSync, syncUserDataOnLogin } from "../lib/sync/userDataSync";
 import type { AppNavItem, AppRoute } from "../types/app";
 import type { ChartInterval, HistoricalBarSet } from "../types/chart";
-import type { JournalContentField, JournalPageRecord } from "../types/journal";
+import type {
+  JournalContentField,
+  JournalPageRecord,
+  JournalScreenshotTagRecord,
+  JournalScreenshotTradeLink
+} from "../types/journal";
 import type { TradeReviewRecord } from "../types/review";
 import type { TradeSessionRecord } from "../types/session";
 import type { GroupedTrade, Settings } from "../types/trade";
@@ -158,6 +168,101 @@ const normalizeJournalTradeDate = (value: string) => {
   return parsed.toISOString().slice(0, 10);
 };
 
+const parseTimestamp = (value: string): number => {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const collectScreenshotLinks = (
+  screenshotTag: JournalScreenshotTagRecord | undefined
+): JournalScreenshotTradeLink[] => {
+  if (!screenshotTag) {
+    return [];
+  }
+
+  const fromLinkedTrades = Array.isArray(screenshotTag.linkedTrades)
+    ? screenshotTag.linkedTrades.filter(
+        (link) =>
+          Boolean(link) &&
+          typeof link.tradeId === "string" &&
+          link.tradeId.trim().length > 0 &&
+          typeof link.tradeDate === "string" &&
+          link.tradeDate.trim().length > 0
+      )
+    : [];
+
+  const legacyLink =
+    screenshotTag.linkedTradeId?.trim() && screenshotTag.linkedTradeDate?.trim()
+      ? [
+          {
+            tradeId: screenshotTag.linkedTradeId.trim(),
+            tradeDate: screenshotTag.linkedTradeDate.trim()
+          }
+        ]
+      : [];
+
+  const deduped = new Map<string, JournalScreenshotTradeLink>();
+  for (const link of [...fromLinkedTrades, ...legacyLink]) {
+    deduped.set(`${link.tradeId}::${link.tradeDate}`, link);
+  }
+
+  return Array.from(deduped.values());
+};
+
+const recoverReviewScreenshotsFromJournalPages = (
+  pages: JournalPageRecord[]
+): Map<string, { screenshotUrl: string; updatedAt: string }> => {
+  const recovered = new Map<string, { screenshotUrl: string; updatedAt: string }>();
+
+  for (const page of pages) {
+    for (const [index, screenshotUrl] of page.screenshotUrls.entries()) {
+      if (!screenshotUrl || typeof screenshotUrl !== "string") {
+        continue;
+      }
+
+      const links = collectScreenshotLinks(page.screenshotTags[index]);
+      if (links.length === 0) {
+        continue;
+      }
+
+      for (const link of links) {
+        const current = recovered.get(link.tradeId);
+        if (!current || parseTimestamp(page.updatedAt) >= parseTimestamp(current.updatedAt)) {
+          recovered.set(link.tradeId, {
+            screenshotUrl,
+            updatedAt: page.updatedAt
+          });
+        }
+      }
+    }
+  }
+
+  return recovered;
+};
+
+const createJournalScreenshotTag = (tradeDate: string): JournalScreenshotTagRecord => ({
+  linkedTrades: [],
+  linkedTradeId: "",
+  linkedTradeDate: "",
+  ticker: "",
+  playbook: "",
+  taggedDate: tradeDate
+});
+
+const parseTradeContextFromTradeId = (
+  tradeId: string
+): { tradeDate: string; symbol: string } | null => {
+  const match = tradeId.match(/^(?<symbol>[A-Z0-9]+)-(?<tradeDate>\d{4}-\d{2}-\d{2})-/);
+  if (!match?.groups?.tradeDate || !match.groups.symbol) {
+    return null;
+  }
+
+  return {
+    tradeDate: match.groups.tradeDate,
+    symbol: match.groups.symbol
+  };
+};
+
 const equalsOptionValue = (left: string, right: string): boolean =>
   left.trim().toLowerCase() === right.trim().toLowerCase();
 
@@ -214,6 +319,9 @@ const downloadCsvInBrowser = (fileName: string, contents: string): void => {
 
 function App() {
   const hasRestoredWorkspaceRef = useRef(false);
+  const hasRetriedJournalDesktopRecoveryRef = useRef(false);
+  const hasRetriedSessionsDesktopRecoveryRef = useRef(false);
+  const hasRetriedTradeTagsDesktopRecoveryRef = useRef(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [user, setUser] = useState<User | null>(null);
@@ -229,9 +337,13 @@ function App() {
   const [hasExecutionProperty, setHasExecutionProperty] = useState(false);
   const [fileName, setFileName] = useState("");
   const [trades, setTrades] = useState<GroupedTrade[]>([]);
-  const [tradeSessions, setTradeSessions] = useState<TradeSessionRecord[]>([]);
+  const [tradeSessions, setTradeSessions] = useState<TradeSessionRecord[]>(() =>
+    loadEmbeddedTradeSessionsSeed()
+  );
   const [tradeSessionsLoaded, setTradeSessionsLoaded] = useState(false);
-  const [tradeTagOverrides, setTradeTagOverrides] = useState<TradeTagOverrideRecord[]>([]);
+  const [tradeTagOverrides, setTradeTagOverrides] = useState<TradeTagOverrideRecord[]>(() =>
+    loadEmbeddedTradeTagOverridesSeed()
+  );
   const [tradeTagOverridesLoaded, setTradeTagOverridesLoaded] = useState(false);
   const [tradeTagOptions, setTradeTagOptions] = useState<TradeTagOptionsRecord>({});
   const [tradeTagOptionsLoaded, setTradeTagOptionsLoaded] = useState(false);
@@ -247,7 +359,9 @@ function App() {
   const [reviewChartInterval, setReviewChartInterval] = useState<ChartInterval>("1m");
   const [dayChartInterval, setDayChartInterval] = useState<ChartInterval>("1D");
   const [historicalBarSets, setHistoricalBarSets] = useState<HistoricalBarSet[]>([]);
-  const [journalPages, setJournalPages] = useState<JournalPageRecord[]>([]);
+  const [journalPages, setJournalPages] = useState<JournalPageRecord[]>(() =>
+    loadEmbeddedJournalPagesSeed()
+  );
   const [journalChecklistTemplates, setJournalChecklistTemplates] = useState<JournalChecklistTemplates>(
     defaultJournalChecklistTemplates()
   );
@@ -263,6 +377,12 @@ function App() {
     const loadedOptions = await loadTradeTagOptions();
     const loadedOverrides = await loadTradeTagOverrides();
     const loadedSessions = await loadTradeSessions();
+    const embeddedOverrides = loadEmbeddedTradeTagOverridesSeed();
+    const embeddedSessions = loadEmbeddedTradeSessionsSeed();
+    const recoveredOverrides =
+      embeddedOverrides.length > loadedOverrides.length ? embeddedOverrides : loadedOverrides;
+    const recoveredSessions =
+      embeddedSessions.length > loadedSessions.length ? embeddedSessions : loadedSessions;
 
     setSettings(loadedSettings);
     setSettingsLoaded(true);
@@ -270,10 +390,10 @@ function App() {
     setTradeTagOptions(loadedOptions);
     setTradeTagOptionsLoaded(true);
 
-    setTradeTagOverrides(loadedOverrides);
+    setTradeTagOverrides(recoveredOverrides);
     setTradeTagOverridesLoaded(true);
 
-    setTradeSessions(loadedSessions);
+    setTradeSessions(recoveredSessions);
     setTradeSessionsLoaded(true);
 
     const workspaceState = loadWorkspaceState();
@@ -287,7 +407,11 @@ function App() {
     setHistoricalBarSets(loadHistoricalBarSets());
     setHistoricalBarSetsLoaded(true);
 
-    setJournalPages(loadJournalPages());
+    const loadedJournalPages = await loadJournalPages();
+    const embeddedJournalPages = loadEmbeddedJournalPagesSeed();
+    setJournalPages(
+      embeddedJournalPages.length > loadedJournalPages.length ? embeddedJournalPages : loadedJournalPages
+    );
     setJournalPagesLoaded(true);
 
     setJournalChecklistTemplates(loadJournalChecklistTemplates());
@@ -305,6 +429,11 @@ function App() {
       let existingUser: User | null = null;
       try {
         setBootError(null);
+        await hydrateWorkspaceFromStores();
+        if (cancelled) {
+          return;
+        }
+
         existingUser = await authService.getCurrentUser();
         if (cancelled) {
           return;
@@ -365,6 +494,54 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!tradeSessionsLoaded) {
+      return;
+    }
+
+    if (tradeSessions.length > 0 || hasRetriedSessionsDesktopRecoveryRef.current) {
+      return;
+    }
+
+    hasRetriedSessionsDesktopRecoveryRef.current = true;
+    void (async () => {
+      const desktopSessions = await loadTradeSessions();
+      const embeddedSessions = loadEmbeddedTradeSessionsSeed();
+      const recoveredSessions =
+        embeddedSessions.length > desktopSessions.length ? embeddedSessions : desktopSessions;
+      if (recoveredSessions.length === 0) {
+        return;
+      }
+
+      setTradeSessions(recoveredSessions);
+      setMessage(`Recovered ${recoveredSessions.length} saved trade days from the desktop backup.`);
+    })();
+  }, [tradeSessions, tradeSessionsLoaded]);
+
+  useEffect(() => {
+    if (!tradeTagOverridesLoaded) {
+      return;
+    }
+
+    if (tradeTagOverrides.length > 0 || hasRetriedTradeTagsDesktopRecoveryRef.current) {
+      return;
+    }
+
+    hasRetriedTradeTagsDesktopRecoveryRef.current = true;
+    void (async () => {
+      const desktopOverrides = await loadTradeTagOverrides();
+      const embeddedOverrides = loadEmbeddedTradeTagOverridesSeed();
+      const recoveredOverrides =
+        embeddedOverrides.length > desktopOverrides.length ? embeddedOverrides : desktopOverrides;
+      if (recoveredOverrides.length === 0) {
+        return;
+      }
+
+      setTradeTagOverrides(recoveredOverrides);
+      setMessage(`Recovered ${recoveredOverrides.length} trade tag overrides from the desktop backup.`);
+    })();
+  }, [tradeTagOverrides, tradeTagOverridesLoaded]);
+
+  useEffect(() => {
     if (!settingsLoaded) {
       return;
     }
@@ -395,13 +572,30 @@ function App() {
       return;
     }
 
+    if (journalPages.length === 0 && !hasRetriedJournalDesktopRecoveryRef.current) {
+      hasRetriedJournalDesktopRecoveryRef.current = true;
+      void (async () => {
+        const desktopPages = await loadJournalPages();
+        const embeddedPages = loadEmbeddedJournalPagesSeed();
+        const recoveredPages = embeddedPages.length > desktopPages.length ? embeddedPages : desktopPages;
+        if (recoveredPages.length === 0) {
+          return;
+        }
+
+        setJournalPages(recoveredPages);
+        setSelectedJournalPageId(recoveredPages[0]?.id ?? "");
+        setMessage(`Recovered ${recoveredPages.length} journal pages from the desktop backup.`);
+      })();
+      return;
+    }
+
     const dedupedPages = dedupeJournalPages(journalPages);
     if (dedupedPages.length !== journalPages.length) {
       setJournalPages(dedupedPages);
       return;
     }
 
-    saveJournalPages(dedupedPages);
+    void saveJournalPages(dedupedPages);
   }, [journalPages, journalPagesLoaded]);
 
   useEffect(() => {
@@ -419,6 +613,186 @@ function App() {
 
     saveTradeReviews(tradeReviews);
   }, [tradeReviews, tradeReviewsLoaded]);
+
+  useEffect(() => {
+    if (!journalPagesLoaded || !tradeReviewsLoaded) {
+      return;
+    }
+
+    const recoveredByTradeId = recoverReviewScreenshotsFromJournalPages(journalPages);
+    if (recoveredByTradeId.size === 0) {
+      return;
+    }
+
+    setTradeReviews((current) => {
+      const next = [...current];
+      const indexByTradeId = new Map<string, number>(next.map((review, index) => [review.tradeId, index]));
+      let changed = false;
+
+      for (const [tradeId, recovered] of recoveredByTradeId.entries()) {
+        const reviewIndex = indexByTradeId.get(tradeId);
+        if (reviewIndex === undefined) {
+          next.push({
+            tradeId,
+            notes: "",
+            chartContext: "",
+            screenshotUrl: recovered.screenshotUrl,
+            drawings: [],
+            updatedAt: recovered.updatedAt
+          });
+          changed = true;
+          continue;
+        }
+
+        const existing = next[reviewIndex];
+        if (!existing) {
+          continue;
+        }
+
+        if (existing.screenshotUrl.trim().length > 0) {
+          continue;
+        }
+
+        next[reviewIndex] = {
+          ...existing,
+          screenshotUrl: recovered.screenshotUrl,
+          updatedAt:
+            parseTimestamp(recovered.updatedAt) > parseTimestamp(existing.updatedAt)
+              ? recovered.updatedAt
+              : existing.updatedAt
+        };
+        changed = true;
+      }
+
+      return changed ? next : current;
+    });
+  }, [journalPages, journalPagesLoaded, tradeReviewsLoaded]);
+
+  useEffect(() => {
+    if (!journalPagesLoaded || !tradeReviewsLoaded || !tradeSessionsLoaded || !tradeTagOverridesLoaded) {
+      return;
+    }
+
+    const tradeContextById = new Map<
+      string,
+      { tradeDate: string; symbol: string; playbook: string }
+    >();
+    const resolvedSessionTrades = applyTradeTagOverrides(
+      tradeSessions.flatMap((session) => session.trades),
+      tradeTagOverrides
+    );
+
+    for (const trade of resolvedSessionTrades) {
+      tradeContextById.set(trade.id, {
+        tradeDate: normalizeJournalTradeDate(trade.tradeDate),
+        symbol: trade.symbol,
+        playbook: trade.setups?.[0] ?? ""
+      });
+    }
+
+    setJournalPages((current) => {
+      const next = [...current];
+      let changed = false;
+      const indexByTradeDate = new Map<string, number>(
+        next.map((page, index) => [normalizeJournalTradeDate(page.tradeDate), index])
+      );
+
+      for (const review of tradeReviews) {
+        if (!review.screenshotUrl || review.screenshotUrl.trim().length === 0) {
+          continue;
+        }
+
+        const fromTradeMap = tradeContextById.get(review.tradeId);
+        const parsed = fromTradeMap ? null : parseTradeContextFromTradeId(review.tradeId);
+        const tradeDate = fromTradeMap?.tradeDate ?? parsed?.tradeDate ?? "";
+        if (!tradeDate) {
+          continue;
+        }
+
+        const pageIndex = indexByTradeDate.get(tradeDate);
+        if (pageIndex === undefined) {
+          continue;
+        }
+
+        const page = next[pageIndex];
+        if (!page) {
+          continue;
+        }
+
+        const screenshotUrls = [...page.screenshotUrls];
+        const screenshotTags = [...page.screenshotTags];
+        let urlIndex = screenshotUrls.findIndex((url) => url === review.screenshotUrl);
+        const hadTagAtIndexBeforeMutation =
+          urlIndex >= 0 && urlIndex < screenshotTags.length && Boolean(screenshotTags[urlIndex]);
+        if (urlIndex < 0) {
+          screenshotUrls.push(review.screenshotUrl);
+          screenshotTags.push(createJournalScreenshotTag(tradeDate));
+          urlIndex = screenshotUrls.length - 1;
+          changed = true;
+        }
+
+        while (screenshotTags.length <= urlIndex) {
+          screenshotTags.push(createJournalScreenshotTag(tradeDate));
+        }
+
+        const rawTag = screenshotTags[urlIndex] ?? createJournalScreenshotTag(tradeDate);
+        const links = collectScreenshotLinks(rawTag);
+        const hasLink = links.some(
+          (link) => link.tradeId === review.tradeId && normalizeJournalTradeDate(link.tradeDate) === tradeDate
+        );
+        // Respect explicit Journal tag selections; only auto-link when the tag entry did not exist yet.
+        if (!hasLink && !hadTagAtIndexBeforeMutation) {
+          links.push({
+            tradeId: review.tradeId,
+            tradeDate
+          });
+          changed = true;
+        }
+
+        const primaryLink = links[0];
+        const existingTaggedDate = normalizeJournalTradeDate(rawTag.taggedDate || tradeDate);
+        const nextTag: JournalScreenshotTagRecord = {
+          ...rawTag,
+          linkedTrades: links,
+          linkedTradeId: primaryLink?.tradeId ?? rawTag.linkedTradeId,
+          linkedTradeDate: primaryLink?.tradeDate ?? rawTag.linkedTradeDate,
+          ticker: rawTag.ticker || fromTradeMap?.symbol || parsed?.symbol || "",
+          playbook: rawTag.playbook || fromTradeMap?.playbook || "",
+          taggedDate: existingTaggedDate || tradeDate
+        };
+
+        if (
+          nextTag.linkedTrades.length !== (rawTag.linkedTrades?.length ?? 0) ||
+          nextTag.linkedTradeId !== rawTag.linkedTradeId ||
+          nextTag.linkedTradeDate !== rawTag.linkedTradeDate ||
+          nextTag.ticker !== rawTag.ticker ||
+          nextTag.playbook !== rawTag.playbook ||
+          nextTag.taggedDate !== rawTag.taggedDate
+        ) {
+          screenshotTags[urlIndex] = nextTag;
+          changed = true;
+        }
+
+        if (changed) {
+          next[pageIndex] = {
+            ...page,
+            screenshotUrls,
+            screenshotTags
+          };
+        }
+      }
+
+      return changed ? dedupeJournalPages(next) : current;
+    });
+  }, [
+    journalPagesLoaded,
+    tradeReviews,
+    tradeReviewsLoaded,
+    tradeSessions,
+    tradeSessionsLoaded,
+    tradeTagOverrides,
+    tradeTagOverridesLoaded
+  ]);
 
   useEffect(() => {
     if (!tradeTagOptionsLoaded) {
@@ -599,6 +973,32 @@ function App() {
       return "This computer's saved workspace was pushed to cloud. Pull from the other computer after signing in.";
     } catch (error) {
       return error instanceof Error ? error.message : "Cloud push failed.";
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const handleRecoverFromCloud = async (): Promise<string> => {
+    if (!user) {
+      return "Sign in before pulling data from cloud.";
+    }
+
+    setSyncing(true);
+    try {
+      await requestFlushDebouncedSaves();
+      const summary = await syncUserDataOnLogin(user.id);
+      const syncErrors = summary.results.filter((result) => result.source === "error");
+      await hydrateWorkspaceFromStores();
+
+      const cloudPages = (await loadJournalPages()).length;
+      const cloudReviews = loadTradeReviews().length;
+      if (syncErrors.length > 0) {
+        return `Cloud recovery completed with warnings. Journal pages: ${cloudPages}. Reviews: ${cloudReviews}.`;
+      }
+
+      return `Cloud recovery finished. Journal pages: ${cloudPages}. Reviews: ${cloudReviews}.`;
+    } catch (error) {
+      return error instanceof Error ? error.message : "Cloud recovery failed.";
     } finally {
       setSyncing(false);
     }
@@ -808,7 +1208,7 @@ function App() {
     setTrades(session.trades);
     setFileName(session.sourceFileName);
     setIsCurrentImportSaved(true);
-    setActiveRoute("trades");
+    handleNavigate("trades");
     setMessage(`Loaded saved session for ${tradeDate} from local storage.`);
   };
 
@@ -1321,7 +1721,23 @@ function App() {
     field: EditableTradeTagField,
     value: string | string[] | null
   ) => {
-    const targetTrades = resolvedTrades.filter((trade) => tradeIds.includes(trade.id));
+    const tradeLookup = new Map<string, EditableTradeRow>();
+
+    for (const trade of resolvedTrades) {
+      tradeLookup.set(trade.id, trade);
+    }
+
+    for (const session of resolvedTradeSessions) {
+      for (const trade of session.trades as EditableTradeRow[]) {
+        if (!tradeLookup.has(trade.id)) {
+          tradeLookup.set(trade.id, trade);
+        }
+      }
+    }
+
+    const targetTrades = tradeIds
+      .map((tradeId) => tradeLookup.get(tradeId))
+      .filter((trade): trade is EditableTradeRow => trade !== undefined);
     if (targetTrades.length === 0) {
       return;
     }
@@ -1379,7 +1795,7 @@ function App() {
               setDashboardTradeDateFilterEnd(tradeDate);
               setDashboardSelectedTradeId(tradeId);
               setDashboardSelectedTradeRequestId((current) => current + 1);
-              setActiveRoute("trades");
+              handleNavigate("trades");
             }}
           />
         );
@@ -1444,7 +1860,7 @@ function App() {
                 setDashboardTradeDateFilterEnd(tradeDate);
                 setDashboardSelectedTradeId(tradeId);
                 setDashboardSelectedTradeRequestId((current) => current + 1);
-                setActiveRoute("trades");
+                handleNavigate("trades");
               }}
               onCreatePage={createJournalPage}
               onUpdatePage={updateJournalPage}
@@ -1453,6 +1869,7 @@ function App() {
               onUpdateChecklistTemplate={updateJournalChecklistTemplate}
               onDeleteChecklistTemplate={deleteJournalChecklistTemplate}
               onUpdateTradeTag={updateTradeTag}
+              onBulkUpdateTradeTags={bulkUpdateTradeTags}
               onCreateTradeTagOption={createTradeTagOption}
               onRenameTradeTagOption={renameTradeTagOption}
               onDeleteTradeTagOption={deleteTradeTagOption}
@@ -1473,12 +1890,12 @@ function App() {
               setDashboardSelectedTradeId(tradeId);
               setDashboardSelectedTradeRequestId((current) => current + 1);
               setDashboardPlaybookFilter("all");
-              setActiveRoute("trades");
+              handleNavigate("trades");
             }}
             onOpenJournalDate={(tradeDate) => {
               setDashboardTradeDateFilterStart(tradeDate);
               setDashboardTradeDateFilterEnd(tradeDate);
-              setActiveRoute("journal");
+              handleNavigate("journal");
             }}
             onViewReportsForPlaybook={(playbookName) => {
               setDashboardTradeDateFilterStart("");
@@ -1488,7 +1905,7 @@ function App() {
               setDashboardStatusFilter("all");
               setDashboardGameFilter("all");
               setDashboardExecutionFilter("all");
-              setActiveRoute("reports");
+              handleNavigate("reports");
             }}
           />
         );
@@ -1505,12 +1922,12 @@ function App() {
               setDashboardSelectedTradeId(tradeId);
               setDashboardSelectedTradeRequestId((current) => current + 1);
               setDashboardPlaybookFilter("all");
-              setActiveRoute("trades");
+              handleNavigate("trades");
             }}
             onOpenJournalDate={(tradeDate) => {
               setDashboardTradeDateFilterStart(tradeDate);
               setDashboardTradeDateFilterEnd(tradeDate);
-              setActiveRoute("journal");
+              handleNavigate("journal");
             }}
             onViewReportsForPlaybook={(playbookName) => {
               setDashboardTradeDateFilterStart("");
@@ -1520,7 +1937,7 @@ function App() {
               setDashboardStatusFilter("all");
               setDashboardGameFilter("all");
               setDashboardExecutionFilter("all");
-              setActiveRoute("reports");
+              handleNavigate("reports");
             }}
           />
         );
@@ -1582,6 +1999,7 @@ function App() {
             onChange={setSettings}
             onBrowse={handleBrowseFolder}
             onTestConnection={runConnectionTest}
+            onRecoverFromCloud={handleRecoverFromCloud}
             onForceCloudSeed={handleForceCloudSeed}
             onLoadAdminUsers={loadAdminUsers}
           />
@@ -1589,6 +2007,17 @@ function App() {
       default:
         return null;
     }
+  };
+
+  const handleNavigate = (route: AppRoute) => {
+    if (route === activeRoute) {
+      return;
+    }
+
+    void (async () => {
+      await requestFlushDebouncedSaves();
+      setActiveRoute(route);
+    })();
   };
 
   return (
@@ -1648,7 +2077,7 @@ function App() {
           <AppLayout
             activeRoute={activeRoute}
             navItems={navItems}
-            onNavigate={setActiveRoute}
+            onNavigate={handleNavigate}
             accountLabel={user.email || user.username || "Signed in"}
             onSignOut={() => {
               void handleSignOut();

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CandlestickSeries,
   ColorType,
+  TickMarkType,
   createChart,
   HistogramSeries,
   LineStyle,
@@ -144,6 +145,7 @@ interface ExecutionMarkerPoint {
   time: number;
   price: number;
   kind: "entry" | "addToWinner" | "averageDown" | "exit";
+  executionSide: "Buy" | "Sell";
 }
 
 type DrawingDragTarget =
@@ -386,6 +388,61 @@ const formatTimestampLabel = (timestamp: number, interval: ChartInterval) => {
   });
 };
 
+const formatChartCrosshairTime = (time: Time): string => {
+  const timestamp = toUtcTimestamp(time);
+  if (timestamp === null) {
+    return "";
+  }
+
+  return new Date(timestamp * 1000).toLocaleString(undefined, {
+    day: "2-digit",
+    month: "short",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+};
+
+const formatChartTickMark = (time: Time, tickMarkType: TickMarkType, locale: string): string | null => {
+  const timestamp = toUtcTimestamp(time);
+  if (timestamp === null) {
+    return null;
+  }
+
+  const date = new Date(timestamp * 1000);
+
+  if (tickMarkType === TickMarkType.Year) {
+    return new Intl.DateTimeFormat(locale, { year: "numeric" }).format(date);
+  }
+
+  if (tickMarkType === TickMarkType.Month) {
+    return new Intl.DateTimeFormat(locale, { month: "short" }).format(date);
+  }
+
+  if (tickMarkType === TickMarkType.DayOfMonth) {
+    return new Intl.DateTimeFormat(locale, {
+      month: "short",
+      day: "2-digit"
+    }).format(date);
+  }
+
+  if (tickMarkType === TickMarkType.TimeWithSeconds) {
+    return new Intl.DateTimeFormat(locale, {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    }).format(date);
+  }
+
+  return new Intl.DateTimeFormat(locale, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(date);
+};
+
 const createDrawingId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 const FIBONACCI_LEVELS: Array<{ key: string; ratio: number; label: string }> = [
@@ -582,7 +639,8 @@ const buildExecutionMarkers = (
         id: `entry-${execution.sourceIndex}-${index}`,
         time: getNearestBarTime(bars, toTradeTimestamp(execution.tradeDate, execution.time)),
         price: execution.price,
-        kind: "entry"
+        kind: "entry",
+        executionSide: execution.side
       });
     }
   }
@@ -605,7 +663,8 @@ const buildExecutionMarkers = (
       id: `${signal.addedToWinner ? "add-to-winner" : "average-down"}-${execution.sourceIndex}-${index}`,
       time: getNearestBarTime(bars, toTradeTimestamp(execution.tradeDate, execution.time)),
       price: execution.price,
-      kind: signal.addedToWinner ? "addToWinner" : "averageDown"
+      kind: signal.addedToWinner ? "addToWinner" : "averageDown",
+      executionSide: execution.side
     });
   });
 
@@ -615,7 +674,8 @@ const buildExecutionMarkers = (
         id: `exit-${execution.sourceIndex}-${index}`,
         time: getNearestBarTime(bars, toTradeTimestamp(execution.tradeDate, execution.time)),
         price: execution.price,
-        kind: "exit"
+        kind: "exit",
+        executionSide: execution.side
       });
     }
   }
@@ -1727,7 +1787,11 @@ export const TradeChart = ({
         timeVisible: true,
         secondsVisible: false,
         rightOffset: 8,
-        barSpacing: 10
+        barSpacing: 10,
+        tickMarkFormatter: formatChartTickMark
+      },
+      localization: {
+        timeFormatter: formatChartCrosshairTime
       },
       crosshair: {
         vertLine: { color: "rgba(255, 0, 191, 0.35)", style: 2, labelBackgroundColor: "#f000c0" },
@@ -2088,13 +2152,15 @@ export const TradeChart = ({
       return [];
     }
 
+    const markerEntryColorClass = trade?.side === "Short" ? "legend-sell" : "legend-buy";
+    const markerExitColorClass = trade?.side === "Short" ? "legend-buy" : "legend-sell";
     const items: IndicatorItem[] = [];
 
     if (showMarkers) {
-      items.push({ key: "entry", label: "Entry", colorClass: "legend-entry" });
+      items.push({ key: "entry", label: "Entry", colorClass: markerEntryColorClass });
       items.push({ key: "addToWinner", label: "Add to winner", colorClass: "legend-add" });
       items.push({ key: "averageDown", label: "Average down", colorClass: "legend-average" });
-      items.push({ key: "exit", label: "Exit", colorClass: "legend-exit" });
+      items.push({ key: "exit", label: "Exit", colorClass: markerExitColorClass });
     }
 
     if (showEma) {
@@ -2147,7 +2213,8 @@ export const TradeChart = ({
     latestStochastic,
     onToggleLayerVisibility,
     showEma,
-    showMarkers
+    showMarkers,
+    trade?.side
   ]);
 
   const handleSetAllLayers = useCallback(
@@ -2458,26 +2525,35 @@ export const TradeChart = ({
       .filter((marker): marker is NonNullable<typeof marker> => marker !== null);
   }, [displayBars, layerVisibility, overlaySize.height, overlaySize.width, overlayVersion, showMarkers, trade]);
 
-  const getExecutionMarkerFill = useCallback((kind: ExecutionMarkerPoint["kind"]) => {
+  const getExecutionMarkerFill = useCallback((marker: ExecutionMarkerPoint) => {
+    if (marker.executionSide === "Buy") {
+      return "#4CFFB1";
+    }
+
+    if (marker.executionSide === "Sell") {
+      return "#FF6B7A";
+    }
+
+    const { kind } = marker;
     switch (kind) {
       case "entry":
-        return "#2ee6a6";
+        return "#4CFFB1";
       case "addToWinner":
         return "#5da8ff";
       case "averageDown":
         return "#ffcf5a";
       case "exit":
-        return "#ff7b7b";
+        return "#FF6B7A";
       default:
         return "#ffffff";
     }
   }, []);
 
   const getExecutionMarkerPoints = useCallback(
-    (x: number, y: number, kind: ExecutionMarkerPoint["kind"]) => {
+    (x: number, y: number, executionSide: ExecutionMarkerPoint["executionSide"]) => {
       const size = 10;
 
-      if (kind === "exit") {
+      if (executionSide === "Sell") {
         return `${x},${y} ${x + size},${y - size * 0.78} ${x + size},${y + size * 0.78}`;
       }
 
@@ -2995,9 +3071,9 @@ export const TradeChart = ({
             {projectedExecutionMarkers.map((marker) => (
               <g key={marker.id}>
                 <polygon
-                  points={getExecutionMarkerPoints(marker.x, marker.y, marker.kind)}
-                  className={`trade-chart-execution-marker trade-chart-execution-marker-${marker.kind}`}
-                  fill={getExecutionMarkerFill(marker.kind)}
+                  points={getExecutionMarkerPoints(marker.x, marker.y, marker.executionSide)}
+                  className={`trade-chart-execution-marker trade-chart-execution-marker-${marker.kind} trade-chart-execution-marker-${marker.executionSide.toLowerCase()}`}
+                  fill={getExecutionMarkerFill(marker)}
                 />
               </g>
             ))}

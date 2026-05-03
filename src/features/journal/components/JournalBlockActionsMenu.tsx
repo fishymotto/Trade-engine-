@@ -48,6 +48,10 @@ const createToggleSection = (): JSONContent => ({
   ]
 });
 
+const insertDefaultTable = (editor: Editor) => {
+  editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
+};
+
 export const JournalBlockActionsMenu = ({ editor, appearance = "default" }: JournalBlockActionsMenuProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -140,6 +144,85 @@ export const JournalBlockActionsMenu = ({ editor, appearance = "default" }: Jour
         keywords: ["toggle", "details", "collapse", "dropdown"],
         run: (nextEditor) => {
           nextEditor.chain().focus().insertContent(createToggleSection()).run();
+        }
+      },
+      {
+        key: "insert-table",
+        label: "Insert Table",
+        description: "Add a 3x3 table with a header row",
+        keywords: ["table", "grid", "rows", "columns"],
+        run: insertDefaultTable
+      },
+      {
+        key: "table-row-above",
+        label: "Table: Add Row Above",
+        description: "Insert a row above the current table row",
+        keywords: ["table", "row", "above", "insert"],
+        run: (nextEditor) => {
+          nextEditor.chain().focus().addRowBefore().run();
+        }
+      },
+      {
+        key: "table-row-below",
+        label: "Table: Add Row Below",
+        description: "Insert a row below the current table row",
+        keywords: ["table", "row", "below", "insert"],
+        run: (nextEditor) => {
+          nextEditor.chain().focus().addRowAfter().run();
+        }
+      },
+      {
+        key: "table-column-left",
+        label: "Table: Add Column Left",
+        description: "Insert a column to the left of the current cell",
+        keywords: ["table", "column", "left", "insert"],
+        run: (nextEditor) => {
+          nextEditor.chain().focus().addColumnBefore().run();
+        }
+      },
+      {
+        key: "table-column-right",
+        label: "Table: Add Column Right",
+        description: "Insert a column to the right of the current cell",
+        keywords: ["table", "column", "right", "insert"],
+        run: (nextEditor) => {
+          nextEditor.chain().focus().addColumnAfter().run();
+        }
+      },
+      {
+        key: "table-delete-row",
+        label: "Table: Delete Row",
+        description: "Remove the current table row",
+        keywords: ["table", "row", "delete", "remove"],
+        run: (nextEditor) => {
+          nextEditor.chain().focus().deleteRow().run();
+        }
+      },
+      {
+        key: "table-delete-column",
+        label: "Table: Delete Column",
+        description: "Remove the current table column",
+        keywords: ["table", "column", "delete", "remove"],
+        run: (nextEditor) => {
+          nextEditor.chain().focus().deleteColumn().run();
+        }
+      },
+      {
+        key: "table-toggle-header-row",
+        label: "Table: Toggle Header Row",
+        description: "Turn the first row on or off as table headers",
+        keywords: ["table", "header", "row"],
+        run: (nextEditor) => {
+          nextEditor.chain().focus().toggleHeaderRow().run();
+        }
+      },
+      {
+        key: "table-delete",
+        label: "Table: Delete Table",
+        description: "Remove the entire current table",
+        keywords: ["table", "delete", "remove"],
+        run: (nextEditor) => {
+          nextEditor.chain().focus().deleteTable().run();
         }
       },
       {

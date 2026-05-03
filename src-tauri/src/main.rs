@@ -15,6 +15,8 @@ fn main() {
             pick_and_save_playbook_attachment,
             delete_playbook_attachment,
             open_external_url,
+            load_journal_pages,
+            save_journal_pages,
             load_app_settings,
             save_app_settings,
             load_trade_sessions,

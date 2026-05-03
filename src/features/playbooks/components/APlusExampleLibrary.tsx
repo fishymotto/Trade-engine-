@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { JournalRichTextEditor } from "../../journal/components/JournalRichTextEditor";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
-import { createEmptyJournalDoc } from "../../../lib/journal/journalContent";
+import { createEmptyJournalDoc, hasJournalDocContent } from "../../../lib/journal/journalContent";
 import {
   addPlaybookAPlusExample,
   removePlaybookAPlusExample,
@@ -20,6 +20,7 @@ type ExampleRecord = PlaybookRecord["aPlusExamples"][number];
 
 const ratingOptions: PlaybookExampleRating[] = ["A+", "A", "B+"];
 const eligibleGameTags = new Set(["A Game", "B+ Game"]);
+const MAX_DISMISSED_TRADE_IDS = 400;
 
 const getSyncedExampleRating = (trade: GroupedTrade): PlaybookExampleRating | null => {
   if (trade.game === "A Game") {
@@ -43,6 +44,7 @@ const formatSignedMoney = (value: number): string =>
   `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`;
 
 const formatCurrency = (value: number): string => `$${Math.abs(value).toFixed(2)}`;
+const formatMoney = (value: number): string => `$${value.toFixed(2)}`;
 
 const formatPrice = (value: number): string => {
   if (!Number.isFinite(value)) {
@@ -59,6 +61,41 @@ const formatSignedPerShare = (value: number): string =>
 
 const getSignedValueClassName = (value: number): "positive-value" | "negative-value" =>
   value >= 0 ? "positive-value" : "negative-value";
+const getHoldLabel = (trade: GroupedTrade): string => {
+  const trimmedHoldTime = trade.holdTime.trim();
+  if (trimmedHoldTime.length > 0) {
+    return trimmedHoldTime;
+  }
+  return `${Math.max(0, Math.round(trade.holdSeconds / 60))}m`;
+};
+const toSafeText = (value: unknown): string => (typeof value === "string" ? value : "");
+const toSafeArray = <T,>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
+const isExampleRating = (value: unknown): value is PlaybookExampleRating =>
+  value === "A+" || value === "A" || value === "B+";
+
+const normalizeExampleRecord = (entry: unknown): ExampleRecord | null => {
+  if (!entry || typeof entry !== "object") {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  const record = entry as Record<string, unknown>;
+  return {
+    id: toSafeText(record.id) || createExampleId(),
+    tradeId: toSafeText(record.tradeId),
+    tradeDate: toSafeText(record.tradeDate),
+    rating: isExampleRating(record.rating) ? record.rating : "A+",
+    notes: hasJournalDocContent(record.notes as Parameters<typeof hasJournalDocContent>[0])
+      ? (record.notes as ExampleRecord["notes"])
+      : createEmptyJournalDoc(),
+    screenshotPaths: toSafeArray<string>(record.screenshotPaths)
+      .map((value) => toSafeText(value))
+      .filter((value) => value.length > 0),
+    recordingPath: toSafeText(record.recordingPath),
+    createdAt: toSafeText(record.createdAt) || now,
+    updatedAt: toSafeText(record.updatedAt) || now
+  };
+};
 
 const parseSortableDate = (value: string): number | null => {
   const trimmed = value.trim();
@@ -153,6 +190,14 @@ const parseDismissedTradeIds = (raw: string | null): string[] => {
   }
 };
 
+const pruneDismissedTradeIds = (value: string[]): string[] => {
+  const unique = Array.from(new Set(value.map((item) => item.trim()).filter((item) => item.length > 0)));
+  if (unique.length <= MAX_DISMISSED_TRADE_IDS) {
+    return unique;
+  }
+  return unique.slice(unique.length - MAX_DISMISSED_TRADE_IDS);
+};
+
 const readFileAsDataUrl = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -189,6 +234,12 @@ export const APlusExampleLibrary = ({
   setPlaybooks
 }: APlusExampleLibraryProps) => {
   const dismissedTradeIdsStorageKey = `playbook-aplus-dismissed:${playbook.id}`;
+  const aPlusExamples = useMemo(() => {
+    const candidates = toSafeArray<unknown>(playbook.aPlusExamples);
+    return candidates
+      .map((entry) => normalizeExampleRecord(entry))
+      .filter((entry): entry is ExampleRecord => entry !== null);
+  }, [playbook.aPlusExamples]);
   const [pendingAttachmentExampleId, setPendingAttachmentExampleId] = useState("");
   const [pendingAttachmentKind, setPendingAttachmentKind] = useState<"screenshot" | "recording">(
     "screenshot"
@@ -204,15 +255,31 @@ export const APlusExampleLibrary = ({
     if (typeof window === "undefined") {
       return;
     }
-    const nextDismissedTradeIds = parseDismissedTradeIds(window.localStorage.getItem(dismissedTradeIdsStorageKey));
-    setDismissedTradeIds(nextDismissedTradeIds);
+    try {
+      const nextDismissedTradeIds = pruneDismissedTradeIds(
+        parseDismissedTradeIds(window.localStorage.getItem(dismissedTradeIdsStorageKey))
+      );
+      setDismissedTradeIds(nextDismissedTradeIds);
+    } catch {
+      setDismissedTradeIds([]);
+    }
   }, [dismissedTradeIdsStorageKey]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
-    window.localStorage.setItem(dismissedTradeIdsStorageKey, JSON.stringify(dismissedTradeIds));
+    const pruned = pruneDismissedTradeIds(dismissedTradeIds);
+    try {
+      window.localStorage.setItem(dismissedTradeIdsStorageKey, JSON.stringify(pruned));
+    } catch {
+      // Never let storage quota errors crash rendering.
+      try {
+        window.localStorage.removeItem(dismissedTradeIdsStorageKey);
+      } catch {
+        // Ignore cleanup failures.
+      }
+    }
   }, [dismissedTradeIds, dismissedTradeIdsStorageKey]);
 
   const tradeById = useMemo(() => new Map(matchedTrades.map((trade) => [trade.id, trade])), [matchedTrades]);
@@ -254,14 +321,15 @@ export const APlusExampleLibrary = ({
         .filter((trade) => eligibleGameTags.has(trade.game))
         .sort(
           (left, right) =>
-            right.tradeDate.localeCompare(left.tradeDate) || left.openTime.localeCompare(right.openTime)
+            toSafeText(right.tradeDate).localeCompare(toSafeText(left.tradeDate)) ||
+            toSafeText(left.openTime).localeCompare(toSafeText(right.openTime))
         ),
     [matchedTrades]
   );
 
   const existingTradeIds = useMemo(
-    () => new Set((playbook.aPlusExamples ?? []).map((entry) => entry.tradeId)),
-    [playbook.aPlusExamples]
+    () => new Set(aPlusExamples.map((entry) => entry.tradeId)),
+    [aPlusExamples]
   );
 
   const availableEligibleTrades = useMemo(
@@ -271,7 +339,7 @@ export const APlusExampleLibrary = ({
 
   const visibleExamples = useMemo(() => {
     const normalizedQuery = exampleSearchQuery.trim().toLowerCase();
-    const filtered = (playbook.aPlusExamples ?? []).filter((entry) => {
+    const filtered = aPlusExamples.filter((entry) => {
       if (!normalizedQuery) {
         return true;
       }
@@ -307,7 +375,7 @@ export const APlusExampleLibrary = ({
 
       return left.id.localeCompare(right.id);
     });
-  }, [exampleDateSort, exampleSearchQuery, playbook.aPlusExamples, tradeById]);
+  }, [aPlusExamples, exampleDateSort, exampleSearchQuery, tradeById]);
 
   useEffect(() => {
     if (autoExampleScreenshotsByTrade.size === 0) {
@@ -444,7 +512,7 @@ export const APlusExampleLibrary = ({
   }, [autoExampleScreenshotsByTrade, dismissedTradeIdSet, playbook.id, setPlaybooks, tradeById]);
 
   useEffect(() => {
-    if (playbook.aPlusExamples.length === 0) {
+    if (aPlusExamples.length === 0) {
       return;
     }
 
@@ -489,17 +557,21 @@ export const APlusExampleLibrary = ({
           : candidate
       );
     });
-  }, [playbook.aPlusExamples.length, playbook.id, setPlaybooks, tradeById]);
+  }, [aPlusExamples.length, playbook.id, setPlaybooks, tradeById]);
 
-  const getEntryFromState = (playbooks: PlaybookRecord[], exampleId: string): ExampleRecord | undefined =>
-    playbooks.find((candidate) => candidate.id === playbook.id)?.aPlusExamples.find((entry) => entry.id === exampleId);
+  const getEntryFromState = (playbooks: PlaybookRecord[], exampleId: string): ExampleRecord | undefined => {
+    const entries = playbooks.find((candidate) => candidate.id === playbook.id)?.aPlusExamples;
+    return toSafeArray<unknown>(entries)
+      .map((entry) => normalizeExampleRecord(entry))
+      .find((entry): entry is ExampleRecord => Boolean(entry && entry.id === exampleId));
+  };
 
   const dismissTradeIds = (tradeIds: string[]) => {
     const uniqueIds = Array.from(new Set(tradeIds.filter((value) => value.trim().length > 0)));
     if (uniqueIds.length === 0) {
       return;
     }
-    setDismissedTradeIds((current) => Array.from(new Set([...current, ...uniqueIds])));
+    setDismissedTradeIds((current) => pruneDismissedTradeIds([...current, ...uniqueIds]));
   };
 
   const clearDismissedTradeId = (tradeId: string) => {
@@ -593,7 +665,7 @@ export const APlusExampleLibrary = ({
   };
 
   const removeExample = (exampleId: string) => {
-    const entry = playbook.aPlusExamples.find((candidate) => candidate.id === exampleId);
+    const entry = aPlusExamples.find((candidate) => candidate.id === exampleId);
     if (entry) {
       const tradeIdsToDismiss = new Set<string>();
       if (entry.tradeId.trim().length > 0) {
@@ -642,7 +714,7 @@ export const APlusExampleLibrary = ({
     }
 
     const candidate = exactDateMatches[0];
-    const isLinkedElsewhere = playbook.aPlusExamples.some(
+    const isLinkedElsewhere = aPlusExamples.some(
       (existing) => existing.id !== entry.id && existing.tradeId === candidate.id
     );
     if (isLinkedElsewhere) {
@@ -706,7 +778,7 @@ export const APlusExampleLibrary = ({
           Curate your best B+ and A game trades with screenshots, recordings, and notes. Tagged chart screenshots for
           B+ and A game trades are added here automatically.
         </span>
-        {playbook.aPlusExamples.length > 0 ? (
+        {aPlusExamples.length > 0 ? (
           <div className="playbook-aplus-controls">
             <div className="playbook-database-search-row">
               <input
@@ -736,14 +808,14 @@ export const APlusExampleLibrary = ({
               ) : null}
             </div>
             <span className="playbook-aplus-controls-meta">
-              Showing {visibleExamples.length} of {playbook.aPlusExamples.length} example
-              {playbook.aPlusExamples.length === 1 ? "" : "s"}
+              Showing {visibleExamples.length} of {aPlusExamples.length} example
+              {aPlusExamples.length === 1 ? "" : "s"}
             </span>
           </div>
         ) : null}
 
         <div className="playbook-aplus-entry-list">
-          {playbook.aPlusExamples.length === 0 ? (
+          {aPlusExamples.length === 0 ? (
             <div className="empty-state">
               No examples yet. Add a tagged B+ or A game trade below to start building your A+ library.
             </div>
@@ -762,18 +834,22 @@ export const APlusExampleLibrary = ({
                   ? entry.recordingPath
                   : resolvePlaybookAttachmentSrc(entry.recordingPath)
                 : "";
+              const openingExecutions = trade ? toSafeArray<unknown>(trade.openingExecutions) : [];
+              const closingExecutions = trade ? toSafeArray<unknown>(trade.closingExecutions) : [];
+              const addSignals = trade ? toSafeArray<{ averagedDown?: boolean; addedToWinner?: boolean }>(trade.addSignals) : [];
               const executionCount = trade
-                ? trade.openingExecutions.length + trade.closingExecutions.length
+                ? openingExecutions.length + closingExecutions.length
                 : 0;
-              const addCount = trade ? trade.addSignals.length : 0;
+              const addCount = trade ? addSignals.length : 0;
               const averagedDownCount = trade
-                ? trade.addSignals.filter((signal) => signal.averagedDown).length
+                ? addSignals.filter((signal) => Boolean(signal?.averagedDown)).length
                 : 0;
               const addedToWinnerCount = trade
-                ? trade.addSignals.filter((signal) => signal.addedToWinner).length
+                ? addSignals.filter((signal) => Boolean(signal?.addedToWinner)).length
                 : 0;
               const setupLabel =
-                trade?.setups.find((candidate) => candidate.trim().length > 0)?.trim() ?? playbook.name;
+                toSafeArray<string>(trade?.setups).find((candidate) => toSafeText(candidate).trim().length > 0)?.trim() ??
+                playbook.name;
               const headerDate = trade?.tradeDate || entry.tradeDate || "-";
               const priceEdgePerShare = trade
                 ? trade.side === "Long"
@@ -1072,9 +1148,28 @@ export const APlusExampleLibrary = ({
             availableEligibleTrades.slice(0, 24).map((trade) => (
               <div key={trade.id} className="playbook-aplus-eligible-row">
                 <div className="playbook-aplus-eligible-copy">
-                  <strong>{trade.name}</strong>
-                  <span>
-                    {trade.symbol} · {trade.tradeDate} · {trade.game} · {formatSignedMoney(trade.netPnlUsd)}
+                  <div className="playbook-aplus-eligible-top">
+                    <strong>{trade.name}</strong>
+                    <span className={getSignedValueClassName(trade.netPnlUsd)}>
+                      {formatSignedMoney(trade.netPnlUsd)}
+                    </span>
+                  </div>
+                  <span className="playbook-aplus-eligible-inline-row">
+                    <span>Date {trade.tradeDate}</span>
+                    <span>{trade.symbol}</span>
+                    <span>
+                      {trade.openTime} to {trade.closeTime}
+                    </span>
+                    <span>Hold {getHoldLabel(trade)}</span>
+                  </span>
+                  <span className="playbook-aplus-eligible-inline-row playbook-aplus-eligible-inline-row-tight">
+                    <span>
+                      {trade.side} - {trade.status}
+                    </span>
+                    <span>Size {formatSize(trade.size)}</span>
+                    <span>In {formatMoney(trade.entryPrice)}</span>
+                    <span>Out {formatMoney(trade.exitPrice)}</span>
+                    <span>Fees {formatMoney(trade.feesUsd)}</span>
                   </span>
                 </div>
                 <div className="playbook-aplus-eligible-actions">
@@ -1097,3 +1192,4 @@ export const APlusExampleLibrary = ({
     </div>
   );
 };
+

@@ -4,14 +4,18 @@ import type { TimeSeriesPoint } from "../lib/analytics/tradeAnalytics";
 
 interface ReportBarChartProps {
   points: TimeSeriesPoint[];
+  comparePoints?: TimeSeriesPoint[];
   title: string;
   yAxisLabel: string;
   color?: string;
+  compareColor?: string;
   negativeColor?: string;
   positiveColor?: string;
   valueFormatter?: (value: number) => string;
   labelFormatter?: (label: string) => string;
   layout?: "vertical" | "horizontal";
+  primarySeriesLabel?: string;
+  compareSeriesLabel?: string;
 }
 
 const formatChartLabel = (value: string): string => {
@@ -58,14 +62,18 @@ const formatAxisValue = (value: number): string => {
 
 export const ReportBarChart = ({
   points,
+  comparePoints = [],
   title,
   yAxisLabel,
   color = "#c694ff",
+  compareColor = "#7f91b8",
   negativeColor = "#b42eff",
   positiveColor = "#2ee6d6",
   valueFormatter = (value) => value.toFixed(2),
   labelFormatter = formatChartLabel,
-  layout = "horizontal"
+  layout = "horizontal",
+  primarySeriesLabel = "Current",
+  compareSeriesLabel = "Previous"
 }: ReportBarChartProps) => {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const chartId = useId().replace(/:/g, "");
@@ -82,7 +90,7 @@ export const ReportBarChart = ({
     const innerHeight =
       layout === "horizontal" ? Math.max(minInnerHeight, points.length * 22) : minInnerHeight;
     const height = paddingTop + paddingBottom + innerHeight;
-    const values = points.map((point) => point.value);
+    const values = [...points.map((point) => point.value), ...comparePoints.map((point) => point.value)];
     const minValue = values.length > 0 ? Math.min(...values, 0) : 0;
     const maxValue = values.length > 0 ? Math.max(...values, 0) : 0;
     const rawRange = maxValue - minValue || Math.max(1, Math.abs(maxValue), Math.abs(minValue));
@@ -106,6 +114,33 @@ export const ReportBarChart = ({
           barBreadth: barWidth,
           barLength: heightValue,
           isNegative: point.value < 0,
+          rectX: x,
+          rectY: top
+        };
+      });
+      const compareBars = points.map((_, index) => {
+        if (comparePoints.length === 0) {
+          return null;
+        }
+        const mappedIndex =
+          points.length <= 1 || comparePoints.length <= 1
+            ? Math.min(index, comparePoints.length - 1)
+            : Math.round((index / (points.length - 1)) * (comparePoints.length - 1));
+        const comparePoint = comparePoints[mappedIndex];
+        if (!comparePoint) {
+          return null;
+        }
+        const compareWidth = Math.max(8, Math.min(36, barWidth * 0.58));
+        const x = paddingLeft + index * slotWidth + (slotWidth - compareWidth) / 2;
+        const y = yScale(comparePoint.value);
+        const top = Math.min(y, baselineY);
+        const heightValue = Math.max(2, Math.abs(y - baselineY));
+
+        return {
+          ...comparePoint,
+          barBreadth: compareWidth,
+          barLength: heightValue,
+          isNegative: comparePoint.value < 0,
           rectX: x,
           rectY: top
         };
@@ -147,6 +182,7 @@ export const ReportBarChart = ({
             : null;
         }).filter((tick): tick is NonNullable<typeof tick> => tick !== null),
         chartBars,
+        compareBars,
         height,
         innerHeight,
         innerWidth,
@@ -175,6 +211,33 @@ export const ReportBarChart = ({
         barBreadth: barHeight,
         barLength,
         isNegative: point.value < 0,
+        rectX,
+        rectY: y
+      };
+    });
+    const compareBars = points.map((_, index) => {
+      if (comparePoints.length === 0) {
+        return null;
+      }
+      const mappedIndex =
+        points.length <= 1 || comparePoints.length <= 1
+          ? Math.min(index, comparePoints.length - 1)
+          : Math.round((index / (points.length - 1)) * (comparePoints.length - 1));
+      const comparePoint = comparePoints[mappedIndex];
+      if (!comparePoint) {
+        return null;
+      }
+      const compareBarHeight = Math.max(5, Math.min(22, barHeight * 0.58));
+      const y = paddingTop + index * slotHeight + (slotHeight - compareBarHeight) / 2;
+      const xValue = xScale(comparePoint.value);
+      const rectX = Math.min(xValue, baselineX);
+      const barLength = Math.max(2, Math.abs(xValue - baselineX));
+
+      return {
+        ...comparePoint,
+        barBreadth: compareBarHeight,
+        barLength,
+        isNegative: comparePoint.value < 0,
         rectX,
         rectY: y
       };
@@ -218,6 +281,7 @@ export const ReportBarChart = ({
           : null;
       }).filter((tick): tick is NonNullable<typeof tick> => tick !== null),
       chartBars,
+      compareBars,
       height,
       innerHeight,
       innerWidth,
@@ -229,13 +293,15 @@ export const ReportBarChart = ({
       valueTicks,
       width
     };
-  }, [layout, points]);
+  }, [comparePoints, layout, points]);
 
   if (points.length === 0) {
     return <div className="empty-state">Adjust the report filters to populate this chart.</div>;
   }
 
   const hoveredPoint = hoveredIndex === null ? null : chart.chartBars[hoveredIndex] ?? null;
+  const hoveredComparePoint =
+    hoveredIndex === null ? null : chart.compareBars[hoveredIndex] ?? null;
   const tooltipAnchorX = hoveredPoint
     ? chart.layout === "horizontal"
       ? hoveredPoint.value >= 0
@@ -309,7 +375,9 @@ export const ReportBarChart = ({
         </div>
         <span className="report-line-chart-readout">
           {hoveredPoint
-            ? `${labelFormatter(hoveredPoint.label)} - ${valueFormatter(hoveredPoint.value)}`
+            ? `${labelFormatter(hoveredPoint.label)} - ${primarySeriesLabel}: ${valueFormatter(hoveredPoint.value)}${
+                hoveredComparePoint ? ` | ${compareSeriesLabel}: ${valueFormatter(hoveredComparePoint.value)}` : ""
+              }`
             : "Hover chart for bar details"}
         </span>
       </div>
@@ -333,6 +401,10 @@ export const ReportBarChart = ({
             <linearGradient id={`${chartId}-neutral-gradient`} x1="0%" y1="0%" x2="100%" y2="0%">
               <stop offset="0%" stopColor={color} stopOpacity="0.72" />
               <stop offset="100%" stopColor={color} stopOpacity="0.96" />
+            </linearGradient>
+            <linearGradient id={`${chartId}-compare-gradient`} x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor={compareColor} stopOpacity="0.28" />
+              <stop offset="100%" stopColor={compareColor} stopOpacity="0.6" />
             </linearGradient>
             <filter id={`${chartId}-bar-glow`} x="-20%" y="-40%" width="150%" height="200%">
               <feGaussianBlur stdDeviation="2.1" result="barBlur" />
@@ -446,6 +518,22 @@ export const ReportBarChart = ({
             y2={chart.height - chart.paddingBottom}
             className="report-line-chart-axis"
           />
+          {chart.compareBars.map((point, index) =>
+            point ? (
+              <rect
+                key={`compare-${point.label}-${index}`}
+                x={point.rectX}
+                y={point.rectY}
+                width={chart.layout === "horizontal" ? point.barLength : point.barBreadth}
+                height={chart.layout === "horizontal" ? point.barBreadth : point.barLength}
+                rx="6"
+                fill={`url(#${chartId}-compare-gradient)`}
+                className={`report-bar-chart-bar report-bar-chart-bar-compare ${
+                  hoveredIndex === index ? "is-hovered" : hoveredIndex !== null ? "is-muted" : ""
+                }`}
+              />
+            ) : null
+          )}
           {chart.chartBars.map((point, index) => (
             <rect
               key={`${point.label}-${index}`}
@@ -497,13 +585,23 @@ export const ReportBarChart = ({
                 />
               )}
               <g transform={`translate(${tooltipX}, ${tooltipY})`}>
-                <rect width="202" height="58" rx="12" className="report-line-chart-tooltip-box" />
+                <rect
+                  width="202"
+                  height={hoveredComparePoint ? "78" : "58"}
+                  rx="12"
+                  className="report-line-chart-tooltip-box"
+                />
                 <text x="14" y="22" className="report-line-chart-tooltip-label">
                   {labelFormatter(hoveredPoint.label)}
                 </text>
                 <text x="14" y="43" className="report-line-chart-tooltip-value">
-                  {valueFormatter(hoveredPoint.value)}
+                  {primarySeriesLabel}: {valueFormatter(hoveredPoint.value)}
                 </text>
+                {hoveredComparePoint ? (
+                  <text x="14" y="62" className="report-line-chart-tooltip-label">
+                    {compareSeriesLabel}: {valueFormatter(hoveredComparePoint.value)}
+                  </text>
+                ) : null}
               </g>
             </g>
           ) : null}

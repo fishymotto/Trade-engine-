@@ -278,7 +278,391 @@ begin
 end;
 $$;
 
--- 3) Recommended run order:
+-- 3) Always-on history snapshots for blob tables (prevents unrecoverable overwrites).
+create table if not exists public.trade_engine_blob_history (
+  id bigint generated always as identity primary key,
+  table_name text not null,
+  user_id uuid not null references auth.users (id) on delete cascade,
+  data text not null,
+  data_hash text not null,
+  source_updated_at timestamptz not null,
+  captured_at timestamptz not null default now(),
+  capture_reason text not null default 'trigger'
+);
+
+create index if not exists trade_engine_blob_history_lookup_idx
+  on public.trade_engine_blob_history (table_name, user_id, captured_at desc);
+
+create unique index if not exists trade_engine_blob_history_dedupe_idx
+  on public.trade_engine_blob_history (table_name, user_id, data_hash, source_updated_at);
+
+alter table public.trade_engine_blob_history enable row level security;
+
+do $$
+begin
+  if not exists (
+    select 1
+      from pg_policies
+     where schemaname = 'public'
+       and tablename = 'trade_engine_blob_history'
+       and policyname = 'trade_engine_blob_history_select_own'
+  ) then
+    create policy "trade_engine_blob_history_select_own"
+      on public.trade_engine_blob_history
+      for select
+      using (auth.uid() = user_id);
+  end if;
+end;
+$$;
+
+grant select on public.trade_engine_blob_history to authenticated;
+
+create or replace function public.trade_engine_capture_blob_history()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  new_hash text;
+begin
+  if new.user_id is null or new.data is null then
+    return new;
+  end if;
+
+  new_hash := md5(new.data);
+
+  -- Skip noisy duplicates in rapid autosave bursts.
+  if exists (
+    select 1
+      from public.trade_engine_blob_history history
+     where history.table_name = tg_table_name
+       and history.user_id = new.user_id
+       and history.data_hash = new_hash
+       and history.captured_at >= now() - interval '15 minutes'
+  ) then
+    return new;
+  end if;
+
+  insert into public.trade_engine_blob_history (
+    table_name,
+    user_id,
+    data,
+    data_hash,
+    source_updated_at,
+    captured_at,
+    capture_reason
+  )
+  values (
+    tg_table_name,
+    new.user_id,
+    new.data,
+    new_hash,
+    coalesce(new.updated_at, now()),
+    now(),
+    case when tg_op = 'INSERT' then 'insert' else 'update' end
+  )
+  on conflict (table_name, user_id, data_hash, source_updated_at) do nothing;
+
+  -- Keep a rolling history window per table/user to control storage growth.
+  delete from public.trade_engine_blob_history old_history
+   where old_history.id in (
+     select history.id
+       from (
+         select id,
+                row_number() over (
+                  partition by table_name, user_id
+                  order by captured_at desc, id desc
+                ) as rn
+           from public.trade_engine_blob_history
+          where table_name = tg_table_name
+            and user_id = new.user_id
+       ) history
+      where history.rn > 250
+   );
+
+  return new;
+end;
+$$;
+
+do $$
+declare
+  t text;
+  trigger_name text;
+  tables text[] := array[
+    'user_trade_sessions',
+    'user_journal_pages',
+    'user_settings',
+    'user_trade_tag_options',
+    'user_trade_tag_overrides',
+    'user_trade_reviews',
+    'user_historical_bars',
+    'user_journal_checklist_templates',
+    'user_workspace_state',
+    'user_trade_tag_catalog',
+    'user_playbooks',
+    'user_library_pages',
+    'user_headlines',
+    'user_select_option_additions',
+    'user_review_templates'
+  ];
+begin
+  foreach t in array tables loop
+    if to_regclass(format('public.%I', t)) is null then
+      continue;
+    end if;
+
+    trigger_name := format('%s_capture_history_trg', t);
+
+    execute format(
+      'drop trigger if exists %I on public.%I;',
+      trigger_name,
+      t
+    );
+
+    execute format(
+      'create trigger %I
+         after insert or update of data, updated_at
+         on public.%I
+         for each row
+         execute function public.trade_engine_capture_blob_history();',
+      trigger_name,
+      t
+    );
+  end loop;
+end;
+$$;
+
+-- 3b) Guard against catastrophic blob shrink on the most sensitive tables.
+create or replace function public.trade_engine_prevent_catastrophic_blob_shrink()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  old_len integer;
+  new_len integer;
+  old_ts timestamptz;
+  new_ts timestamptz;
+begin
+  if tg_op <> 'UPDATE' then
+    return new;
+  end if;
+
+  if old.data is null or new.data is null then
+    return new;
+  end if;
+
+  old_len := length(old.data);
+  new_len := length(new.data);
+  old_ts := coalesce(old.updated_at, to_timestamp(0));
+  new_ts := coalesce(new.updated_at, now());
+
+  -- Allow normal edits. Intervene only on extreme shrink events that are usually stale-cache clobbers.
+  if old_len >= 4000
+     and new_len <= greatest(300, (old_len * 0.20)::int)
+     and new_ts < old_ts + interval '30 days' then
+    new.data := old.data;
+    new.updated_at := old.updated_at;
+  end if;
+
+  return new;
+end;
+$$;
+
+do $$
+declare
+  t text;
+  trigger_name text;
+  guarded_tables text[] := array[
+    'user_journal_pages',
+    'user_trade_reviews',
+    'user_trade_tag_overrides'
+  ];
+begin
+  foreach t in array guarded_tables loop
+    if to_regclass(format('public.%I', t)) is null then
+      continue;
+    end if;
+
+    trigger_name := format('%s_prevent_catastrophic_shrink_trg', t);
+
+    execute format(
+      'drop trigger if exists %I on public.%I;',
+      trigger_name,
+      t
+    );
+
+    execute format(
+      'create trigger %I
+         before update of data, updated_at
+         on public.%I
+         for each row
+         execute function public.trade_engine_prevent_catastrophic_blob_shrink();',
+      trigger_name,
+      t
+    );
+  end loop;
+end;
+$$;
+
+create or replace function public.trade_engine_seed_blob_history(seed_reason text default 'manual_seed')
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  t text;
+  inserted_count integer;
+  total_inserted integer := 0;
+  tables text[] := array[
+    'user_trade_sessions',
+    'user_journal_pages',
+    'user_settings',
+    'user_trade_tag_options',
+    'user_trade_tag_overrides',
+    'user_trade_reviews',
+    'user_historical_bars',
+    'user_journal_checklist_templates',
+    'user_workspace_state',
+    'user_trade_tag_catalog',
+    'user_playbooks',
+    'user_library_pages',
+    'user_headlines',
+    'user_select_option_additions',
+    'user_review_templates'
+  ];
+begin
+  foreach t in array tables loop
+    if to_regclass(format('public.%I', t)) is null then
+      continue;
+    end if;
+
+    execute format(
+      'with inserted as (
+         insert into public.trade_engine_blob_history (
+           table_name, user_id, data, data_hash, source_updated_at, captured_at, capture_reason
+         )
+         select %L::text,
+                src.user_id,
+                src.data,
+                md5(src.data),
+                coalesce(src.updated_at, now()),
+                now(),
+                %L::text
+           from public.%I src
+         on conflict (table_name, user_id, data_hash, source_updated_at) do nothing
+         returning 1
+       )
+       select count(*)::int from inserted;',
+      t,
+      seed_reason,
+      t
+    )
+    into inserted_count;
+
+    total_inserted := total_inserted + coalesce(inserted_count, 0);
+  end loop;
+
+  return total_inserted;
+end;
+$$;
+
+create or replace function public.trade_engine_restore_blob_from_history(
+  target_table text,
+  target_user_id uuid,
+  history_id bigint
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  snapshot record;
+  allowed_tables text[] := array[
+    'user_trade_sessions',
+    'user_journal_pages',
+    'user_settings',
+    'user_trade_tag_options',
+    'user_trade_tag_overrides',
+    'user_trade_reviews',
+    'user_historical_bars',
+    'user_journal_checklist_templates',
+    'user_workspace_state',
+    'user_trade_tag_catalog',
+    'user_playbooks',
+    'user_library_pages',
+    'user_headlines',
+    'user_select_option_additions',
+    'user_review_templates'
+  ];
+begin
+  if target_user_id is null then
+    raise exception 'target_user_id is required';
+  end if;
+
+  if target_table is null or not (target_table = any(allowed_tables)) then
+    raise exception 'unsupported target_table: %', target_table;
+  end if;
+
+  select *
+    into snapshot
+    from public.trade_engine_blob_history
+   where id = history_id
+     and table_name = target_table
+     and user_id = target_user_id
+   limit 1;
+
+  if snapshot is null then
+    return false;
+  end if;
+
+  execute format(
+    'insert into public.%I (user_id, data, updated_at)
+     values ($1::uuid, $2::text, now())
+     on conflict (user_id) do update
+       set data = excluded.data,
+           updated_at = excluded.updated_at;',
+    target_table
+  )
+  using target_user_id, snapshot.data;
+
+  return true;
+end;
+$$;
+
+do $$
+begin
+  revoke all on function public.trade_engine_capture_blob_history() from public;
+  revoke all on function public.trade_engine_prevent_catastrophic_blob_shrink() from public;
+  revoke all on function public.trade_engine_seed_blob_history(text) from public;
+  revoke all on function public.trade_engine_restore_blob_from_history(text, uuid, bigint) from public;
+
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    revoke all on function public.trade_engine_capture_blob_history() from anon;
+    revoke all on function public.trade_engine_prevent_catastrophic_blob_shrink() from anon;
+    revoke all on function public.trade_engine_seed_blob_history(text) from anon;
+    revoke all on function public.trade_engine_restore_blob_from_history(text, uuid, bigint) from anon;
+  end if;
+
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    revoke all on function public.trade_engine_capture_blob_history() from authenticated;
+    revoke all on function public.trade_engine_prevent_catastrophic_blob_shrink() from authenticated;
+    revoke all on function public.trade_engine_seed_blob_history(text) from authenticated;
+    revoke all on function public.trade_engine_restore_blob_from_history(text, uuid, bigint) from authenticated;
+  end if;
+
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    grant execute on function public.trade_engine_seed_blob_history(text) to service_role;
+    grant execute on function public.trade_engine_restore_blob_from_history(text, uuid, bigint) to service_role;
+  end if;
+end;
+$$;
+
+-- 4) Recommended run order:
 --    a) run scripts/supabase.sql
 --    b) select public.trade_engine_backup_snapshot('before_multi_user');
 --    c) select public.trade_engine_assign_legacy_data_to_admin('<YOUR_ADMIN_USER_UUID>'::uuid);

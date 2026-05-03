@@ -3,6 +3,7 @@ import type { JSONContent } from "@tiptap/core";
 export type LibraryCollectionId =
   | "idea-inbox"
   | "book-club"
+  | "strong-views"
   | "quotes"
   | "weekly-review"
   | "monthly-review"
@@ -28,4 +29,19 @@ export interface LibraryPageRecord {
   content: JSONContent;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface StrongViewProperties {
+  ticker: string;
+  date: string;
+  bias: string;
+  atr: string;
+  rvol: string;
+  support: string | JSONContent;
+  resistance: string | JSONContent;
+  openClose: string | JSONContent;
+  notes: string | JSONContent;
+  catalyst: string | JSONContent;
+  gamePlan: string | JSONContent;
+  morningChat: string;
 }

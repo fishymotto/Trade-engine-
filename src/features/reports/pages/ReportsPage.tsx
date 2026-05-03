@@ -63,6 +63,7 @@ const formatReportDate = (value: string): string => {
 
 type ActiveReportFilterKey = "date" | "playbook" | "symbol" | "status" | "game" | "execution";
 type ComparisonTone = "positive" | "negative" | "neutral";
+type ReportSliceMode = "current" | "previous";
 
 interface DateRangePreset {
   key: "all" | "last5" | "last20" | "last60";
@@ -147,6 +148,171 @@ const formatRelativeDelta = (delta: number, previousValue: number): string => {
   return `${relative >= 0 ? "+" : ""}${relative.toFixed(1)}%`;
 };
 
+const formatSignedNumber = (value: number, decimals = 2): string =>
+  `${value >= 0 ? "+" : "-"}${Math.abs(value).toFixed(decimals)}`;
+
+type ReportSummary = ReturnType<typeof getTradeSummary>;
+type HourlyBreakdownRow = ReturnType<typeof getHourlyBreakdown>[number];
+type PerformanceRow = ReturnType<typeof getPerformanceBySymbol>[number];
+type TimeSeriesPoint = ReturnType<typeof getNetPnlByDate>[number];
+
+interface HourlyComparisonRow {
+  label: string;
+  activeNetPnl: number;
+  referenceNetPnl: number | null;
+}
+
+const buildHourlyComparisonRows = (
+  activeRows: HourlyBreakdownRow[],
+  referenceRows: HourlyBreakdownRow[],
+  includeReference: boolean
+): HourlyComparisonRow[] => {
+  const activeByLabel = new Map(activeRows.map((row) => [row.label, row.netPnl]));
+  const referenceByLabel = new Map(referenceRows.map((row) => [row.label, row.netPnl]));
+  const labels = new Set<string>(activeByLabel.keys());
+  if (includeReference) {
+    for (const label of referenceByLabel.keys()) {
+      labels.add(label);
+    }
+  }
+
+  return Array.from(labels)
+    .sort((left, right) => left.localeCompare(right))
+    .map((label) => ({
+      label,
+      activeNetPnl: activeByLabel.get(label) ?? 0,
+      referenceNetPnl: includeReference ? (referenceByLabel.get(label) ?? 0) : null
+    }));
+};
+
+interface ReportSliceMetrics {
+  symbols: number;
+  reportSummary: ReportSummary;
+  avgWinner: number;
+  avgLoser: number;
+  hourlyBreakdown: HourlyBreakdownRow[];
+  symbolRows: PerformanceRow[];
+  topSymbols: PerformanceRow[];
+  gatewayRows: PerformanceRow[];
+  setupPerformanceRows: PerformanceRow[];
+  setupRows: PerformanceRow[];
+  mistakePerformanceRows: PerformanceRow[];
+  mistakeRows: PerformanceRow[];
+  gameRows: PerformanceRow[];
+  executionRows: PerformanceRow[];
+  cumulativeNetPnlSeries: TimeSeriesPoint[];
+  dailyNetPnlSeries: TimeSeriesPoint[];
+  feesByDateSeries: TimeSeriesPoint[];
+  sharesTradedByDateSeries: TimeSeriesPoint[];
+  playbookNetPnlSeries: TimeSeriesPoint[];
+  mistakeLossSeries: TimeSeriesPoint[];
+  bestDailyNetPnl: TimeSeriesPoint | null;
+  worstDailyNetPnl: TimeSeriesPoint | null;
+  highestFeeDay: TimeSeriesPoint | null;
+  mostActiveShareDay: TimeSeriesPoint | null;
+  bestPlaybook: PerformanceRow | undefined;
+  costliestMistake: PerformanceRow | undefined;
+  topSymbolLabel: string;
+}
+
+const buildReportSliceMetrics = (sliceTrades: GroupedTrade[]): ReportSliceMetrics => {
+  const symbols = new Set(sliceTrades.map((trade) => trade.symbol)).size;
+  const reportSummary = getTradeSummary(sliceTrades);
+  const winningTrades = sliceTrades.filter((trade) => trade.netPnlUsd > 0);
+  const losingTrades = sliceTrades.filter((trade) => trade.netPnlUsd < 0);
+  const avgWinner =
+    winningTrades.length > 0
+      ? winningTrades.reduce((sum, trade) => sum + trade.netPnlUsd, 0) / winningTrades.length
+      : 0;
+  const avgLoser =
+    losingTrades.length > 0
+      ? losingTrades.reduce((sum, trade) => sum + trade.netPnlUsd, 0) / losingTrades.length
+      : 0;
+  const hourlyBreakdown = getHourlyBreakdown(sliceTrades);
+  const symbolRows = getPerformanceBySymbol(sliceTrades);
+  const topSymbols = symbolRows.slice(0, 8);
+  const gatewayRows = getPerformanceByGateway(sliceTrades).slice(0, 8);
+  const setupPerformanceRows = getPerformanceBySetup(sliceTrades);
+  const setupRows = setupPerformanceRows.slice(0, 8);
+  const mistakePerformanceRows = getPerformanceByMistake(sliceTrades);
+  const mistakeRows = mistakePerformanceRows.slice(0, 8);
+  const gameRows = getPerformanceByGame(sliceTrades).slice(0, 8);
+  const executionRows = getPerformanceByExecution(sliceTrades).slice(0, 8);
+  const cumulativeNetPnlSeries = getCumulativeNetPnlByDate(sliceTrades);
+  const dailyNetPnlSeries = getNetPnlByDate(sliceTrades);
+  const feesByDateSeries = getFeesByDate(sliceTrades);
+  const sharesTradedByDateSeries = getSharesTradedByDate(sliceTrades);
+  const playbookNetPnlSeries = [...setupPerformanceRows]
+    .filter((row) => row.label !== "No Setup")
+    .sort((left, right) => Math.abs(right.netPnl) - Math.abs(left.netPnl) || right.trades - left.trades)
+    .slice(0, 10)
+    .map((row) => ({
+      label: row.label,
+      value: row.netPnl
+    }));
+  const mistakeLossSeries = [...mistakePerformanceRows]
+    .filter((row) => row.label !== "No Mistakes" && row.netPnl < 0)
+    .sort((left, right) => left.netPnl - right.netPnl || right.trades - left.trades)
+    .slice(0, 10)
+    .map((row) => ({
+      label: row.label,
+      value: row.netPnl
+    }));
+  const bestDailyNetPnl = dailyNetPnlSeries.reduce<TimeSeriesPoint | null>(
+    (best, point) => (!best || point.value > best.value ? point : best),
+    null
+  );
+  const worstDailyNetPnl = dailyNetPnlSeries.reduce<TimeSeriesPoint | null>(
+    (worst, point) => (!worst || point.value < worst.value ? point : worst),
+    null
+  );
+  const highestFeeDay = feesByDateSeries.reduce<TimeSeriesPoint | null>(
+    (highest, point) => (!highest || point.value > highest.value ? point : highest),
+    null
+  );
+  const mostActiveShareDay = sharesTradedByDateSeries.reduce<TimeSeriesPoint | null>(
+    (highest, point) => (!highest || point.value > highest.value ? point : highest),
+    null
+  );
+  const bestPlaybook = [...setupPerformanceRows]
+    .filter((row) => row.label !== "No Setup")
+    .sort((left, right) => right.netPnl - left.netPnl || right.trades - left.trades)[0];
+  const costliestMistake = [...mistakePerformanceRows]
+    .filter((row) => row.label !== "No Mistakes" && row.netPnl < 0)
+    .sort((left, right) => left.netPnl - right.netPnl || right.trades - left.trades)[0];
+  const topSymbolLabel = symbolRows[0]?.label ?? "--";
+
+  return {
+    symbols,
+    reportSummary,
+    avgWinner,
+    avgLoser,
+    hourlyBreakdown,
+    symbolRows,
+    topSymbols,
+    gatewayRows,
+    setupPerformanceRows,
+    setupRows,
+    mistakePerformanceRows,
+    mistakeRows,
+    gameRows,
+    executionRows,
+    cumulativeNetPnlSeries,
+    dailyNetPnlSeries,
+    feesByDateSeries,
+    sharesTradedByDateSeries,
+    playbookNetPnlSeries,
+    mistakeLossSeries,
+    bestDailyNetPnl,
+    worstDailyNetPnl,
+    highestFeeDay,
+    mostActiveShareDay,
+    bestPlaybook,
+    costliestMistake,
+    topSymbolLabel
+  };
+};
+
 export const ReportsPage = ({
   trades,
   externalTradeDateFilterStart = "",
@@ -165,6 +331,7 @@ export const ReportsPage = ({
   const [selectedStatusFilter, setSelectedStatusFilter] = useState(externalStatusFilter);
   const [selectedGameFilter, setSelectedGameFilter] = useState(externalGameFilter);
   const [selectedExecutionFilter, setSelectedExecutionFilter] = useState(externalExecutionFilter);
+  const [reportSliceMode, setReportSliceMode] = useState<ReportSliceMode>("current");
 
   useEffect(() => {
     setSelectedTradeDateFilterStart(externalTradeDateFilterStart);
@@ -377,72 +544,6 @@ export const ReportsPage = ({
     ]
   );
 
-  const symbols = new Set(filteredTrades.map((trade) => trade.symbol)).size;
-  const reportSummary = getTradeSummary(filteredTrades);
-  const winningTrades = filteredTrades.filter((trade) => trade.netPnlUsd > 0);
-  const losingTrades = filteredTrades.filter((trade) => trade.netPnlUsd < 0);
-  const avgWinner =
-    winningTrades.length > 0
-      ? winningTrades.reduce((sum, trade) => sum + trade.netPnlUsd, 0) / winningTrades.length
-      : 0;
-  const avgLoser =
-    losingTrades.length > 0
-      ? losingTrades.reduce((sum, trade) => sum + trade.netPnlUsd, 0) / losingTrades.length
-      : 0;
-  const hourlyBreakdown = getHourlyBreakdown(filteredTrades);
-  const maxHourlyMagnitude = Math.max(...hourlyBreakdown.map((row) => Math.abs(row.netPnl)), 1);
-  const symbolRows = getPerformanceBySymbol(filteredTrades);
-  const topSymbols = symbolRows.slice(0, 8);
-  const gatewayRows = getPerformanceByGateway(filteredTrades).slice(0, 8);
-  const setupPerformanceRows = getPerformanceBySetup(filteredTrades);
-  const setupRows = setupPerformanceRows.slice(0, 8);
-  const mistakePerformanceRows = getPerformanceByMistake(filteredTrades);
-  const mistakeRows = mistakePerformanceRows.slice(0, 8);
-  const gameRows = getPerformanceByGame(filteredTrades).slice(0, 8);
-  const executionRows = getPerformanceByExecution(filteredTrades).slice(0, 8);
-  const cumulativeNetPnlSeries = getCumulativeNetPnlByDate(filteredTrades);
-  const dailyNetPnlSeries = getNetPnlByDate(filteredTrades);
-  const feesByDateSeries = getFeesByDate(filteredTrades);
-  const sharesTradedByDateSeries = getSharesTradedByDate(filteredTrades);
-  const playbookNetPnlSeries = [...setupPerformanceRows]
-    .filter((row) => row.label !== "No Setup")
-    .sort((left, right) => Math.abs(right.netPnl) - Math.abs(left.netPnl) || right.trades - left.trades)
-    .slice(0, 10)
-    .map((row) => ({
-      label: row.label,
-      value: row.netPnl
-    }));
-  const mistakeLossSeries = [...mistakePerformanceRows]
-    .filter((row) => row.label !== "No Mistakes" && row.netPnl < 0)
-    .sort((left, right) => left.netPnl - right.netPnl || right.trades - left.trades)
-    .slice(0, 10)
-    .map((row) => ({
-      label: row.label,
-      value: row.netPnl
-    }));
-  const bestDailyNetPnl = dailyNetPnlSeries.reduce<(typeof dailyNetPnlSeries)[number] | null>(
-    (best, point) => (!best || point.value > best.value ? point : best),
-    null
-  );
-  const worstDailyNetPnl = dailyNetPnlSeries.reduce<(typeof dailyNetPnlSeries)[number] | null>(
-    (worst, point) => (!worst || point.value < worst.value ? point : worst),
-    null
-  );
-  const highestFeeDay = feesByDateSeries.reduce<(typeof feesByDateSeries)[number] | null>(
-    (highest, point) => (!highest || point.value > highest.value ? point : highest),
-    null
-  );
-  const mostActiveShareDay = sharesTradedByDateSeries.reduce<(typeof sharesTradedByDateSeries)[number] | null>(
-    (highest, point) => (!highest || point.value > highest.value ? point : highest),
-    null
-  );
-  const bestPlaybook = [...setupPerformanceRows]
-    .filter((row) => row.label !== "No Setup")
-    .sort((left, right) => right.netPnl - left.netPnl || right.trades - left.trades)[0];
-  const costliestMistake = [...mistakePerformanceRows]
-    .filter((row) => row.label !== "No Mistakes" && row.netPnl < 0)
-    .sort((left, right) => left.netPnl - right.netPnl || right.trades - left.trades)[0];
-  const topSymbolLabel = symbolRows[0]?.label ?? "--";
   const comparisonWindow = useMemo(() => {
     const currentDatesDesc = Array.from(new Set(filteredTrades.map((trade) => trade.tradeDate))).sort((left, right) =>
       right.localeCompare(left)
@@ -484,58 +585,127 @@ export const ReportsPage = ({
     };
   }, [attributeFilteredTrades, filteredTrades]);
   const hasPreviousSlice = comparisonWindow.previousSessionCount > 0 && comparisonWindow.previousTrades.length > 0;
-  const previousSliceSummary = useMemo(() => getTradeSummary(comparisonWindow.previousTrades), [comparisonWindow.previousTrades]);
+  const currentSliceMetrics = useMemo(() => buildReportSliceMetrics(filteredTrades), [filteredTrades]);
+  const previousSliceMetrics = useMemo(
+    () => buildReportSliceMetrics(comparisonWindow.previousTrades),
+    [comparisonWindow.previousTrades]
+  );
+  const effectiveSliceMode: ReportSliceMode = reportSliceMode === "previous" && hasPreviousSlice ? "previous" : "current";
+  const activeSliceMetrics = effectiveSliceMode === "previous" ? previousSliceMetrics : currentSliceMetrics;
+  const {
+    symbols,
+    reportSummary,
+    avgWinner,
+    avgLoser,
+    hourlyBreakdown,
+    symbolRows,
+    topSymbols,
+    gatewayRows,
+    setupRows,
+    mistakeRows,
+    gameRows,
+    executionRows,
+    cumulativeNetPnlSeries,
+    dailyNetPnlSeries,
+    feesByDateSeries,
+    sharesTradedByDateSeries,
+    playbookNetPnlSeries,
+    mistakeLossSeries,
+    bestDailyNetPnl,
+    worstDailyNetPnl,
+    highestFeeDay,
+    mostActiveShareDay,
+    bestPlaybook,
+    costliestMistake,
+    topSymbolLabel
+  } = activeSliceMetrics;
   const currentSliceWindowLabel = formatDateWindow(comparisonWindow.currentDatesAsc);
   const previousSliceWindowLabel = formatDateWindow(comparisonWindow.previousDatesAsc);
+  const activeSliceWindowLabel = effectiveSliceMode === "previous" ? previousSliceWindowLabel : currentSliceWindowLabel;
+  const activeSliceSessionCount =
+    effectiveSliceMode === "previous" ? comparisonWindow.previousSessionCount : comparisonWindow.currentSessionCount;
+  const comparisonReferenceMetrics = effectiveSliceMode === "previous" ? currentSliceMetrics : previousSliceMetrics;
+  const comparisonReferenceSummary = comparisonReferenceMetrics.reportSummary;
+  const comparisonReferenceLabel = effectiveSliceMode === "previous" ? "Current" : "Prev";
+  const activeSliceLabel = effectiveSliceMode === "previous" ? "Previous" : "Current";
+  const comparisonSliceLabel = effectiveSliceMode === "previous" ? "Current" : "Previous";
+  const hourlyComparisonRows = useMemo(
+    () =>
+      buildHourlyComparisonRows(
+        hourlyBreakdown,
+        comparisonReferenceMetrics.hourlyBreakdown,
+        hasPreviousSlice
+      ),
+    [comparisonReferenceMetrics.hourlyBreakdown, hasPreviousSlice, hourlyBreakdown]
+  );
+  const maxHourlyComparisonMagnitude = useMemo(
+    () =>
+      Math.max(
+        ...hourlyComparisonRows.flatMap((row) =>
+          row.referenceNetPnl === null
+            ? [Math.abs(row.activeNetPnl)]
+            : [Math.abs(row.activeNetPnl), Math.abs(row.referenceNetPnl)]
+        ),
+        1
+      ),
+    [hourlyComparisonRows]
+  );
   const comparisonCoverageNote =
     hasPreviousSlice && comparisonWindow.previousSessionCount < comparisonWindow.currentSessionCount
       ? `Previous slice only has ${comparisonWindow.previousSessionCount} of ${comparisonWindow.currentSessionCount} sessions available.`
       : "";
+  useEffect(() => {
+    if (!hasPreviousSlice && reportSliceMode === "previous") {
+      setReportSliceMode("current");
+    }
+  }, [hasPreviousSlice, reportSliceMode]);
   const periodComparisonMetrics = useMemo<PeriodComparisonMetric[]>(() => {
     if (!hasPreviousSlice) {
       return [];
     }
 
-    const netDelta = reportSummary.totalNetPnl - previousSliceSummary.totalNetPnl;
-    const winRateDelta = reportSummary.winRate - previousSliceSummary.winRate;
-    const tradeDelta = reportSummary.totalTrades - previousSliceSummary.totalTrades;
-    const avgTradeDelta = reportSummary.avgTrade - previousSliceSummary.avgTrade;
+    const currentSummary = currentSliceMetrics.reportSummary;
+    const previousSummary = previousSliceMetrics.reportSummary;
+    const netDelta = currentSummary.totalNetPnl - previousSummary.totalNetPnl;
+    const winRateDelta = currentSummary.winRate - previousSummary.winRate;
+    const tradeDelta = currentSummary.totalTrades - previousSummary.totalTrades;
+    const avgTradeDelta = currentSummary.avgTrade - previousSummary.avgTrade;
 
     return [
       {
         key: "net",
         label: "Net P&L",
-        currentValue: formatSignedMoney(reportSummary.totalNetPnl),
-        previousValue: formatSignedMoney(previousSliceSummary.totalNetPnl),
-        deltaValue: `${formatSignedMoney(netDelta)} (${formatRelativeDelta(netDelta, previousSliceSummary.totalNetPnl)})`,
+        currentValue: formatSignedMoney(currentSummary.totalNetPnl),
+        previousValue: formatSignedMoney(previousSummary.totalNetPnl),
+        deltaValue: `${formatSignedMoney(netDelta)} (${formatRelativeDelta(netDelta, previousSummary.totalNetPnl)})`,
         tone: getDeltaTone(netDelta)
       },
       {
         key: "winRate",
         label: "Win Rate",
-        currentValue: `${reportSummary.winRate.toFixed(1)}%`,
-        previousValue: `${previousSliceSummary.winRate.toFixed(1)}%`,
+        currentValue: `${currentSummary.winRate.toFixed(1)}%`,
+        previousValue: `${previousSummary.winRate.toFixed(1)}%`,
         deltaValue: `${winRateDelta >= 0 ? "+" : ""}${winRateDelta.toFixed(1)} pts`,
         tone: getDeltaTone(winRateDelta)
       },
       {
         key: "trades",
         label: "Trades",
-        currentValue: reportSummary.totalTrades.toLocaleString(),
-        previousValue: previousSliceSummary.totalTrades.toLocaleString(),
-        deltaValue: `${formatSignedCount(tradeDelta)} (${formatRelativeDelta(tradeDelta, previousSliceSummary.totalTrades)})`,
+        currentValue: currentSummary.totalTrades.toLocaleString(),
+        previousValue: previousSummary.totalTrades.toLocaleString(),
+        deltaValue: `${formatSignedCount(tradeDelta)} (${formatRelativeDelta(tradeDelta, previousSummary.totalTrades)})`,
         tone: getDeltaTone(tradeDelta)
       },
       {
         key: "avgTrade",
         label: "Avg Trade",
-        currentValue: formatSignedMoney(reportSummary.avgTrade),
-        previousValue: formatSignedMoney(previousSliceSummary.avgTrade),
-        deltaValue: `${formatSignedMoney(avgTradeDelta)} (${formatRelativeDelta(avgTradeDelta, previousSliceSummary.avgTrade)})`,
+        currentValue: formatSignedMoney(currentSummary.avgTrade),
+        previousValue: formatSignedMoney(previousSummary.avgTrade),
+        deltaValue: `${formatSignedMoney(avgTradeDelta)} (${formatRelativeDelta(avgTradeDelta, previousSummary.avgTrade)})`,
         tone: getDeltaTone(avgTradeDelta)
       }
     ];
-  }, [hasPreviousSlice, previousSliceSummary, reportSummary]);
+  }, [currentSliceMetrics, hasPreviousSlice, previousSliceMetrics]);
   const activeFilters = [
     selectedTradeDateFilterStart || selectedTradeDateFilterEnd
       ? {
@@ -731,12 +901,12 @@ export const ReportsPage = ({
         <div className="page-hero-stat-grid">
           <div className="page-hero-stat-card report-hero-stat-card">
             <span>Range</span>
-            <strong>{formatActiveDateRange(selectedTradeDateFilterStart, selectedTradeDateFilterEnd)}</strong>
-            <small>{activeFilters.length > 0 ? `${activeFilters.length} filters active` : "Full report universe"}</small>
+            <strong>{activeSliceWindowLabel}</strong>
+            <small>{`${activeSliceSessionCount} sessions (${effectiveSliceMode === "previous" ? "previous" : "current"} slice)`}</small>
           </div>
           <div className="page-hero-stat-card report-hero-stat-card">
             <span>Trades</span>
-            <strong>{filteredTrades.length.toLocaleString()}</strong>
+            <strong>{reportSummary.totalTrades.toLocaleString()}</strong>
             <small>{reportSummary.winCount} wins / {reportSummary.lossCount} losses</small>
           </div>
           <div className="page-hero-stat-card report-hero-stat-card">
@@ -753,7 +923,7 @@ export const ReportsPage = ({
             <strong className={getSignedValueClassName(reportSummary.totalNetPnl)}>{formatSignedMoney(reportSummary.totalNetPnl)}</strong>
             <small>
               {hasPreviousSlice
-                ? `Prev ${formatSignedMoney(previousSliceSummary.totalNetPnl)}`
+                ? `${comparisonReferenceLabel} ${formatSignedMoney(comparisonReferenceSummary.totalNetPnl)}`
                 : "Pick a quick range to compare periods"}
             </small>
           </div>
@@ -765,7 +935,31 @@ export const ReportsPage = ({
             <WorkspaceIcon icon="dashboard" alt="Period comparison icon" className="panel-header-icon" />
             <h2>Period Comparison</h2>
           </div>
-          <span className="report-period-compare-badge">Current vs Previous Slice</span>
+          {hasPreviousSlice ? (
+            <div className="report-period-compare-actions">
+              <span className="report-period-compare-badge">Current vs Previous Slice</span>
+              <div className="report-slice-mode-toggle" role="tablist" aria-label="Report slice mode">
+                <button
+                  type="button"
+                  className={`mini-action report-slice-mode-button ${effectiveSliceMode === "current" ? "report-slice-mode-button-active" : ""}`}
+                  onClick={() => setReportSliceMode("current")}
+                  aria-pressed={effectiveSliceMode === "current"}
+                >
+                  View Current
+                </button>
+                <button
+                  type="button"
+                  className={`mini-action report-slice-mode-button ${effectiveSliceMode === "previous" ? "report-slice-mode-button-active" : ""}`}
+                  onClick={() => setReportSliceMode("previous")}
+                  aria-pressed={effectiveSliceMode === "previous"}
+                >
+                  View Previous
+                </button>
+              </div>
+            </div>
+          ) : (
+            <span className="report-period-compare-badge">Current vs Previous Slice</span>
+          )}
         </div>
         {hasPreviousSlice ? (
           <>
@@ -802,6 +996,9 @@ export const ReportsPage = ({
           </div>
         )}
       </section>
+      <div className="report-slice-context-note">
+        Showing <strong>{effectiveSliceMode === "previous" ? "Previous Slice" : "Current Slice"}</strong> across all report panels.
+      </div>
       <section className="analytics-grid">
         <article className="placeholder-panel analytics-panel analytics-grid-full">
           <div className="panel-header">
@@ -812,34 +1009,109 @@ export const ReportsPage = ({
             <div className="intraday-metric-card">
               <span>Net P&amp;L</span>
               <strong>{formatSignedMoney(reportSummary.totalNetPnl)}</strong>
+              {hasPreviousSlice ? (
+                <>
+                  <small>{comparisonReferenceLabel} {formatSignedMoney(comparisonReferenceSummary.totalNetPnl)}</small>
+                  <em className={`report-period-delta report-period-delta-${getDeltaTone(reportSummary.totalNetPnl - comparisonReferenceSummary.totalNetPnl)}`}>
+                    {formatSignedMoney(reportSummary.totalNetPnl - comparisonReferenceSummary.totalNetPnl)} (
+                    {formatRelativeDelta(reportSummary.totalNetPnl - comparisonReferenceSummary.totalNetPnl, comparisonReferenceSummary.totalNetPnl)})
+                  </em>
+                </>
+              ) : null}
             </div>
             <div className="intraday-metric-card">
               <span>Gross P&amp;L</span>
               <strong>{formatSignedMoney(reportSummary.totalGrossPnl)}</strong>
+              {hasPreviousSlice ? (
+                <>
+                  <small>{comparisonReferenceLabel} {formatSignedMoney(comparisonReferenceSummary.totalGrossPnl)}</small>
+                  <em className={`report-period-delta report-period-delta-${getDeltaTone(reportSummary.totalGrossPnl - comparisonReferenceSummary.totalGrossPnl)}`}>
+                    {formatSignedMoney(reportSummary.totalGrossPnl - comparisonReferenceSummary.totalGrossPnl)} (
+                    {formatRelativeDelta(reportSummary.totalGrossPnl - comparisonReferenceSummary.totalGrossPnl, comparisonReferenceSummary.totalGrossPnl)})
+                  </em>
+                </>
+              ) : null}
             </div>
             <div className="intraday-metric-card">
               <span>Fees</span>
               <strong>${reportSummary.totalFees.toFixed(2)}</strong>
+              {hasPreviousSlice ? (
+                <>
+                  <small>{comparisonReferenceLabel} ${comparisonReferenceSummary.totalFees.toFixed(2)}</small>
+                  <em className={`report-period-delta report-period-delta-${getDeltaTone(reportSummary.totalFees - comparisonReferenceSummary.totalFees)}`}>
+                    {formatSignedMoney(reportSummary.totalFees - comparisonReferenceSummary.totalFees)} (
+                    {formatRelativeDelta(reportSummary.totalFees - comparisonReferenceSummary.totalFees, comparisonReferenceSummary.totalFees)})
+                  </em>
+                </>
+              ) : null}
             </div>
             <div className="intraday-metric-card">
               <span>Trades</span>
               <strong>{reportSummary.totalTrades}</strong>
+              {hasPreviousSlice ? (
+                <>
+                  <small>{comparisonReferenceLabel} {comparisonReferenceSummary.totalTrades}</small>
+                  <em className={`report-period-delta report-period-delta-${getDeltaTone(reportSummary.totalTrades - comparisonReferenceSummary.totalTrades)}`}>
+                    {formatSignedCount(reportSummary.totalTrades - comparisonReferenceSummary.totalTrades)} (
+                    {formatRelativeDelta(reportSummary.totalTrades - comparisonReferenceSummary.totalTrades, comparisonReferenceSummary.totalTrades)})
+                  </em>
+                </>
+              ) : null}
             </div>
             <div className="intraday-metric-card">
               <span>Shares</span>
               <strong>{reportSummary.totalSharesTraded.toLocaleString()}</strong>
+              {hasPreviousSlice ? (
+                <>
+                  <small>{comparisonReferenceLabel} {comparisonReferenceSummary.totalSharesTraded.toLocaleString()}</small>
+                  <em className={`report-period-delta report-period-delta-${getDeltaTone(reportSummary.totalSharesTraded - comparisonReferenceSummary.totalSharesTraded)}`}>
+                    {formatSignedCount(reportSummary.totalSharesTraded - comparisonReferenceSummary.totalSharesTraded)} (
+                    {formatRelativeDelta(reportSummary.totalSharesTraded - comparisonReferenceSummary.totalSharesTraded, comparisonReferenceSummary.totalSharesTraded)})
+                  </em>
+                </>
+              ) : null}
             </div>
             <div className="intraday-metric-card">
               <span>Win Rate</span>
               <strong>{reportSummary.winRate.toFixed(1)}%</strong>
+              {hasPreviousSlice ? (
+                <>
+                  <small>{comparisonReferenceLabel} {comparisonReferenceSummary.winRate.toFixed(1)}%</small>
+                  <em className={`report-period-delta report-period-delta-${getDeltaTone(reportSummary.winRate - comparisonReferenceSummary.winRate)}`}>
+                    {formatSignedNumber(reportSummary.winRate - comparisonReferenceSummary.winRate, 1)} pts
+                  </em>
+                </>
+              ) : null}
             </div>
             <div className="intraday-metric-card">
               <span>Profit Factor</span>
               <strong>{reportSummary.profitFactor === 999 ? "Open" : reportSummary.profitFactor.toFixed(2)}</strong>
+              {hasPreviousSlice ? (
+                <>
+                  <small>
+                    {comparisonReferenceLabel} {comparisonReferenceSummary.profitFactor === 999 ? "Open" : comparisonReferenceSummary.profitFactor.toFixed(2)}
+                  </small>
+                  {reportSummary.profitFactor !== 999 && comparisonReferenceSummary.profitFactor !== 999 ? (
+                    <em className={`report-period-delta report-period-delta-${getDeltaTone(reportSummary.profitFactor - comparisonReferenceSummary.profitFactor)}`}>
+                      {formatSignedNumber(reportSummary.profitFactor - comparisonReferenceSummary.profitFactor, 2)}
+                    </em>
+                  ) : null}
+                </>
+              ) : null}
             </div>
             <div className="intraday-metric-card">
               <span>Avg Winner / Loser</span>
               <strong>{formatSignedMoney(avgWinner)} / {formatSignedMoney(avgLoser)}</strong>
+              {hasPreviousSlice ? (
+                <>
+                  <small>
+                    {comparisonReferenceLabel} {formatSignedMoney(comparisonReferenceMetrics.avgWinner)} / {formatSignedMoney(comparisonReferenceMetrics.avgLoser)}
+                  </small>
+                  <em className={`report-period-delta report-period-delta-${getDeltaTone(reportSummary.avgTrade - comparisonReferenceSummary.avgTrade)}`}>
+                    Avg Trade {formatSignedMoney(reportSummary.avgTrade - comparisonReferenceSummary.avgTrade)}
+                  </em>
+                </>
+              ) : null}
             </div>
           </div>
         </article>
@@ -856,6 +1128,14 @@ export const ReportsPage = ({
             <em className={bestDailyNetPnl && bestDailyNetPnl.value >= 0 ? "positive-value" : "negative-value"}>
               {bestDailyNetPnl ? formatSignedMoney(bestDailyNetPnl.value) : "$0.00"}
             </em>
+            {hasPreviousSlice ? (
+              <small>
+                {comparisonReferenceLabel}{" "}
+                {comparisonReferenceMetrics.bestDailyNetPnl
+                  ? `${formatReportDate(comparisonReferenceMetrics.bestDailyNetPnl.label)} (${formatSignedMoney(comparisonReferenceMetrics.bestDailyNetPnl.value)})`
+                  : "No data"}
+              </small>
+            ) : null}
           </div>
           <div className="report-insight-card">
             <span>Worst Day</span>
@@ -863,16 +1143,40 @@ export const ReportsPage = ({
             <em className={worstDailyNetPnl && worstDailyNetPnl.value >= 0 ? "positive-value" : "negative-value"}>
               {worstDailyNetPnl ? formatSignedMoney(worstDailyNetPnl.value) : "$0.00"}
             </em>
+            {hasPreviousSlice ? (
+              <small>
+                {comparisonReferenceLabel}{" "}
+                {comparisonReferenceMetrics.worstDailyNetPnl
+                  ? `${formatReportDate(comparisonReferenceMetrics.worstDailyNetPnl.label)} (${formatSignedMoney(comparisonReferenceMetrics.worstDailyNetPnl.value)})`
+                  : "No data"}
+              </small>
+            ) : null}
           </div>
           <div className="report-insight-card">
             <span>Most Fees</span>
             <strong>{highestFeeDay ? formatReportDate(highestFeeDay.label) : "No data"}</strong>
             <em>{highestFeeDay ? `$${highestFeeDay.value.toFixed(2)}` : "$0.00"}</em>
+            {hasPreviousSlice ? (
+              <small>
+                {comparisonReferenceLabel}{" "}
+                {comparisonReferenceMetrics.highestFeeDay
+                  ? `${formatReportDate(comparisonReferenceMetrics.highestFeeDay.label)} ($${comparisonReferenceMetrics.highestFeeDay.value.toFixed(2)})`
+                  : "No data"}
+              </small>
+            ) : null}
           </div>
           <div className="report-insight-card">
             <span>Most Active</span>
             <strong>{mostActiveShareDay ? formatReportDate(mostActiveShareDay.label) : "No data"}</strong>
             <em>{mostActiveShareDay ? `${mostActiveShareDay.value.toLocaleString()} shares` : "0 shares"}</em>
+            {hasPreviousSlice ? (
+              <small>
+                {comparisonReferenceLabel}{" "}
+                {comparisonReferenceMetrics.mostActiveShareDay
+                  ? `${formatReportDate(comparisonReferenceMetrics.mostActiveShareDay.label)} (${comparisonReferenceMetrics.mostActiveShareDay.value.toLocaleString()} shares)`
+                  : "No data"}
+              </small>
+            ) : null}
           </div>
           <div className="report-insight-card">
             <span>Best Playbook</span>
@@ -880,6 +1184,14 @@ export const ReportsPage = ({
             <em className={bestPlaybook && bestPlaybook.netPnl >= 0 ? "positive-value" : "negative-value"}>
               {bestPlaybook ? `${formatSignedMoney(bestPlaybook.netPnl)} across ${bestPlaybook.trades} trades` : "$0.00"}
             </em>
+            {hasPreviousSlice ? (
+              <small>
+                {comparisonReferenceLabel}{" "}
+                {comparisonReferenceMetrics.bestPlaybook
+                  ? `${comparisonReferenceMetrics.bestPlaybook.label} (${formatSignedMoney(comparisonReferenceMetrics.bestPlaybook.netPnl)})`
+                  : "No tagged playbook"}
+              </small>
+            ) : null}
           </div>
           <div className="report-insight-card">
             <span>Costliest Mistake</span>
@@ -887,6 +1199,14 @@ export const ReportsPage = ({
             <em className="negative-value">
               {costliestMistake ? `${formatSignedMoney(costliestMistake.netPnl)} across ${costliestMistake.trades} trades` : "$0.00"}
             </em>
+            {hasPreviousSlice ? (
+              <small>
+                {comparisonReferenceLabel}{" "}
+                {comparisonReferenceMetrics.costliestMistake
+                  ? `${comparisonReferenceMetrics.costliestMistake.label} (${formatSignedMoney(comparisonReferenceMetrics.costliestMistake.netPnl)})`
+                  : "No losing mistake tag"}
+              </small>
+            ) : null}
           </div>
         </div>
       </section>
@@ -894,10 +1214,13 @@ export const ReportsPage = ({
         <article className="placeholder-panel analytics-panel">
           <ReportLineChart
             points={cumulativeNetPnlSeries}
+            comparePoints={hasPreviousSlice ? comparisonReferenceMetrics.cumulativeNetPnlSeries : []}
             color="#89d8ab"
             title="Cumulative Net P&L"
             yAxisLabel="Net PnL USD (Running)"
             valueFormatter={(value) => formatSignedMoney(value)}
+            primarySeriesLabel={activeSliceLabel}
+            compareSeriesLabel={comparisonSliceLabel}
           />
         </article>
       </section>
@@ -905,22 +1228,28 @@ export const ReportsPage = ({
         <article className="placeholder-panel analytics-panel">
           <ReportBarChart
             points={dailyNetPnlSeries}
+            comparePoints={hasPreviousSlice ? comparisonReferenceMetrics.dailyNetPnlSeries : []}
             title="Daily Net P&L"
             yAxisLabel="Net PnL USD"
             positiveColor="#2ee6d6"
             negativeColor="#b42eff"
             valueFormatter={(value) => formatSignedMoney(value)}
+            primarySeriesLabel={activeSliceLabel}
+            compareSeriesLabel={comparisonSliceLabel}
           />
         </article>
         <article className="placeholder-panel analytics-panel">
           <ReportBarChart
             points={feesByDateSeries}
+            comparePoints={hasPreviousSlice ? comparisonReferenceMetrics.feesByDateSeries : []}
             title="Fees Over Time"
             yAxisLabel="Fees USD"
             color="#ffd66b"
             positiveColor="#ffd66b"
             negativeColor="#ffd66b"
             valueFormatter={(value) => `$${value.toFixed(2)}`}
+            primarySeriesLabel={activeSliceLabel}
+            compareSeriesLabel={comparisonSliceLabel}
           />
         </article>
       </section>
@@ -928,22 +1257,28 @@ export const ReportsPage = ({
         <article className="placeholder-panel analytics-panel">
           <ReportBarChart
             points={sharesTradedByDateSeries}
+            comparePoints={hasPreviousSlice ? comparisonReferenceMetrics.sharesTradedByDateSeries : []}
             title="Shares Traded Over Time"
             yAxisLabel="Shares Traded"
             color="#5da8ff"
             positiveColor="#5da8ff"
             valueFormatter={(value) => value.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            primarySeriesLabel={activeSliceLabel}
+            compareSeriesLabel={comparisonSliceLabel}
           />
         </article>
         <article className="placeholder-panel analytics-panel">
           <ReportBarChart
             points={playbookNetPnlSeries}
+            comparePoints={hasPreviousSlice ? comparisonReferenceMetrics.playbookNetPnlSeries : []}
             title="Best / Worst Playbooks"
             yAxisLabel="Net PnL USD"
             color="#5da8ff"
             positiveColor="#2ee6d6"
             negativeColor="#b42eff"
             valueFormatter={(value) => formatSignedMoney(value)}
+            primarySeriesLabel={activeSliceLabel}
+            compareSeriesLabel={comparisonSliceLabel}
           />
         </article>
       </section>
@@ -951,12 +1286,15 @@ export const ReportsPage = ({
         <article className="placeholder-panel analytics-panel">
           <ReportBarChart
             points={mistakeLossSeries}
+            comparePoints={hasPreviousSlice ? comparisonReferenceMetrics.mistakeLossSeries : []}
             title="Mistakes By Total Loss"
             yAxisLabel="Net PnL USD"
             color="#ff6f91"
             positiveColor="#2ee6d6"
             negativeColor="#ff6f91"
             valueFormatter={(value) => formatSignedMoney(value)}
+            primarySeriesLabel={activeSliceLabel}
+            compareSeriesLabel={comparisonSliceLabel}
           />
         </article>
       </section>
@@ -1037,19 +1375,43 @@ export const ReportsPage = ({
           <div className="panel-header">
             <WorkspaceIcon icon="money" alt="Hourly pnl icon" className="panel-header-icon" />
             <h2>Hourly P&amp;L</h2>
+            {hasPreviousSlice ? (
+              <span className="report-line-chart-readout">
+                {activeSliceLabel} (solid) vs {comparisonSliceLabel} (shadow)
+              </span>
+            ) : null}
           </div>
-          {hourlyBreakdown.length > 0 ? (
+          {hourlyComparisonRows.length > 0 ? (
             <div className="hourly-pnl-chart">
-              {hourlyBreakdown.map((row) => (
+              {hourlyComparisonRows.map((row) => (
                 <div key={row.label} className="hourly-pnl-row">
                   <span className="hourly-pnl-label">{row.label}</span>
                   <div className="hourly-pnl-track">
+                    {row.referenceNetPnl !== null ? (
+                      <div
+                        className={`hourly-pnl-bar hourly-pnl-bar-compare ${
+                          row.referenceNetPnl >= 0 ? "hourly-pnl-bar-positive" : "hourly-pnl-bar-negative"
+                        }`}
+                        style={{
+                          width: `${(Math.abs(row.referenceNetPnl) / maxHourlyComparisonMagnitude) * 100}%`
+                        }}
+                      />
+                    ) : null}
                     <div
-                      className={`hourly-pnl-bar ${row.netPnl >= 0 ? "hourly-pnl-bar-positive" : "hourly-pnl-bar-negative"}`}
-                      style={{ width: `${(Math.abs(row.netPnl) / maxHourlyMagnitude) * 100}%` }}
+                      className={`hourly-pnl-bar hourly-pnl-bar-primary ${
+                        row.activeNetPnl >= 0 ? "hourly-pnl-bar-positive" : "hourly-pnl-bar-negative"
+                      }`}
+                      style={{ width: `${(Math.abs(row.activeNetPnl) / maxHourlyComparisonMagnitude) * 100}%` }}
                     />
                   </div>
-                  <span className="hourly-pnl-value">{formatSignedMoney(row.netPnl)}</span>
+                  <span className="hourly-pnl-value">
+                    {formatSignedMoney(row.activeNetPnl)}
+                    {row.referenceNetPnl !== null ? (
+                      <small>
+                        {comparisonSliceLabel}: {formatSignedMoney(row.referenceNetPnl)}
+                      </small>
+                    ) : null}
+                  </span>
                 </div>
               ))}
             </div>

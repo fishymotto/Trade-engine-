@@ -4,7 +4,8 @@ import type { JSONContent } from "@tiptap/core";
 import type {
   LibraryCollectionDefinition,
   LibraryCollectionId,
-  LibraryPageRecord
+  LibraryPageRecord,
+  StrongViewProperties
 } from "../../types/library";
 import { syncStores } from "../sync/syncStore";
 
@@ -23,6 +24,12 @@ export const libraryCollections: LibraryCollectionDefinition[] = [
     name: "Trading and Poker Books",
     description: "Book notes, takeaways, mental models, and lessons you want to bring back into trading.",
     accent: "Reading"
+  },
+  {
+    id: "strong-views",
+    name: "Strong Views",
+    description: "Track directional market views with levels, catalysts, and game plans.",
+    accent: "Views"
   },
   {
     id: "quotes",
@@ -59,6 +66,21 @@ const TICKER_GROUP_PROPERTY_KEYS = {
   icon: "Icon",
   description: "Description",
   tickers: "Tickers"
+} as const;
+
+const STRONG_VIEW_PROPERTY_KEYS = {
+  ticker: "Ticker",
+  date: "Date",
+  bias: "Bias",
+  atr: "ATR",
+  rvol: "RVOL",
+  support: "Support",
+  resistance: "Resistance",
+  openClose: "Open / Close",
+  notes: "Notes",
+  catalyst: "Catalyst",
+  gamePlan: "Game Plan",
+  morningChat: "Morning Chat"
 } as const;
 
 const LEGACY_COLLECTION_ID_MAP: Record<string, LibraryCollectionId> = {
@@ -154,6 +176,12 @@ const doc = (content: JSONContent[]): JSONContent => ({
   type: "doc",
   content
 });
+
+const isJournalDocContent = (value: unknown): value is JSONContent =>
+  !!value &&
+  typeof value === "object" &&
+  "type" in value &&
+  (value as { type?: unknown }).type === "doc";
 
 const createSeedPage = (
   id: string,
@@ -879,6 +907,21 @@ const createReviewTemplateProperties = (): NonNullable<LibraryPageRecord["proper
   __review_reflection_v1: defaultReviewReflectionState()
 });
 
+const createStrongViewProperties = (): StrongViewProperties => ({
+  ticker: "",
+  date: "",
+  bias: "",
+  atr: "",
+  rvol: "",
+  support: createEmptyJournalDoc(),
+  resistance: createEmptyJournalDoc(),
+  openClose: createEmptyJournalDoc(),
+  notes: createEmptyJournalDoc(),
+  catalyst: createEmptyJournalDoc(),
+  gamePlan: createEmptyJournalDoc(),
+  morningChat: ""
+});
+
 export const createDefaultLibraryPages = (): LibraryPageRecord[] => [
   createWorkspaceTemplatePage(
     "workspace-template-idea-inbox",
@@ -924,7 +967,7 @@ export const createDefaultLibraryPages = (): LibraryPageRecord[] => [
     "Quote Template",
     "Add your notes here.",
     {
-      Quote: "",
+      Quote: createEmptyJournalDoc(),
       Author: "",
       Source: "",
       Used: false,
@@ -1000,10 +1043,78 @@ const normalizeLibraryPage = (page: Partial<LibraryPageRecord>): LibraryPageReco
 
     normalizedPage.properties = {
       ...normalizedPage.properties,
-      Quote: typeof normalizedPage.properties?.Quote === "string" ? normalizedPage.properties.Quote : "",
+      Quote:
+        typeof normalizedPage.properties?.Quote === "string" || isJournalDocContent(normalizedPage.properties?.Quote)
+          ? normalizedPage.properties.Quote
+          : createEmptyJournalDoc(),
       Author: typeof normalizedPage.properties?.Author === "string" ? normalizedPage.properties.Author : "",
       Source: typeof normalizedPage.properties?.Source === "string" ? normalizedPage.properties.Source : "",
       Used: typeof normalizedPage.properties?.Used === "boolean" ? normalizedPage.properties.Used : false
+    };
+  }
+
+  if (normalizedPage.collectionId === "strong-views" || normalizedPage.tags.includes("strong-view-row")) {
+    if (!normalizedPage.tags.includes("strong-view-row")) {
+      normalizedPage.tags = [...normalizedPage.tags, "strong-view-row"];
+    }
+
+    const defaults = createStrongViewProperties();
+    normalizedPage.properties = {
+      ...(normalizedPage.properties ?? {}),
+      [STRONG_VIEW_PROPERTY_KEYS.ticker]:
+        typeof normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.ticker] === "string"
+          ? normalizedPage.properties[STRONG_VIEW_PROPERTY_KEYS.ticker]
+          : defaults.ticker,
+      [STRONG_VIEW_PROPERTY_KEYS.date]:
+        typeof normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.date] === "string"
+          ? normalizedPage.properties[STRONG_VIEW_PROPERTY_KEYS.date]
+          : defaults.date,
+      [STRONG_VIEW_PROPERTY_KEYS.bias]:
+        typeof normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.bias] === "string"
+          ? normalizedPage.properties[STRONG_VIEW_PROPERTY_KEYS.bias]
+          : defaults.bias,
+      [STRONG_VIEW_PROPERTY_KEYS.atr]:
+        typeof normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.atr] === "string"
+          ? normalizedPage.properties[STRONG_VIEW_PROPERTY_KEYS.atr]
+          : defaults.atr,
+      [STRONG_VIEW_PROPERTY_KEYS.rvol]:
+        typeof normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.rvol] === "string"
+          ? normalizedPage.properties[STRONG_VIEW_PROPERTY_KEYS.rvol]
+          : defaults.rvol,
+      [STRONG_VIEW_PROPERTY_KEYS.support]:
+        typeof normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.support] === "string" ||
+        isJournalDocContent(normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.support])
+          ? normalizedPage.properties[STRONG_VIEW_PROPERTY_KEYS.support]
+          : defaults.support,
+      [STRONG_VIEW_PROPERTY_KEYS.resistance]:
+        typeof normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.resistance] === "string" ||
+        isJournalDocContent(normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.resistance])
+          ? normalizedPage.properties[STRONG_VIEW_PROPERTY_KEYS.resistance]
+          : defaults.resistance,
+      [STRONG_VIEW_PROPERTY_KEYS.openClose]:
+        typeof normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.openClose] === "string" ||
+        isJournalDocContent(normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.openClose])
+          ? normalizedPage.properties[STRONG_VIEW_PROPERTY_KEYS.openClose]
+          : defaults.openClose,
+      [STRONG_VIEW_PROPERTY_KEYS.notes]:
+        typeof normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.notes] === "string" ||
+        isJournalDocContent(normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.notes])
+          ? normalizedPage.properties[STRONG_VIEW_PROPERTY_KEYS.notes]
+          : defaults.notes,
+      [STRONG_VIEW_PROPERTY_KEYS.catalyst]:
+        typeof normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.catalyst] === "string" ||
+        isJournalDocContent(normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.catalyst])
+          ? normalizedPage.properties[STRONG_VIEW_PROPERTY_KEYS.catalyst]
+          : defaults.catalyst,
+      [STRONG_VIEW_PROPERTY_KEYS.gamePlan]:
+        typeof normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.gamePlan] === "string" ||
+        isJournalDocContent(normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.gamePlan])
+          ? normalizedPage.properties[STRONG_VIEW_PROPERTY_KEYS.gamePlan]
+          : defaults.gamePlan,
+      [STRONG_VIEW_PROPERTY_KEYS.morningChat]:
+        typeof normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.morningChat] === "string"
+          ? normalizedPage.properties[STRONG_VIEW_PROPERTY_KEYS.morningChat]
+          : defaults.morningChat
     };
   }
 
@@ -1046,6 +1157,10 @@ export const saveLibraryPages = (pages: LibraryPageRecord[]): void => {
 };
 
 export const createLibraryPage = (collectionId: LibraryCollectionId): LibraryPageRecord => {
+  if (collectionId === "strong-views") {
+    return createLibraryStrongViewRow();
+  }
+
   if (collectionId === "ticker-groups") {
     const base = createStarterPage(collectionId, "New Ticker Group", ["ticker-group"]);
 
@@ -1182,11 +1297,35 @@ export const createLibraryQuoteRow = (): LibraryPageRecord => {
     ...page,
     status: "Active",
     properties: {
-      Quote: "",
+      Quote: createEmptyJournalDoc(),
       Author: "",
       Source: "",
       Used: false,
       "Date Used": ""
+    }
+  };
+};
+
+export const createLibraryStrongViewRow = (): LibraryPageRecord => {
+  const page = createStarterPage("strong-views", "Strong View", ["strong-view-row"]);
+  const defaults = createStrongViewProperties();
+
+  return {
+    ...page,
+    status: "Active",
+    properties: {
+      [STRONG_VIEW_PROPERTY_KEYS.ticker]: defaults.ticker,
+      [STRONG_VIEW_PROPERTY_KEYS.date]: defaults.date,
+      [STRONG_VIEW_PROPERTY_KEYS.bias]: defaults.bias,
+      [STRONG_VIEW_PROPERTY_KEYS.atr]: defaults.atr,
+      [STRONG_VIEW_PROPERTY_KEYS.rvol]: defaults.rvol,
+      [STRONG_VIEW_PROPERTY_KEYS.support]: defaults.support,
+      [STRONG_VIEW_PROPERTY_KEYS.resistance]: defaults.resistance,
+      [STRONG_VIEW_PROPERTY_KEYS.openClose]: defaults.openClose,
+      [STRONG_VIEW_PROPERTY_KEYS.notes]: defaults.notes,
+      [STRONG_VIEW_PROPERTY_KEYS.catalyst]: defaults.catalyst,
+      [STRONG_VIEW_PROPERTY_KEYS.gamePlan]: defaults.gamePlan,
+      [STRONG_VIEW_PROPERTY_KEYS.morningChat]: defaults.morningChat
     }
   };
 };

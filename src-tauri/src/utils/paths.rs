@@ -24,6 +24,10 @@ pub fn sessions_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(ensure_config_dir(app_handle)?.join("trade-sessions.json"))
 }
 
+pub fn journal_pages_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(ensure_config_dir(app_handle)?.join("journal-pages.json"))
+}
+
 pub fn trade_tag_overrides_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(ensure_config_dir(app_handle)?.join("trade-tag-overrides.json"))
 }
@@ -31,4 +35,3 @@ pub fn trade_tag_overrides_path(app_handle: &tauri::AppHandle) -> Result<PathBuf
 pub fn trade_tag_options_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(ensure_config_dir(app_handle)?.join("trade-tag-options.json"))
 }
-

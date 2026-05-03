@@ -1,5 +1,5 @@
 import type { JSONContent } from "@tiptap/core";
-import { hasJournalDocContent } from "../journal/journalContent";
+import { createEmptyJournalDoc, hasJournalDocContent } from "../journal/journalContent";
 import type { PlaybookExampleRating, PlaybookRecord, PlaybookStatus } from "../../types/playbook";
 import { syncStores } from "../sync/syncStore";
 
@@ -1021,7 +1021,7 @@ export const loadPlaybooks = (): PlaybookRecord[] => {
                   tradeId: typeof entry.tradeId === "string" ? entry.tradeId : "",
                   tradeDate: typeof entry.tradeDate === "string" ? entry.tradeDate : "",
                   rating: isExampleRating(rating) ? rating : "A+",
-                  notes: hasJournalDocContent(notes) ? (notes as JSONContent) : paragraph(""),
+                  notes: hasJournalDocContent(notes) ? (notes as JSONContent) : createEmptyJournalDoc(),
                   screenshotPaths: Array.isArray(entry.screenshotPaths)
                     ? entry.screenshotPaths.filter((value): value is string => typeof value === "string")
                     : [],
@@ -1037,7 +1037,7 @@ export const loadPlaybooks = (): PlaybookRecord[] => {
             ...section,
             content: hasJournalDocContent(section.content)
               ? section.content
-              : paragraph("")
+              : createEmptyJournalDoc()
           }))
       }));
 

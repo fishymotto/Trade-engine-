@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DateFilterPopover } from "../../../components/DateFilterPopover";
 import { FilterSelect } from "../../../components/FilterSelect";
+import { JournalRichTextEditor } from "../../journal/components/JournalRichTextEditor";
 import { PageHero } from "../../../components/PageHero";
 import { PlaceholderPanel } from "../../../components/PlaceholderPanel";
 import { PreviewTable } from "../../../components/PreviewTable";
@@ -9,7 +10,9 @@ import { TradeChart, type TradeChartLayerVisibility } from "../../../components/
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
 import { TradeExecutionsTable } from "../components/TradeExecutionsTable";
 import { tradeTagFieldLabels, tradeTagFields, tradeTagOptionsByField as defaultTradeTagOptionsByField } from "../../../lib/trades/tradeTagCatalog";
+import { createEmptyJournalDoc } from "../../../lib/journal/journalContent";
 import type { ChartInterval, HistoricalBarSet } from "../../../types/chart";
+import type { JSONContent } from "@tiptap/core";
 import type { TradeReviewRecord } from "../../../types/review";
 import type { GroupedTrade } from "../../../types/trade";
 import type { EditableTradeRow, EditableTradeTagField } from "../../../types/tradeTags";
@@ -81,6 +84,44 @@ const defaultChartLayerVisibility: TradeChartLayerVisibility = {
   bollingerBands: false,
   macd: false,
   stochastic: false
+};
+
+const isJournalDoc = (value: unknown): value is JSONContent =>
+  !!value &&
+  typeof value === "object" &&
+  "type" in value &&
+  (value as { type?: unknown }).type === "doc";
+
+const createJournalDocFromPlainText = (text: string): JSONContent => {
+  const normalized = text.replace(/\r\n/g, "\n");
+  if (!normalized.trim()) {
+    return createEmptyJournalDoc();
+  }
+
+  return {
+    type: "doc",
+    content: normalized.split("\n").map((line) =>
+      line.trim()
+        ? ({ type: "paragraph", content: [{ type: "text", text: line }] } satisfies JSONContent)
+        : ({ type: "paragraph" } satisfies JSONContent)
+    )
+  };
+};
+
+const getReviewNotesContent = (review: TradeReviewRecord | null | undefined): JSONContent => {
+  if (!review) {
+    return createEmptyJournalDoc();
+  }
+
+  if (isJournalDoc(review.notes)) {
+    return review.notes;
+  }
+
+  if (typeof review.notes === "string") {
+    return createJournalDocFromPlainText(review.notes);
+  }
+
+  return createEmptyJournalDoc();
 };
 
 export const TradesPage = ({
@@ -992,12 +1033,12 @@ export const TradesPage = ({
             <div className="trade-review-form">
               <label className="review-field">
                 <span>Review Notes</span>
-                <textarea
-                  value={selectedReview?.notes ?? ""}
-                  onChange={(event) =>
-                    onUpdateReview(selectedTrade.id, { notes: event.target.value })
-                  }
+                <JournalRichTextEditor
+                  key={`${selectedTrade.id}-trade-review-notes`}
+                  content={getReviewNotesContent(selectedReview)}
+                  onChange={(content) => onUpdateReview(selectedTrade.id, { notes: content })}
                   placeholder="Capture execution notes, emotions, and what to improve next time."
+                  compact
                 />
               </label>
               {selectedReview ? (

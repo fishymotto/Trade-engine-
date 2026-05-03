@@ -4,7 +4,8 @@ import { useCallback, useRef, useState } from "react";
 
 interface JournalBubbleMenuProps {
   editor: Editor;
-  onImageInsert?: (file: File) => Promise<string>;
+  onImageInsert?: (file: File) => Promise<unknown>;
+  imageUploadInProgress?: boolean;
   appearance?: "default" | "notion";
 }
 
@@ -12,16 +13,20 @@ const IconButton = ({
   active,
   icon,
   label,
-  onClick
+  onClick,
+  disabled = false
 }: {
   active: boolean;
   icon: string;
   label: string;
   onClick: () => void;
+  disabled?: boolean;
 }) => (
   <button
     type="button"
     title={label}
+    aria-label={label}
+    disabled={disabled}
     className={`journal-bubble-button ${active ? "is-active" : ""}`}
     onClick={onClick}
   >
@@ -32,6 +37,7 @@ const IconButton = ({
 export const JournalBubbleMenu = ({
   editor,
   onImageInsert,
+  imageUploadInProgress = false,
   appearance = "default"
 }: JournalBubbleMenuProps) => {
   const [linkUrl, setLinkUrl] = useState("");
@@ -67,30 +73,28 @@ export const JournalBubbleMenu = ({
   const handleImageSelect = useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.currentTarget.files?.[0];
-      if (!file) return;
+      if (!file) {
+        return;
+      }
 
       try {
-        let imageUrl: string;
-
         if (onImageInsert) {
-          imageUrl = await onImageInsert(file);
+          await onImageInsert(file);
         } else {
-          // Fallback to base64 if no upload handler provided
           const reader = new FileReader();
-          imageUrl = await new Promise((resolve) => {
+          const imageUrl = await new Promise<string>((resolve) => {
             reader.onload = (e) => {
               resolve(e.target?.result as string);
             };
             reader.readAsDataURL(file);
           });
-        }
 
-        editor.chain().focus().setImage({ src: imageUrl }).run();
+          editor.chain().focus().setImage({ src: imageUrl, alt: file.name }).run();
+        }
       } catch (error) {
         console.error("Failed to insert image:", error);
       }
 
-      // Reset input
       if (imageInputRef.current) {
         imageInputRef.current.value = "";
       }
@@ -135,13 +139,13 @@ export const JournalBubbleMenu = ({
 
       <div className="journal-bubble-section">
         <IconButton
-          icon="<>"
+          icon="</>"
           label="Code"
           active={editor.isActive("code")}
           onClick={() => editor.chain().focus().toggleCode().run()}
         />
         <IconButton
-          icon="Aa"
+          icon="HL"
           label="Highlight"
           active={editor.isActive("highlight")}
           onClick={() => {
@@ -153,13 +157,13 @@ export const JournalBubbleMenu = ({
           }}
         />
         <IconButton
-          icon="x₂"
+          icon="x2"
           label="Subscript"
           active={editor.isActive("subscript")}
           onClick={() => editor.chain().focus().toggleSubscript().run()}
         />
         <IconButton
-          icon="x²"
+          icon="x^2"
           label="Superscript"
           active={editor.isActive("superscript")}
           onClick={() => editor.chain().focus().toggleSuperscript().run()}
@@ -171,7 +175,7 @@ export const JournalBubbleMenu = ({
       <div className="journal-bubble-section">
         {!showLinkInput ? (
           <IconButton
-            icon="🔗"
+            icon="Link"
             label="Link"
             active={editor.isActive("link")}
             onClick={() => {
@@ -197,7 +201,7 @@ export const JournalBubbleMenu = ({
               onClick={handleAddLink}
               title="Apply link"
             >
-              ✓
+              OK
             </button>
             <button
               type="button"
@@ -208,7 +212,7 @@ export const JournalBubbleMenu = ({
               }}
               title="Cancel"
             >
-              ✕
+              X
             </button>
           </div>
         )}
@@ -220,18 +224,19 @@ export const JournalBubbleMenu = ({
         <input
           ref={imageInputRef}
           type="file"
-          accept="image/*"
+          accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
           className="journal-image-input"
           onChange={handleImageSelect}
         />
         <IconButton
-          icon="🖼️"
-          label="Image"
+          icon="Img"
+          label={imageUploadInProgress ? "Uploading image" : "Image"}
           active={editor.isActive("image")}
+          disabled={imageUploadInProgress}
           onClick={() => imageInputRef.current?.click()}
         />
         <IconButton
-          icon="☑️"
+          icon="Tgl"
           label="Toggle"
           active={editor.isActive("details")}
           onClick={() => {
@@ -256,7 +261,7 @@ export const JournalBubbleMenu = ({
           }}
         />
         <IconButton
-          icon="•"
+          icon="List"
           label="Bullet list"
           active={editor.isActive("bulletList")}
           onClick={() => editor.chain().focus().toggleBulletList().run()}

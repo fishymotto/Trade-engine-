@@ -1,4 +1,5 @@
 import type { JSONContent } from "@tiptap/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
   JournalBlock,
   JournalPageRecord,
@@ -308,6 +309,49 @@ const getTimestamp = (value: string): number => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const normalizeJournalPagesValue = (value: unknown): JournalPageRecord[] => {
+  if (Array.isArray(value)) {
+    return value as JournalPageRecord[];
+  }
+
+  if (value && typeof value === "object" && "value" in value && Array.isArray((value as { value?: unknown }).value)) {
+    return (value as { value: JournalPageRecord[] }).value;
+  }
+
+  return [];
+};
+
+const getJournalPagesScore = (pages: JournalPageRecord[]): number =>
+  dedupeJournalPages(pages).reduce((total, page) => total + getJournalContentScore(page), 0);
+
+const shouldUseDesktopJournalPagesForRecovery = (
+  localPages: JournalPageRecord[],
+  desktopPages: JournalPageRecord[]
+): boolean => {
+  if (desktopPages.length === 0) {
+    return false;
+  }
+
+  if (desktopPages.length > localPages.length) {
+    return true;
+  }
+
+  if (desktopPages.length < localPages.length) {
+    return false;
+  }
+
+  return getJournalPagesScore(desktopPages) > getJournalPagesScore(localPages);
+};
+
+const readJournalPagesFromDesktopBackup = async (): Promise<JournalPageRecord[] | null> => {
+  try {
+    const pages = await invoke<unknown>("load_journal_pages");
+    return normalizeJournalPagesValue(pages);
+  } catch {
+    return null;
+  }
+};
+
 const shouldReplacePage = (existing: JournalPageRecord, candidate: JournalPageRecord): boolean => {
   const existingScore = getJournalContentScore(existing);
   const candidateScore = getJournalContentScore(candidate);
@@ -447,10 +491,33 @@ export const dedupeJournalPages = (pages: JournalPageRecord[]): JournalPageRecor
   );
 };
 
-export const loadJournalPages = (): JournalPageRecord[] => {
-  return syncStores.journalPages.load<JournalPageRecord[]>([]);
+export const loadJournalPages = async (): Promise<JournalPageRecord[]> => {
+  const localPages = normalizeJournalPagesValue(syncStores.journalPages.load<unknown>([]));
+  const desktopPages = await readJournalPagesFromDesktopBackup();
+
+  if (desktopPages && shouldUseDesktopJournalPagesForRecovery(localPages, desktopPages)) {
+    const dedupedPages = dedupeJournalPages(desktopPages);
+    return dedupedPages;
+  }
+
+  return localPages;
 };
 
-export const saveJournalPages = (pages: JournalPageRecord[]): void => {
-  void syncStores.journalPages.save(dedupeJournalPages(pages));
+export const saveJournalPages = async (pages: JournalPageRecord[]): Promise<void> => {
+  const dedupedPages = dedupeJournalPages(pages);
+  await syncStores.journalPages.save(dedupedPages);
+
+  const desktopPages = await readJournalPagesFromDesktopBackup();
+  if (desktopPages && shouldUseDesktopJournalPagesForRecovery(dedupedPages, desktopPages)) {
+    console.warn("[journal] Skipped lossy desktop journal write to protect richer backup.");
+    return;
+  }
+
+  try {
+    await invoke("save_journal_pages", { pages: dedupedPages });
+  } catch (error) {
+    if (isTauri()) {
+      console.warn("[journal] Failed to save desktop journal backup.", error);
+    }
+  }
 };

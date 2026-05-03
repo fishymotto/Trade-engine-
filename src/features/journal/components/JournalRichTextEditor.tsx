@@ -13,6 +13,7 @@ import Highlight from "@tiptap/extension-highlight";
 import Subscript from "@tiptap/extension-subscript";
 import Superscript from "@tiptap/extension-superscript";
 import Image from "@tiptap/extension-image";
+import { TableKit } from "@tiptap/extension-table";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -33,6 +34,15 @@ interface JournalRichTextEditorProps {
   appearance?: "default" | "notion";
   onImageInsert?: (file: File) => Promise<string>;
 }
+
+const MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024;
+const ACCEPTED_INLINE_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+  "image/svg+xml"
+]);
 
 const getCurrentSlashQueryFromState = (state: Editor["state"]): string | null => {
   const { selection } = state;
@@ -94,6 +104,21 @@ const countWords = (rawText: string) => {
 
   return normalized.split(" ").length;
 };
+
+const readFileAsDataUrl = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+        return;
+      }
+
+      reject(new Error("Unable to read image file."));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("Unable to read image file."));
+    reader.readAsDataURL(file);
+  });
 
 const createSlashCommands = (): JournalSlashCommandItem[] => [
   {
@@ -191,6 +216,16 @@ const createSlashCommands = (): JournalSlashCommandItem[] => [
           ]
         })
         .run();
+    }
+  },
+  {
+    key: "table",
+    label: "Table",
+    description: "Insert a 3x3 table",
+    keywords: ["grid", "rows", "columns"],
+    command: (editor) => {
+      clearCurrentParagraph(editor);
+      editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
     }
   },
   {
@@ -328,19 +363,95 @@ export const JournalRichTextEditor = ({
   const [activeSlashIndex, setActiveSlashIndex] = useState(0);
   const [lastSavedAt, setLastSavedAt] = useState<Date>(() => new Date());
   const [wordCount, setWordCount] = useState(0);
+  const [imageUploadInProgress, setImageUploadInProgress] = useState(false);
+  const [imageStatusMessage, setImageStatusMessage] = useState<string | null>(null);
+  const [imageStatusError, setImageStatusError] = useState(false);
 
   const slashCommands = useMemo(() => createSlashCommands(), []);
   const filteredCommandsRef = useRef<JournalSlashCommandItem[]>([]);
   const activeSlashIndexRef = useRef(0);
   const editorRef = useRef<Editor | null>(null);
+  const lastCommittedContentRef = useRef(JSON.stringify(content));
+  const imageStatusTimeoutRef = useRef<number | null>(null);
 
   const updateSlashState = useCallback((editor: Editor) => {
     const query = getCurrentSlashQuery(editor);
     setSlashQuery(query ?? "");
   }, []);
 
+  const clearImageStatusTimeout = useCallback(() => {
+    if (imageStatusTimeoutRef.current !== null) {
+      window.clearTimeout(imageStatusTimeoutRef.current);
+      imageStatusTimeoutRef.current = null;
+    }
+  }, []);
+
+  const updateImageStatus = useCallback(
+    (message: string | null, isError = false, clearAfterMs?: number) => {
+      clearImageStatusTimeout();
+      setImageStatusMessage(message);
+      setImageStatusError(isError);
+
+      if (!message || !clearAfterMs) {
+        return;
+      }
+
+      imageStatusTimeoutRef.current = window.setTimeout(() => {
+        setImageStatusMessage(null);
+        setImageStatusError(false);
+        imageStatusTimeoutRef.current = null;
+      }, clearAfterMs);
+    },
+    [clearImageStatusTimeout]
+  );
+
+  const insertImageFromFile = useCallback(
+    async (file: File): Promise<boolean> => {
+      const currentEditor = editorRef.current;
+      if (!currentEditor || readOnly) {
+        return false;
+      }
+
+      if (!ACCEPTED_INLINE_IMAGE_TYPES.has(file.type)) {
+        updateImageStatus("Unsupported image type. Use PNG, JPG, WEBP, GIF, or SVG.", true, 3600);
+        return false;
+      }
+
+      if (file.size > MAX_INLINE_IMAGE_BYTES) {
+        const maxMb = Math.round(MAX_INLINE_IMAGE_BYTES / (1024 * 1024));
+        updateImageStatus(`Image is too large. Max size is ${maxMb} MB.`, true, 3600);
+        return false;
+      }
+
+      setImageUploadInProgress(true);
+      updateImageStatus("Adding image...", false);
+
+      try {
+        const imageUrl = onImageInsert ? await onImageInsert(file) : await readFileAsDataUrl(file);
+        currentEditor.chain().focus().setImage({ src: imageUrl, alt: file.name }).run();
+        setSaveState("saving");
+        updateImageStatus("Image added.", false, 2000);
+        return true;
+      } catch (error) {
+        console.error("Failed to insert image:", error);
+        updateImageStatus("Image upload failed. Please try again.", true, 4200);
+        return false;
+      } finally {
+        setImageUploadInProgress(false);
+      }
+    },
+    [onImageInsert, readOnly, updateImageStatus]
+  );
+
   const commitContent = useCallback(
     (nextContent: JSONContent) => {
+      const nextSerialized = JSON.stringify(nextContent);
+      if (lastCommittedContentRef.current === nextSerialized) {
+        setSaveState("saved");
+        return;
+      }
+
+      lastCommittedContentRef.current = nextSerialized;
       onChange(nextContent);
       setSaveState("saved");
       setLastSavedAt(new Date());
@@ -355,6 +466,12 @@ export const JournalRichTextEditor = ({
     }
 
     const nextContent = currentEditor.getJSON();
+    const nextSerialized = JSON.stringify(nextContent);
+    if (nextSerialized === lastCommittedContentRef.current) {
+      setSaveState("saved");
+      return;
+    }
+
     setPendingContent(nextContent);
     commitContent(nextContent);
   }, [commitContent]);
@@ -409,6 +526,14 @@ export const JournalRichTextEditor = ({
         HTMLAttributes: {
           class: "journal-details-content"
         }
+      }),
+      TableKit.configure({
+        table: {
+          resizable: !readOnly,
+          HTMLAttributes: {
+            class: "journal-editor-table"
+          }
+        }
       })
     ],
     content,
@@ -428,7 +553,14 @@ export const JournalRichTextEditor = ({
         }
 
         const slashActive = getCurrentSlashQueryFromState(currentEditor.state) !== null;
-        if (!slashActive && event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        if (
+          !slashActive &&
+          !currentEditor.isActive("table") &&
+          event.key === "Tab" &&
+          !event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey
+        ) {
           event.preventDefault();
           if (event.shiftKey) {
             return true;
@@ -492,6 +624,41 @@ export const JournalRichTextEditor = ({
         }
 
         return false;
+      },
+      handlePaste: (_view, event) => {
+        if (readOnly) {
+          return false;
+        }
+
+        const files = Array.from(event.clipboardData?.files ?? []);
+        const imageFile = files.find((file) => ACCEPTED_INLINE_IMAGE_TYPES.has(file.type));
+        if (!imageFile) {
+          return false;
+        }
+
+        event.preventDefault();
+        void insertImageFromFile(imageFile);
+        return true;
+      },
+      handleDrop: (view, event) => {
+        if (readOnly) {
+          return false;
+        }
+
+        const files = Array.from(event.dataTransfer?.files ?? []);
+        const imageFile = files.find((file) => ACCEPTED_INLINE_IMAGE_TYPES.has(file.type));
+        if (!imageFile) {
+          return false;
+        }
+
+        const dropPosition = view.posAtCoords({ left: event.clientX, top: event.clientY });
+        if (dropPosition) {
+          editorRef.current?.chain().focus().setTextSelection(dropPosition.pos).run();
+        }
+
+        event.preventDefault();
+        void insertImageFromFile(imageFile);
+        return true;
       }
     },
     onCreate: ({ editor: nextEditor }) => {
@@ -500,8 +667,13 @@ export const JournalRichTextEditor = ({
     },
     onUpdate: ({ editor: nextEditor }) => {
       const nextContent = nextEditor.getJSON();
-      setPendingContent(nextContent);
-      setSaveState("saving");
+      const nextSerialized = JSON.stringify(nextContent);
+      if (nextSerialized === lastCommittedContentRef.current) {
+        setSaveState("saved");
+      } else {
+        setPendingContent(nextContent);
+        setSaveState("saving");
+      }
       setWordCount(countWords(nextEditor.getText()));
       updateSlashState(nextEditor);
     },
@@ -553,21 +725,39 @@ export const JournalRichTextEditor = ({
     };
   }, [editor]);
 
+  useEffect(
+    () => () => {
+      clearImageStatusTimeout();
+    },
+    [clearImageStatusTimeout]
+  );
+
   useEffect(() => {
-    setPendingContent(content);
+    const nextSerialized = JSON.stringify(content);
+    if (lastCommittedContentRef.current === nextSerialized) {
+      return;
+    }
 
     if (!editor) {
+      setPendingContent(content);
+      lastCommittedContentRef.current = nextSerialized;
       return;
     }
 
     const currentSerialized = JSON.stringify(editor.getJSON());
-    const nextSerialized = JSON.stringify(content);
 
     if (currentSerialized === nextSerialized) {
+      lastCommittedContentRef.current = nextSerialized;
+      return;
+    }
+
+    if (editor.isFocused) {
       return;
     }
 
     editor.commands.setContent(content, { emitUpdate: false });
+    setPendingContent(content);
+    lastCommittedContentRef.current = nextSerialized;
     setWordCount(countWords(editor.getText()));
     setSaveState("saved");
   }, [content, editor]);
@@ -592,12 +782,22 @@ export const JournalRichTextEditor = ({
       }${autosize ? " journal-rich-editor-shell-autosize" : ""}`}
     >
       {!readOnly ? (
-        <JournalBubbleMenu editor={editor} onImageInsert={onImageInsert} appearance={appearance} />
+        <JournalBubbleMenu
+          editor={editor}
+          onImageInsert={insertImageFromFile}
+          imageUploadInProgress={imageUploadInProgress}
+          appearance={appearance}
+        />
       ) : null}
       {!readOnly ? (
         <div className="journal-rich-editor-status">
           <span className={`journal-rich-editor-status-indicator ${saveState === "saving" ? "is-saving" : "is-saved"}`} />
           <span>{saveState === "saving" ? "Saving..." : `Saved ${formattedSavedTime}`}</span>
+          {imageStatusMessage ? (
+            <span className={`journal-rich-editor-image-status${imageStatusError ? " is-error" : ""}`}>
+              {imageStatusMessage}
+            </span>
+          ) : null}
           <span className="journal-rich-editor-word-count">{wordCount} words</span>
         </div>
       ) : null}

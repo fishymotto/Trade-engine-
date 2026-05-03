@@ -1,16 +1,20 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, TextareaHTMLAttributes } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { JSONContent } from "@tiptap/core";
 import { JournalRichTextEditor } from "../../journal/components/JournalRichTextEditor";
 import { PlaybooksPage } from "../../playbooks/pages/PlaybooksPage";
+import { ChartLibraryPanel } from "../components/ChartLibraryPanel";
 import { PageHero } from "../../../components/PageHero";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
 import { PropertyMultiSelect } from "../../../components/PropertyMultiSelect";
 import { FilterSelect } from "../../../components/FilterSelect";
 import { TagDrawer } from "../../../components/TagDrawer";
-import { getTickerIcon, resolveTickerGroupIcon } from "../../../lib/tickers/tickerIcons";
+import { ErrorBoundary } from "../../../components/ErrorBoundary";
+import { getTickerIcon, resolveTickerGroupIcon, tickerIcons } from "../../../lib/tickers/tickerIcons";
+import { useEditableSelectOptions } from "../../../lib/select/useEditableSelectOptions";
 import {
   createLibraryBookRow,
   createLibraryPage,
+  createLibraryStrongViewRow,
   createLibraryQuoteRow,
   libraryCollections,
   loadLibraryPages,
@@ -25,6 +29,7 @@ import { TickerGroupIconPicker } from "../components/TickerGroupIconPicker";
 import { ReviewReflectionPanel } from "../components/review/ReviewReflectionPanel";
 import { coerceReviewReflectionState, loadReviewTemplates, saveReviewTemplates } from "../../../lib/review/reviewTemplateStore";
 import { SYNC_HYDRATED_EVENT } from "../../../lib/sync/syncStore";
+import { createEmptyJournalDoc } from "../../../lib/journal/journalContent";
 import {
   buildReviewPropertiesPatch,
   computeOverallScore,
@@ -39,6 +44,7 @@ import {
 
 const statusOptions = ["Active", "Draft", "Review", "Archived"];
 const REVIEW_REFLECTION_KEY = "__review_reflection_v1";
+const BOOK_CUSTOM_TEXT_FIELDS_PROPERTY_KEY = "__book_custom_text_fields_v1";
 const noteTypeOptions = [
   { label: "Ideas", tag: "idea" },
   { label: "Market Notes", tag: "market-notes" },
@@ -145,13 +151,111 @@ const isBookRow = (page: LibraryPageRecord): boolean => page.tags.includes("book
 
 const isQuoteRow = (page: LibraryPageRecord): boolean => page.tags.includes("quote-row");
 
+const isStrongViewRow = (page: LibraryPageRecord): boolean => page.tags.includes("strong-view-row");
+
 const bookReadingStatusOptions = ["To Read", "In Progress", "Completed", "Abandoned", "Imported"];
 
 const getBookFieldValue = (page: LibraryPageRecord, propertyName: string): string =>
   renderPropertyValue(page, propertyName, "");
 
+type BookCustomTextField = {
+  id: string;
+  label: string;
+  content: JSONContent;
+};
+
+const isJournalDoc = (value: unknown): value is JSONContent =>
+  !!value &&
+  typeof value === "object" &&
+  "type" in value &&
+  (value as { type?: unknown }).type === "doc";
+
+const createJournalDocFromPlainText = (text: string): JSONContent => {
+  const normalized = text.replace(/\r\n/g, "\n");
+  if (!normalized.trim()) {
+    return createEmptyJournalDoc();
+  }
+
+  const content = normalized.split("\n").map((line) =>
+    line.trim()
+      ? ({
+          type: "paragraph",
+          content: [{ type: "text", text: line }]
+        } satisfies JSONContent)
+      : ({ type: "paragraph" } satisfies JSONContent)
+  );
+
+  return {
+    type: "doc",
+    content
+  };
+};
+
+const getPropertyRichTextFieldValue = (page: LibraryPageRecord, propertyName: string): JSONContent => {
+  const value = page.properties?.[propertyName];
+  if (isJournalDoc(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    return createJournalDocFromPlainText(value);
+  }
+
+  return createEmptyJournalDoc();
+};
+
+const sanitizeBookCustomTextField = (value: unknown, index: number): BookCustomTextField | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const label = typeof record.label === "string" ? record.label.trim() : "";
+  if (!label) {
+    return null;
+  }
+
+  const idValue = typeof record.id === "string" ? record.id.trim() : "";
+  const id = idValue || `custom-field-${index + 1}`;
+  const fieldContent = isJournalDoc(record.content)
+    ? record.content
+    : typeof record.value === "string"
+      ? createJournalDocFromPlainText(record.value)
+      : createEmptyJournalDoc();
+
+  return {
+    id,
+    label,
+    content: fieldContent
+  };
+};
+
+const getBookCustomTextFields = (page: LibraryPageRecord): BookCustomTextField[] => {
+  const raw = page.properties?.[BOOK_CUSTOM_TEXT_FIELDS_PROPERTY_KEY];
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  const fields = raw
+    .map((entry, index) => sanitizeBookCustomTextField(entry, index))
+    .filter((entry): entry is BookCustomTextField => entry !== null);
+
+  const seen = new Set<string>();
+  return fields.filter((field) => {
+    if (seen.has(field.id)) {
+      return false;
+    }
+
+    seen.add(field.id);
+    return true;
+  });
+};
+
 const getQuoteFieldValue = (page: LibraryPageRecord, propertyName: string): string =>
   renderPropertyValue(page, propertyName, "");
+
+const getQuoteRichTextFieldValue = (page: LibraryPageRecord): JSONContent =>
+  getPropertyRichTextFieldValue(page, "Quote");
 
 const getQuoteUsedValue = (page: LibraryPageRecord): boolean => {
   const value = page.properties?.Used;
@@ -165,6 +269,52 @@ const getQuoteDateUsedValue = (page: LibraryPageRecord): string => {
 
 const getQuoteDateUsedForInput = (page: LibraryPageRecord): string =>
   getDateOnlyIsoString(getQuoteDateUsedValue(page));
+
+const getStrongViewFieldValue = (page: LibraryPageRecord, propertyName: string): string =>
+  renderPropertyValue(page, propertyName, "");
+
+const getStrongViewDateValue = (page: LibraryPageRecord): string =>
+  getDateOnlyIsoString(getStrongViewFieldValue(page, "Date"));
+
+const getStrongViewNumericValue = (page: LibraryPageRecord, propertyName: "ATR" | "RVOL"): number | null => {
+  const rawValue = getStrongViewFieldValue(page, propertyName).trim();
+  if (!rawValue) {
+    return null;
+  }
+
+  const numeric = Number(rawValue);
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+const formatStrongViewNumeric = (page: LibraryPageRecord, propertyName: "ATR" | "RVOL"): string => {
+  const numeric = getStrongViewNumericValue(page, propertyName);
+  return numeric === null ? "-" : String(numeric);
+};
+
+const getStrongViewMorningChatValue = (page: LibraryPageRecord): string =>
+  getStrongViewFieldValue(page, "Morning Chat");
+
+const getStrongViewRichTextFieldValue = (page: LibraryPageRecord, propertyName: string): JSONContent =>
+  getPropertyRichTextFieldValue(page, propertyName);
+
+const normalizeStrongViewBiasValue = (value: string): string => value.trim().toLowerCase();
+
+const getStrongViewBiasToneClass = (value: string): string => {
+  const normalized = normalizeStrongViewBiasValue(value);
+  if (normalized === "bullish") {
+    return "library-status-pill-strong-view-bullish";
+  }
+
+  if (normalized === "bearish") {
+    return "library-status-pill-strong-view-bearish";
+  }
+
+  if (normalized === "neutral") {
+    return "library-status-pill-strong-view-neutral";
+  }
+
+  return "library-status-pill-strong-view-unset";
+};
 
 const getReadingStatusToneClass = (value: string): string => {
   switch (value) {
@@ -182,14 +332,6 @@ const getReadingStatusToneClass = (value: string): string => {
 };
 
 const scoreOptions = ["", "1", "2", "3", "4", "5"];
-
-type AutoResizeTextareaProps = Omit<
-  TextareaHTMLAttributes<HTMLTextAreaElement>,
-  "value" | "onChange"
-> & {
-  value: string;
-  onChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
-};
 
 const normalizeTagToken = (value: string): string =>
   value.trim().toLowerCase().replace(/\s+/g, "-");
@@ -280,31 +422,6 @@ const getLibraryStatusToneClass = (value: string): string => {
   }
 };
 
-const AutoResizeTextarea = ({ value, onChange, ...props }: AutoResizeTextareaProps) => {
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-
-  const syncHeight = () => {
-    const textarea = textareaRef.current;
-    if (!textarea) {
-      return;
-    }
-
-    textarea.style.height = "0px";
-    textarea.style.height = `${textarea.scrollHeight}px`;
-  };
-
-  useLayoutEffect(() => {
-    syncHeight();
-  }, [value]);
-
-  const handleChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
-    onChange(event);
-    syncHeight();
-  };
-
-  return <textarea ref={textareaRef} value={value} onChange={handleChange} {...props} />;
-};
-
 const normalizeIsoTradeDate = (value: string): string => {
   if (!value) {
     return "";
@@ -326,6 +443,74 @@ const formatSignedUsd = (value: number): string => {
   const amount = Number.isFinite(value) ? value : 0;
   const formatted = Math.abs(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return amount >= 0 ? `+$${formatted}` : `-$${formatted}`;
+};
+
+type ReviewMppTone = "positive" | "negative" | "neutral";
+
+type ReviewMppCardData = {
+  currentLabel: string;
+  previousLabel: string;
+  deltaLabel: string;
+  deltaTone: ReviewMppTone;
+};
+
+const parseReviewMppNumber = (value: string): number | null => {
+  const normalized = value.replace(/[^0-9,.-]/g, "").replace(/,/g, "");
+  if (!normalized || normalized === "-" || normalized === "." || normalized === "-.") {
+    return null;
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const formatSignedWhole = (value: number): string => {
+  const rounded = Math.round(value);
+  if (rounded === 0) {
+    return "0";
+  }
+
+  return `${rounded > 0 ? "+" : "-"}${Math.abs(rounded).toLocaleString()}`;
+};
+
+const formatRelativeDeltaPercent = (delta: number, previous: number): string => {
+  if (previous === 0) {
+    return delta === 0 ? "0.0%" : "n/a";
+  }
+
+  const relative = (delta / Math.abs(previous)) * 100;
+  return `${relative >= 0 ? "+" : ""}${relative.toFixed(1)}%`;
+};
+
+const buildReviewMppCardData = (rawValue: string): ReviewMppCardData => {
+  const parts = rawValue
+    .split("->")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const previousValue = parts.length > 0 ? parseReviewMppNumber(parts[0]) : null;
+  const currentValue = parts.length > 1 ? parseReviewMppNumber(parts[parts.length - 1]) : previousValue;
+
+  const currentLabel = currentValue === null ? "-" : currentValue.toLocaleString();
+  const previousLabel = previousValue === null ? "-" : previousValue.toLocaleString();
+
+  if (currentValue === null || previousValue === null) {
+    return {
+      currentLabel,
+      previousLabel,
+      deltaLabel: "",
+      deltaTone: "neutral"
+    };
+  }
+
+  const delta = currentValue - previousValue;
+  const deltaTone: ReviewMppTone = delta > 0 ? "positive" : delta < 0 ? "negative" : "neutral";
+
+  return {
+    currentLabel,
+    previousLabel,
+    deltaLabel: `${formatSignedWhole(delta)} (${formatRelativeDeltaPercent(delta, previousValue)})`,
+    deltaTone
+  };
 };
 
 type BookCellEditorState = {
@@ -353,6 +538,9 @@ type BookSortConfig = {
   direction: "asc" | "desc";
 };
 
+type StrongViewSortDirection = "asc" | "desc";
+type QuoteSaveStatus = "idle" | "saving" | "saved";
+
 const toggleSortDirection = (direction: "asc" | "desc") => (direction === "asc" ? "desc" : "asc");
 
 const normalizeForSearch = (value: string): string => value.trim().toLowerCase();
@@ -369,7 +557,7 @@ interface LibraryPageProps {
   onSelectTrade: (tradeId: string, tradeDate: string) => void;
   onOpenJournalDate?: (tradeDate: string) => void;
   onViewReportsForPlaybook?: (playbookName: string) => void;
-  initialSection?: "collections" | "playbooks";
+  initialSection?: "collections" | "playbooks" | "chart-library";
 }
 
 export const LibraryPage = ({
@@ -381,7 +569,14 @@ export const LibraryPage = ({
   onViewReportsForPlaybook,
   initialSection = "collections"
 }: LibraryPageProps) => {
-  const [activeSection, setActiveSection] = useState<"collections" | "playbooks">(initialSection);
+  const [activeSection, setActiveSection] = useState<"collections" | "playbooks" | "chart-library">(initialSection);
+  const {
+    options: strongViewTickerOptionsBase,
+    addOption: addStrongViewTickerOption,
+    renameOption: renameStrongViewTickerOption,
+    removeOption: removeStrongViewTickerOption,
+    isCustomOption: isCustomStrongViewTickerOption
+  } = useEditableSelectOptions("strongViewTickers", Object.keys(tickerIcons).sort());
   const [pages, setPages] = useState<LibraryPageRecord[]>(() => loadLibraryPages());
   const [selectedCollectionId, setSelectedCollectionId] =
     useState<LibraryCollectionId>("idea-inbox");
@@ -407,6 +602,12 @@ export const LibraryPage = ({
   const [quoteSearchQuery, setQuoteSearchQuery] = useState("");
   const [isQuoteSearchDrawerOpen, setIsQuoteSearchDrawerOpen] = useState(false);
   const [quoteSearchDrawerQuery, setQuoteSearchDrawerQuery] = useState("");
+  const [quoteSaveStatus, setQuoteSaveStatus] = useState<QuoteSaveStatus>("idle");
+  const [strongViewTickerQuery, setStrongViewTickerQuery] = useState("");
+  const [strongViewDateFilter, setStrongViewDateFilter] = useState("");
+  const [strongViewSortDirection, setStrongViewSortDirection] = useState<StrongViewSortDirection>("desc");
+  const [isStrongViewTickerDrawerOpen, setIsStrongViewTickerDrawerOpen] = useState(false);
+  const [strongViewTickerSearch, setStrongViewTickerSearch] = useState("");
   const [quoteCellEditor, setQuoteCellEditor] = useState<QuoteCellEditorState | null>(null);
   const [quoteCellEditorSearchQuery, setQuoteCellEditorSearchQuery] = useState("");
   const [notesTypeEditor, setNotesTypeEditor] = useState<NotesTypeEditorState | null>(null);
@@ -423,6 +624,20 @@ export const LibraryPage = ({
   const [showLegacyReviewNotes, setShowLegacyReviewNotes] = useState(false);
   const skipNextPagesSaveRef = useRef(true);
   const skipNextReviewTemplatesSaveRef = useRef(true);
+  const strongViewMorningChatInputRef = useRef<HTMLInputElement | null>(null);
+  const quoteSaveStatusTimeoutRef = useRef<number | null>(null);
+
+  const clearQuoteSaveStatusTimeout = () => {
+    if (quoteSaveStatusTimeoutRef.current !== null) {
+      window.clearTimeout(quoteSaveStatusTimeoutRef.current);
+      quoteSaveStatusTimeoutRef.current = null;
+    }
+  };
+
+  const markQuoteSaving = () => {
+    clearQuoteSaveStatusTimeout();
+    setQuoteSaveStatus("saving");
+  };
 
   const handleImageInsert = async (file: File): Promise<string> => {
     return readFileAsDataUrl(file);
@@ -469,6 +684,26 @@ export const LibraryPage = ({
 
     saveReviewTemplates(reviewTemplates);
   }, [reviewTemplates]);
+
+  useEffect(() => {
+    if (quoteSaveStatus !== "saving") {
+      return;
+    }
+
+    setQuoteSaveStatus("saved");
+    clearQuoteSaveStatusTimeout();
+    quoteSaveStatusTimeoutRef.current = window.setTimeout(() => {
+      setQuoteSaveStatus("idle");
+      quoteSaveStatusTimeoutRef.current = null;
+    }, 1300);
+  }, [pages, quoteSaveStatus]);
+
+  useEffect(
+    () => () => {
+      clearQuoteSaveStatusTimeout();
+    },
+    []
+  );
 
   useEffect(() => {
     const handleHydrated = () => {
@@ -607,6 +842,7 @@ export const LibraryPage = ({
 
   const isNotesCollection = selectedCollectionId === "idea-inbox";
   const isBookClub = selectedCollectionId === "book-club";
+  const isStrongViews = selectedCollectionId === "strong-views";
   const isQuotes = selectedCollectionId === "quotes";
   const isTickerGroups = selectedCollectionId === "ticker-groups";
   const selectedReviewPeriod = getReviewPeriodForCollection(selectedCollectionId);
@@ -751,6 +987,57 @@ export const LibraryPage = ({
     [collectionPages, isQuotes]
   );
 
+  const strongViewRows = useMemo(
+    () => (isStrongViews ? collectionPages : collectionPages.filter(isStrongViewRow)),
+    [collectionPages, isStrongViews]
+  );
+
+  const filteredStrongViewRows = useMemo(() => {
+    const normalizedTickerQuery = normalizeForSearch(strongViewTickerQuery);
+    const normalizedDateFilter = getDateOnlyIsoString(strongViewDateFilter);
+
+    const filtered = strongViewRows.filter((page) => {
+      if (normalizedTickerQuery) {
+        const ticker = normalizeForSearch(getStrongViewFieldValue(page, "Ticker"));
+        if (!ticker.includes(normalizedTickerQuery)) {
+          return false;
+        }
+      }
+
+      if (normalizedDateFilter) {
+        const rowDate = getStrongViewDateValue(page);
+        if (rowDate !== normalizedDateFilter) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+
+    return [...filtered].sort((left, right) => {
+      const leftDate = getStrongViewDateValue(left);
+      const rightDate = getStrongViewDateValue(right);
+      const leftFallback = left.createdAt.slice(0, 10);
+      const rightFallback = right.createdAt.slice(0, 10);
+      const leftComparable = leftDate || leftFallback;
+      const rightComparable = rightDate || rightFallback;
+      const compare = leftComparable.localeCompare(rightComparable, undefined, { sensitivity: "base" });
+      return strongViewSortDirection === "asc" ? compare : -compare;
+    });
+  }, [strongViewDateFilter, strongViewRows, strongViewSortDirection, strongViewTickerQuery]);
+
+  const strongViewTickerOptions = useMemo(() => {
+    const fromStrongViews = strongViewRows
+      .map((page) => getStrongViewFieldValue(page, "Ticker").trim().toUpperCase())
+      .filter(Boolean);
+
+    const merged = Array.from(
+      new Set([...strongViewTickerOptionsBase, ...tickerGroupTickerOptions, ...fromStrongViews].map(normalizeTickerToken))
+    );
+
+    return merged.sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+  }, [strongViewRows, strongViewTickerOptionsBase, tickerGroupTickerOptions]);
+
   const filteredQuoteRows = useMemo(() => {
     const normalizedQuery = normalizeForSearch(quoteSearchQuery);
 
@@ -883,6 +1170,14 @@ export const LibraryPage = ({
     () => pages.find((page) => page.id === selectedPageId) ?? null,
     [pages, selectedPageId]
   );
+  const selectedReviewMppCardData = useMemo(() => {
+    if (!selectedPage) {
+      return null;
+    }
+
+    const rawMpp = renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.mpp, "");
+    return buildReviewMppCardData(rawMpp);
+  }, [selectedPage]);
 
   const bestDayEntries = useMemo(() => {
     if (!selectedPage) {
@@ -1209,27 +1504,102 @@ export const LibraryPage = ({
     propertyName: string,
     value: unknown
   ) => {
-    updatePage(page.id, {
-      properties: {
-        ...page.properties,
-        [propertyName]: value
+    setPages((current) =>
+      current.map((currentPage) =>
+        currentPage.id === page.id
+          ? {
+              ...currentPage,
+              properties: {
+                ...(currentPage.properties ?? {}),
+                [propertyName]: value
+              },
+              updatedAt: new Date().toISOString()
+            }
+          : currentPage
+      )
+    );
+  };
+
+  const updateBookCustomTextFields = (
+    page: LibraryPageRecord,
+    updater: (fields: BookCustomTextField[]) => BookCustomTextField[]
+  ) => {
+    setPages((current) =>
+      current.map((currentPage) => {
+        if (currentPage.id !== page.id) {
+          return currentPage;
+        }
+
+        const nextFields = updater(getBookCustomTextFields(currentPage));
+        return {
+          ...currentPage,
+          properties: {
+            ...(currentPage.properties ?? {}),
+            [BOOK_CUSTOM_TEXT_FIELDS_PROPERTY_KEY]: nextFields
+          },
+          updatedAt: new Date().toISOString()
+        };
+      })
+    );
+  };
+
+  const addBookCustomTextField = (page: LibraryPageRecord) => {
+    const suggestedName = "Opening Journal";
+    const fieldLabel = window.prompt("Name for the new text field", suggestedName)?.trim() ?? "";
+    if (!fieldLabel) {
+      return;
+    }
+
+    updateBookCustomTextFields(page, (fields) => [
+      ...fields,
+      {
+        id: `book-field-${Math.random().toString(36).slice(2, 10)}`,
+        label: fieldLabel,
+        content: createEmptyJournalDoc()
       }
-    });
+    ]);
+  };
+
+  const updateBookCustomTextField = (
+    page: LibraryPageRecord,
+    fieldId: string,
+    updates: Partial<BookCustomTextField>
+  ) => {
+    updateBookCustomTextFields(page, (fields) =>
+      fields.map((field) => (field.id === fieldId ? { ...field, ...updates } : field))
+    );
+  };
+
+  const removeBookCustomTextField = (page: LibraryPageRecord, fieldId: string) => {
+    updateBookCustomTextFields(page, (fields) => fields.filter((field) => field.id !== fieldId));
   };
 
   const updateQuoteUsed = (page: LibraryPageRecord, nextUsed: boolean) => {
-    const dateUsed = nextUsed ? getQuoteDateUsedForInput(page) || new Date().toISOString().slice(0, 10) : "";
+    markQuoteSaving();
+    setPages((current) =>
+      current.map((currentPage) => {
+        if (currentPage.id !== page.id) {
+          return currentPage;
+        }
 
-    updatePage(page.id, {
-      properties: {
-        ...page.properties,
-        Used: nextUsed,
-        "Date Used": dateUsed
-      }
-    });
+        const dateUsed =
+          nextUsed ? getQuoteDateUsedForInput(currentPage) || new Date().toISOString().slice(0, 10) : "";
+
+        return {
+          ...currentPage,
+          properties: {
+            ...(currentPage.properties ?? {}),
+            Used: nextUsed,
+            "Date Used": dateUsed
+          },
+          updatedAt: new Date().toISOString()
+        };
+      })
+    );
   };
 
   const updateQuoteDateUsed = (page: LibraryPageRecord, nextDateUsed: string) => {
+    markQuoteSaving();
     const normalized = getDateOnlyIsoString(nextDateUsed);
 
     if (!normalized) {
@@ -1237,13 +1607,34 @@ export const LibraryPage = ({
       return;
     }
 
-    updatePage(page.id, {
-      properties: {
-        ...page.properties,
-        Used: true,
-        "Date Used": normalized
-      }
-    });
+    setPages((current) =>
+      current.map((currentPage) =>
+        currentPage.id === page.id
+          ? {
+              ...currentPage,
+              properties: {
+                ...(currentPage.properties ?? {}),
+                Used: true,
+                "Date Used": normalized
+              },
+              updatedAt: new Date().toISOString()
+            }
+          : currentPage
+      )
+    );
+  };
+
+  const handleStrongViewMorningChatUpload = async (page: LibraryPageRecord, file: File | null) => {
+    if (!file) {
+      return;
+    }
+
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      updatePageProperty(page, "Morning Chat", dataUrl);
+    } catch {
+      window.alert("The Morning Chat image could not be read.");
+    }
   };
 
   const renameQuoteOption = (field: "Author" | "Source", currentValue: string, nextValue: string) => {
@@ -1253,6 +1644,7 @@ export const LibraryPage = ({
       return;
     }
 
+    markQuoteSaving();
     setPages((current) =>
       current.map((page) => {
         if (page.collectionId !== "quotes") {
@@ -1282,6 +1674,7 @@ export const LibraryPage = ({
       return;
     }
 
+    markQuoteSaving();
     setPages((current) =>
       current.map((page) => {
         if (page.collectionId !== "quotes") {
@@ -1413,6 +1806,16 @@ export const LibraryPage = ({
     setNotesTagSearchQuery("");
   };
 
+  const handleCreateStrongViewRow = () => {
+    const newPage = createLibraryStrongViewRow();
+    setPages((current) => [newPage, ...current]);
+    setSelectedPageId(newPage.id);
+    setCollectionView("page");
+    setStrongViewTickerQuery("");
+    setStrongViewDateFilter("");
+    setStrongViewSortDirection("desc");
+  };
+
   const handleDeletePage = (pageId: string) => {
     const targetPage = pages.find((page) => page.id === pageId);
     if (!targetPage) {
@@ -1451,6 +1854,10 @@ export const LibraryPage = ({
     });
   };
 
+  const toggleStrongViewDateSort = () => {
+    setStrongViewSortDirection((current) => toggleSortDirection(current));
+  };
+
   const getBookValidation = (page: LibraryPageRecord) => {
     const titleInvalid = page.title.trim().length === 0;
     const authorInvalid = getBookFieldValue(page, "Author").trim().length === 0;
@@ -1461,6 +1868,78 @@ export const LibraryPage = ({
       (!Number.isFinite(ratingNumber) || !Number.isInteger(ratingNumber) || ratingNumber < 1 || ratingNumber > 5);
 
     return { titleInvalid, authorInvalid, ratingInvalid };
+  };
+
+  const renderBookTextFields = (page: LibraryPageRecord) => {
+    const customFields = getBookCustomTextFields(page);
+
+    return (
+      <div className="library-open-page-notes">
+        <div className="library-open-page-note">
+          <span>Summary</span>
+          <JournalRichTextEditor
+            key={`${page.id}-book-summary-editor`}
+            content={getPropertyRichTextFieldValue(page, "Summary")}
+            onChange={(content) => updatePageProperty(page, "Summary", content)}
+            placeholder="Key ideas, takeaways, and notes from the book."
+            appearance="notion"
+            autosize
+          />
+        </div>
+        <div className="library-open-page-note">
+          <span>Review</span>
+          <JournalRichTextEditor
+            key={`${page.id}-book-review-editor`}
+            content={getPropertyRichTextFieldValue(page, "Review")}
+            onChange={(content) => updatePageProperty(page, "Review", content)}
+            placeholder="What stood out, what mattered, and how it applies to trading."
+            appearance="notion"
+            autosize
+          />
+        </div>
+        {customFields.map((field) => (
+          <div key={field.id} className="library-open-page-note">
+            <span>{field.label}</span>
+            <JournalRichTextEditor
+              key={`${page.id}-${field.id}-editor`}
+              content={field.content}
+              onChange={(content) => updateBookCustomTextField(page, field.id, { content })}
+              placeholder={`${field.label} notes`}
+              appearance="notion"
+              autosize
+            />
+            <div className="library-book-note-actions">
+              <button
+                type="button"
+                className="mini-action mini-action-soft"
+                onClick={() => {
+                  const nextLabel = window.prompt("Rename text field", field.label)?.trim() ?? "";
+                  if (!nextLabel) {
+                    return;
+                  }
+
+                  updateBookCustomTextField(page, field.id, { label: nextLabel });
+                }}
+              >
+                Rename
+              </button>
+              <button
+                type="button"
+                className="mini-action mini-action-danger"
+                onClick={() => removeBookCustomTextField(page, field.id)}
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+        ))}
+        <div className="library-book-note-actions">
+          <button type="button" className="mini-action" onClick={() => addBookCustomTextField(page)}>
+            + Add Text Field
+          </button>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -1533,6 +2012,11 @@ export const LibraryPage = ({
                     setQuoteSearchDrawerQuery("");
                     setQuoteCellEditor(null);
                     setQuoteCellEditorSearchQuery("");
+                    setStrongViewTickerQuery("");
+                    setStrongViewDateFilter("");
+                    setStrongViewSortDirection("desc");
+                    setIsStrongViewTickerDrawerOpen(false);
+                    setStrongViewTickerSearch("");
                     setNotesTypeEditor(null);
                     setNotesTypeSearchQuery("");
                     setNotesTagEditor(null);
@@ -1571,6 +2055,11 @@ export const LibraryPage = ({
                 setQuoteSearchDrawerQuery("");
                 setQuoteCellEditor(null);
                 setQuoteCellEditorSearchQuery("");
+                setStrongViewTickerQuery("");
+                setStrongViewDateFilter("");
+                setStrongViewSortDirection("desc");
+                setIsStrongViewTickerDrawerOpen(false);
+                setStrongViewTickerSearch("");
                 setNotesTypeEditor(null);
                 setNotesTypeSearchQuery("");
                 setNotesTagEditor(null);
@@ -1581,19 +2070,73 @@ export const LibraryPage = ({
               <strong>Playbooks</strong>
               <small>Open setup library</small>
             </button>
+
+            <button
+              type="button"
+              className={`library-collection-button${
+                activeSection === "chart-library" ? " library-collection-button-active" : ""
+              }`}
+              onClick={() => {
+                setActiveSection("chart-library");
+                setSelectedPageId("");
+                setCollectionView("list");
+                setNotesTab(DEFAULT_NOTES_TAB);
+                setNotesTagFilterQuery("");
+                setIsNotesTagFilterDrawerOpen(false);
+                setNotesTagFilterSearchQuery("");
+                setBookSearchQuery("");
+                setIsBookSearchDrawerOpen(false);
+                setBookSearchDrawerQuery("");
+                setBookStatusFilter("");
+                setBookGenreFilter([]);
+                setBookCellEditor(null);
+                setBookCellEditorSearchQuery("");
+                setIsBookGenreFilterOpen(false);
+                setBookGenreFilterSearchQuery("");
+                setQuoteSearchQuery("");
+                setIsQuoteSearchDrawerOpen(false);
+                setQuoteSearchDrawerQuery("");
+                setQuoteCellEditor(null);
+                setQuoteCellEditorSearchQuery("");
+                setStrongViewTickerQuery("");
+                setStrongViewDateFilter("");
+                setStrongViewSortDirection("desc");
+                setIsStrongViewTickerDrawerOpen(false);
+                setStrongViewTickerSearch("");
+                setNotesTypeEditor(null);
+                setNotesTypeSearchQuery("");
+                setNotesTagEditor(null);
+                setNotesTagSearchQuery("");
+              }}
+            >
+              <span>Charts</span>
+              <strong>Chart Library</strong>
+              <small>Browse tagged screenshots</small>
+            </button>
           </div>
         </aside>
 
         <section className="library-database-panel">
-          {activeSection === "playbooks" ? (
-            <PlaybooksPage
-              embedded
-              trades={trades}
+          {activeSection === "chart-library" ? (
+            <ChartLibraryPanel
               journalPages={journalPages}
+              trades={trades}
               onSelectTrade={onSelectTrade}
               onOpenJournalDate={onOpenJournalDate}
-              onViewReportsForPlaybook={onViewReportsForPlaybook}
             />
+          ) : null}
+
+          {activeSection === "playbooks" ? (
+            <ErrorBoundary label="Library Playbooks">
+              <PlaybooksPage
+                embedded
+                trades={trades}
+                journalPages={journalPages}
+                onSelectTrade={onSelectTrade}
+                onOpenJournalDate={onOpenJournalDate}
+                onViewReportsForPlaybook={onViewReportsForPlaybook}
+              />
+            </ErrorBoundary>
           ) : null}
 
           {activeSection === "collections" && collectionView === "list" ? (
@@ -1607,7 +2150,7 @@ export const LibraryPage = ({
                 <button
                   className="button button-primary"
                   type="button"
-                  onClick={isQuotes ? handleCreateQuoteRow : handleCreatePage}
+                  onClick={isQuotes ? handleCreateQuoteRow : isStrongViews ? handleCreateStrongViewRow : handleCreatePage}
                 >
                   {isReviewCollection
                     ? selectedReviewPeriod === "weekly"
@@ -1615,6 +2158,8 @@ export const LibraryPage = ({
                       : "New Monthly Review"
                     : isTickerGroups
                       ? "New Group"
+                      : isStrongViews
+                        ? "New Strong View"
                       : isQuotes
                         ? "New Quote"
                       : isNotesCollection
@@ -1936,6 +2481,11 @@ export const LibraryPage = ({
                     {filteredQuoteRows.length}
                     {quoteSearchQuery.trim() ? ` of ${quoteRows.length}` : ""} quotes
                   </span>
+                  {quoteSaveStatus !== "idle" ? (
+                    <span className={`library-quotes-save-status library-quotes-save-status-${quoteSaveStatus}`}>
+                      {quoteSaveStatus === "saving" ? "Saving..." : "Saved"}
+                    </span>
+                  ) : null}
                 </div>
               </div>
               <div className="library-quotes-controls" aria-label="Quotes database controls">
@@ -1977,17 +2527,25 @@ export const LibraryPage = ({
                         onClick={() => setSelectedPageId(page.id)}
                       >
                         <td>
-                          <textarea
-                            className="library-cell-input library-cell-textarea"
-                            value={getQuoteFieldValue(page, "Quote")}
+                          <div
+                            className="library-quotes-rich-editor"
                             onClick={(event) => {
                               event.stopPropagation();
                               setSelectedPageId(page.id);
                             }}
-                            onChange={(event) => updatePageProperty(page, "Quote", event.target.value)}
-                            placeholder="Type a quote..."
-                            rows={2}
-                          />
+                          >
+                            <JournalRichTextEditor
+                              key={`${page.id}-quote-editor`}
+                              content={getQuoteRichTextFieldValue(page)}
+                              onChange={(content) => {
+                                markQuoteSaving();
+                                updatePageProperty(page, "Quote", content);
+                              }}
+                              onImageInsert={handleImageInsert}
+                              placeholder="Type a quote..."
+                              compact
+                            />
+                          </div>
                         </td>
                         <td>
                           <button
@@ -2048,6 +2606,104 @@ export const LibraryPage = ({
                     <tr>
                       <td colSpan={5} className="empty-state">
                         {quoteRows.length > 0 ? "No quotes match the current search." : "No quotes yet. Create the first quote."}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          ) : isStrongViews ? (
+            <div className="library-table-wrap library-strong-view-table-wrap" aria-label="Strong Views database">
+              <div className="library-strong-view-table-title">
+                <WorkspaceIcon icon="trades" alt="" className="panel-header-icon" />
+                <div>
+                  <h3>Strong Views</h3>
+                  <span>
+                    {filteredStrongViewRows.length}
+                    {strongViewTickerQuery.trim() || strongViewDateFilter ? ` of ${strongViewRows.length}` : ""} views
+                  </span>
+                </div>
+              </div>
+              <div className="library-book-controls" aria-label="Strong Views controls">
+                <input
+                  className="library-book-search"
+                  value={strongViewTickerQuery}
+                  onChange={(event) => setStrongViewTickerQuery(event.target.value)}
+                  placeholder="Search ticker (ex: AAPL)"
+                  aria-label="Search strong views by ticker"
+                />
+                <input
+                  className="library-book-search library-strong-view-date-filter"
+                  type="date"
+                  value={strongViewDateFilter}
+                  onChange={(event) => setStrongViewDateFilter(event.target.value)}
+                  aria-label="Filter strong views by date"
+                />
+                {strongViewTickerQuery.trim() || strongViewDateFilter ? (
+                  <button
+                    type="button"
+                    className="mini-action"
+                    onClick={() => {
+                      setStrongViewTickerQuery("");
+                      setStrongViewDateFilter("");
+                    }}
+                  >
+                    Clear
+                  </button>
+                ) : null}
+                <button className="button button-primary" type="button" onClick={handleCreateStrongViewRow}>
+                  New Strong View
+                </button>
+              </div>
+              <table className="library-table library-strong-view-table">
+                <thead>
+                  <tr>
+                    <th>Ticker</th>
+                    <th>
+                      <button type="button" className="sortable-header-button" onClick={toggleStrongViewDateSort}>
+                        <span>Date</span>
+                        <span className="sort-indicator sort-indicator-active">{strongViewSortDirection}</span>
+                      </button>
+                    </th>
+                    <th>Bias</th>
+                    <th>ATR</th>
+                    <th>RVOL</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredStrongViewRows.length > 0 ? (
+                    filteredStrongViewRows.map((page) => {
+                      const ticker = getStrongViewFieldValue(page, "Ticker").trim().toUpperCase();
+                      const date = getStrongViewDateValue(page);
+                      const bias = getStrongViewFieldValue(page, "Bias").trim();
+                      const biasLabel = bias || "Unset";
+
+                      return (
+                        <tr
+                          key={page.id}
+                          className={selectedPage?.id === page.id ? "library-table-row-active" : ""}
+                          onClick={() => openPage(page.id)}
+                        >
+                          <td>
+                            <button type="button" className="library-table-title" onClick={() => openPage(page.id)}>
+                              {ticker || "-"}
+                            </button>
+                          </td>
+                          <td>{date || <span className="library-table-muted">-</span>}</td>
+                          <td>
+                            <span className={`library-status-pill ${getStrongViewBiasToneClass(bias)}`}>{biasLabel}</span>
+                          </td>
+                          <td>{formatStrongViewNumeric(page, "ATR")}</td>
+                          <td>{formatStrongViewNumeric(page, "RVOL")}</td>
+                        </tr>
+                      );
+                    })
+                  ) : (
+                    <tr>
+                      <td colSpan={5} className="empty-state">
+                        {strongViewRows.length > 0
+                          ? "No strong views match the current filters."
+                          : "No strong views yet. Create your first view."}
                       </td>
                     </tr>
                   )}
@@ -2207,47 +2863,13 @@ export const LibraryPage = ({
             </div>
               )}
 
-          {!isBookClub && !isReviewCollection && !isTickerGroups && !isNotesCollection ? (
-            <div className="library-page-grid" aria-label={`${selectedCollection.name} cards`}>
-              {collectionPages.length > 0 ? (
-              collectionPages.map((page) => (
-                <button
-                  key={page.id}
-                  type="button"
-                  className={`library-page-card${
-                    selectedPage?.id === page.id ? " library-page-card-active" : ""
-                  }`}
-                  onClick={() => openPage(page.id)}
-                >
-                  <div className="library-page-card-topline">
-                    <strong>{page.title}</strong>
-                    <span>{page.status}</span>
-                  </div>
-                  <p>Updated {formatUpdatedAt(page.updatedAt)}</p>
-                  <div className="library-page-tags">
-                    {page.tags.length > 0 ? (
-                      page.tags.slice(0, 4).map((tag) => <span key={tag}>{tag}</span>)
-                    ) : (
-                      <span>No tags</span>
-                    )}
-                  </div>
-                </button>
-              ))
-            ) : (
-              <div className="library-empty-state">
-                <strong>No pages yet</strong>
-                <span>Create the first page in {selectedCollection.name}.</span>
-              </div>
-              )}
-            </div>
-          ) : null}
             </>
           ) : null}
 
           {activeSection === "collections" && collectionView === "page" && selectedPage ? (
             <section
               className={`library-detail-card${
-                isBookClub && isBookRow(selectedPage)
+                (isBookClub && isBookRow(selectedPage)) || (isStrongViews && isStrongViewRow(selectedPage))
                   ? " library-open-page-card"
                   : isReviewCollection || isTickerGroups
                     ? " library-open-page-card"
@@ -2260,7 +2882,11 @@ export const LibraryPage = ({
                 </button>
                 <div className="library-title-stack">
                   <span className="page-eyebrow">
-                    {isBookClub && isBookRow(selectedPage) ? "Open Book Page" : selectedCollection.name}
+                    {isBookClub && isBookRow(selectedPage)
+                      ? "Open Book Page"
+                      : isStrongViews && isStrongViewRow(selectedPage)
+                        ? "Open Strong View Page"
+                        : selectedCollection.name}
                   </span>
                   <input
                     className="library-title-input"
@@ -2314,12 +2940,13 @@ export const LibraryPage = ({
 
                     <label className="library-open-page-property ticker-group-description">
                       <span>Description</span>
-                      <textarea
-                        className="library-open-page-textarea"
-                        value={renderPropertyValue(selectedPage, "Description", "")}
-                        onChange={(event) => updatePageProperty(selectedPage, "Description", event.target.value)}
+                      <JournalRichTextEditor
+                        key={`${selectedPage.id}-ticker-group-description`}
+                        content={getPropertyRichTextFieldValue(selectedPage, "Description")}
+                        onChange={(content) => updatePageProperty(selectedPage, "Description", content)}
+                        onImageInsert={handleImageInsert}
                         placeholder="Optional short description"
-                        rows={3}
+                        compact
                       />
                     </label>
 
@@ -2411,13 +3038,15 @@ export const LibraryPage = ({
                       <span>Gross</span>
                       <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.gross, "-")} />
                     </label>
-                    <label className="library-open-page-property">
+                    <label className="library-open-page-property library-open-page-property-mpp">
                       <span>MPP</span>
-                      <input
-                        value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.mpp, "")}
-                        onChange={(event) => updatePageProperty(selectedPage, REVIEW_PROPERTY_KEYS.mpp, event.target.value)}
-                        placeholder="Enter MPP notes"
-                      />
+                      <strong>{selectedReviewMppCardData?.currentLabel ?? "-"}</strong>
+                      <small>Prev {selectedReviewMppCardData?.previousLabel ?? "-"}</small>
+                      {selectedReviewMppCardData?.deltaLabel ? (
+                        <em className={`report-period-delta report-period-delta-${selectedReviewMppCardData.deltaTone}`}>
+                          {selectedReviewMppCardData.deltaLabel}
+                        </em>
+                      ) : null}
                     </label>
                     <label className="library-open-page-property library-open-page-property-red-days">
                       <span>Red Days</span>
@@ -2613,6 +3242,7 @@ export const LibraryPage = ({
                     </div>
                     {showLegacyReviewNotes ? (
                       <JournalRichTextEditor
+                        key={`${selectedPage.id}-review-legacy-notes`}
                         content={selectedPage.content}
                         onChange={(content) => updatePage(selectedPage.id, { content })}
                         onImageInsert={handleImageInsert}
@@ -2664,28 +3294,211 @@ export const LibraryPage = ({
                     />
                   </div>
 
-                  <div className="library-open-page-notes">
+                  {renderBookTextFields(selectedPage)}
+                </>
+              ) : isStrongViews && isStrongViewRow(selectedPage) ? (
+                <>
+                  <div className="library-open-page-properties library-strong-view-properties">
+                    <label className="library-open-page-property">
+                      <span>Ticker</span>
+                      <button
+                        type="button"
+                        className="library-property-pill-button"
+                        onClick={() => {
+                          setIsStrongViewTickerDrawerOpen(true);
+                          setStrongViewTickerSearch(getStrongViewFieldValue(selectedPage, "Ticker").trim().toUpperCase());
+                        }}
+                      >
+                        {getStrongViewFieldValue(selectedPage, "Ticker").trim().toUpperCase() || "Select ticker"}
+                      </button>
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Date</span>
+                      <input
+                        type="date"
+                        value={getStrongViewDateValue(selectedPage)}
+                        onChange={(event) => updatePageProperty(selectedPage, "Date", event.target.value)}
+                      />
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Bias</span>
+                      <select
+                        value={getStrongViewFieldValue(selectedPage, "Bias")}
+                        onChange={(event) => updatePageProperty(selectedPage, "Bias", event.target.value)}
+                      >
+                        <option value="">Unset</option>
+                        <option value="Bullish">Bullish</option>
+                        <option value="Bearish">Bearish</option>
+                        <option value="Neutral">Neutral</option>
+                      </select>
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>ATR</span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={getStrongViewFieldValue(selectedPage, "ATR")}
+                        onChange={(event) => updatePageProperty(selectedPage, "ATR", event.target.value)}
+                        placeholder="0.00"
+                      />
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>RVOL</span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={getStrongViewFieldValue(selectedPage, "RVOL")}
+                        onChange={(event) => updatePageProperty(selectedPage, "RVOL", event.target.value)}
+                        placeholder="0.00"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="library-strong-view-level-grid">
                     <label className="library-open-page-note">
-                      <span>Summary</span>
-                      <AutoResizeTextarea
-                        value={getBookFieldValue(selectedPage, "Summary")}
-                        onChange={(event) => updatePageProperty(selectedPage, "Summary", event.target.value)}
-                        placeholder="Key ideas, takeaways, and notes from the book."
+                      <span>Open / Close</span>
+                      <JournalRichTextEditor
+                        key={`${selectedPage.id}-strong-view-open-close`}
+                        content={getStrongViewRichTextFieldValue(selectedPage, "Open / Close")}
+                        onChange={(content) => updatePageProperty(selectedPage, "Open / Close", content)}
+                        onImageInsert={handleImageInsert}
+                        placeholder="Open/close behavior to watch."
+                        compact
                       />
                     </label>
                     <label className="library-open-page-note">
-                      <span>Review</span>
-                      <AutoResizeTextarea
-                        value={getBookFieldValue(selectedPage, "Review")}
-                        onChange={(event) => updatePageProperty(selectedPage, "Review", event.target.value)}
-                        placeholder="What stood out, what mattered, and how it applies to trading."
+                      <span>Support</span>
+                      <JournalRichTextEditor
+                        key={`${selectedPage.id}-strong-view-support`}
+                        content={getStrongViewRichTextFieldValue(selectedPage, "Support")}
+                        onChange={(content) => updatePageProperty(selectedPage, "Support", content)}
+                        onImageInsert={handleImageInsert}
+                        placeholder="Support levels and context."
+                        compact
                       />
                     </label>
+                    <label className="library-open-page-note">
+                      <span>Resistance</span>
+                      <JournalRichTextEditor
+                        key={`${selectedPage.id}-strong-view-resistance`}
+                        content={getStrongViewRichTextFieldValue(selectedPage, "Resistance")}
+                        onChange={(content) => updatePageProperty(selectedPage, "Resistance", content)}
+                        onImageInsert={handleImageInsert}
+                        placeholder="Resistance levels and context."
+                        compact
+                      />
+                    </label>
+                  </div>
+
+                  <div className="library-strong-view-story-grid">
+                    <label className="library-open-page-note">
+                      <span>Notes</span>
+                      <JournalRichTextEditor
+                        key={`${selectedPage.id}-strong-view-notes`}
+                        content={getStrongViewRichTextFieldValue(selectedPage, "Notes")}
+                        onChange={(content) => updatePageProperty(selectedPage, "Notes", content)}
+                        onImageInsert={handleImageInsert}
+                        placeholder="Additional context and observations."
+                        compact
+                      />
+                    </label>
+                    <label className="library-open-page-note">
+                      <span>Catalyst</span>
+                      <JournalRichTextEditor
+                        key={`${selectedPage.id}-strong-view-catalyst`}
+                        content={getStrongViewRichTextFieldValue(selectedPage, "Catalyst")}
+                        onChange={(content) => updatePageProperty(selectedPage, "Catalyst", content)}
+                        onImageInsert={handleImageInsert}
+                        placeholder="Upcoming catalysts and event risk."
+                        compact
+                      />
+                    </label>
+                  </div>
+
+                  <div className="library-strong-view-story-grid">
+                    <label className="library-open-page-note">
+                      <span>Game Plan</span>
+                      <JournalRichTextEditor
+                        key={`${selectedPage.id}-strong-view-game-plan`}
+                        content={getStrongViewRichTextFieldValue(selectedPage, "Game Plan")}
+                        onChange={(content) => updatePageProperty(selectedPage, "Game Plan", content)}
+                        onImageInsert={handleImageInsert}
+                        placeholder="Execution plan and invalidation."
+                        compact
+                      />
+                    </label>
+                    <section className="library-strong-view-attachment library-strong-view-attachment-inline">
+                      <div className="library-strong-view-attachment-header">
+                        <span>Morning Chat</span>
+                        <div className="library-strong-view-attachment-actions">
+                          <input
+                            ref={strongViewMorningChatInputRef}
+                            type="file"
+                            accept="image/*"
+                            className="library-strong-view-file-input"
+                            onChange={(event) => {
+                              const file = event.target.files?.[0] ?? null;
+                              void handleStrongViewMorningChatUpload(selectedPage, file);
+                              event.currentTarget.value = "";
+                            }}
+                          />
+                          <button
+                            type="button"
+                            className="mini-action"
+                            onClick={() => strongViewMorningChatInputRef.current?.click()}
+                          >
+                            Attach Morning Chat
+                          </button>
+                          {getStrongViewMorningChatValue(selectedPage) ? (
+                            <button
+                              type="button"
+                              className="mini-action"
+                              onClick={() => updatePageProperty(selectedPage, "Morning Chat", "")}
+                            >
+                              Remove
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                      {getStrongViewMorningChatValue(selectedPage) ? (
+                        <img
+                          src={getStrongViewMorningChatValue(selectedPage)}
+                          alt={`${getStrongViewFieldValue(selectedPage, "Ticker") || "Strong View"} Morning Chat`}
+                          className="library-strong-view-attachment-image"
+                        />
+                      ) : (
+                        <p className="library-strong-view-attachment-empty">Attach an image for the pre-market morning chat.</p>
+                      )}
+                    </section>
                   </div>
                 </>
               ) : (
                 <>
                   <div className="library-property-grid">
+                    {isNotesCollection ? (
+                      <label>
+                        <span>Type</span>
+                        <button
+                          type="button"
+                          className="library-property-pill-button"
+                          onClick={() => {
+                            setSelectedPageId(selectedPage.id);
+                            setNotesTagEditor(null);
+                            setNotesTagSearchQuery("");
+                            setNotesTypeEditor({ pageId: selectedPage.id });
+                            setNotesTypeSearchQuery("");
+                          }}
+                        >
+                          <span
+                            className={`library-note-type-pill ${
+                              selectedPage.status === "Archived" ? "library-note-type-pill-archived" : ""
+                            }`}
+                          >
+                            {resolveEditableNoteType(selectedPage)}
+                          </span>
+                        </button>
+                      </label>
+                    ) : null}
                     <label>
                       <span>Status</span>
                       <select
@@ -2725,7 +3538,12 @@ export const LibraryPage = ({
                     </label>
                   </div>
 
+                  {isBookClub ? (
+                    renderBookTextFields(selectedPage)
+                  ) : null}
+
                   <JournalRichTextEditor
+                    key={`${selectedPage.id}-library-content`}
                     content={selectedPage.content}
                     onChange={(content) => updatePage(selectedPage.id, { content })}
                     onImageInsert={handleImageInsert}
@@ -2798,6 +3616,106 @@ export const LibraryPage = ({
           onClose={() => {
             setIsQuoteSearchDrawerOpen(false);
             setQuoteSearchDrawerQuery("");
+          }}
+        />
+      ) : null}
+      {isStrongViewTickerDrawerOpen && selectedPage && isStrongViews && isStrongViewRow(selectedPage) ? (
+        <TagDrawer
+          isOpen={isStrongViewTickerDrawerOpen}
+          title="Strong View - Ticker"
+          options={strongViewTickerOptions}
+          selectionMode="single"
+          currentValue={normalizeTickerToken(getStrongViewFieldValue(selectedPage, "Ticker"))}
+          allowClear
+          clearLabel="Clear ticker"
+          searchValue={strongViewTickerSearch}
+          onSearchChange={(value) => setStrongViewTickerSearch(value.toUpperCase())}
+          onSelect={(value) => {
+            if (typeof value === "string") {
+              updatePageProperty(selectedPage, "Ticker", normalizeTickerToken(value));
+            } else {
+              updatePageProperty(selectedPage, "Ticker", "");
+            }
+
+            setIsStrongViewTickerDrawerOpen(false);
+            setStrongViewTickerSearch("");
+          }}
+          onCreateOption={(value) => {
+            const nextTicker = normalizeTickerToken(value);
+            if (!nextTicker) {
+              return;
+            }
+
+            const added = addStrongViewTickerOption(nextTicker);
+            updatePageProperty(selectedPage, "Ticker", normalizeTickerToken(added ?? nextTicker));
+            setIsStrongViewTickerDrawerOpen(false);
+            setStrongViewTickerSearch("");
+          }}
+          onRenameOption={(currentValue, nextValue) => {
+            const currentTicker = normalizeTickerToken(currentValue);
+            const nextTicker = normalizeTickerToken(nextValue);
+            if (!currentTicker || !nextTicker || currentTicker === nextTicker) {
+              return;
+            }
+
+            if (!renameStrongViewTickerOption(currentTicker, nextTicker)) {
+              return;
+            }
+
+            setPages((current) =>
+              current.map((page) => {
+                if (page.collectionId !== "strong-views") {
+                  return page;
+                }
+
+                const pageTicker = normalizeTickerToken(getStrongViewFieldValue(page, "Ticker"));
+                if (pageTicker !== currentTicker) {
+                  return page;
+                }
+
+                return {
+                  ...page,
+                  properties: {
+                    ...(page.properties ?? {}),
+                    Ticker: nextTicker
+                  },
+                  updatedAt: new Date().toISOString()
+                };
+              })
+            );
+          }}
+          onDeleteOption={(value) => {
+            const ticker = normalizeTickerToken(value);
+            if (!ticker || !removeStrongViewTickerOption(ticker)) {
+              return;
+            }
+
+            setPages((current) =>
+              current.map((page) => {
+                if (page.collectionId !== "strong-views") {
+                  return page;
+                }
+
+                const pageTicker = normalizeTickerToken(getStrongViewFieldValue(page, "Ticker"));
+                if (pageTicker !== ticker) {
+                  return page;
+                }
+
+                return {
+                  ...page,
+                  properties: {
+                    ...(page.properties ?? {}),
+                    Ticker: ""
+                  },
+                  updatedAt: new Date().toISOString()
+                };
+              })
+            );
+          }}
+          canManageOption={isCustomStrongViewTickerOption}
+          onClose={() => {
+            setIsStrongViewTickerDrawerOpen(false);
+            setStrongViewTickerSearch("");
           }}
         />
       ) : null}
@@ -2972,8 +3890,10 @@ export const LibraryPage = ({
           onSearchChange={setQuoteCellEditorSearchQuery}
           onSelect={(value) => {
             if (typeof value === "string") {
+              markQuoteSaving();
               updatePageProperty(quoteCellEditorPage, quoteCellEditor.field, value);
             } else if (value === null) {
+              markQuoteSaving();
               updatePageProperty(quoteCellEditorPage, quoteCellEditor.field, "");
             }
 
@@ -2981,6 +3901,7 @@ export const LibraryPage = ({
             setQuoteCellEditorSearchQuery("");
           }}
           onCreateOption={(value) => {
+            markQuoteSaving();
             updatePageProperty(quoteCellEditorPage, quoteCellEditor.field, value);
             setQuoteCellEditor(null);
             setQuoteCellEditorSearchQuery("");
@@ -2998,3 +3919,4 @@ export const LibraryPage = ({
     </main>
   );
 };
+

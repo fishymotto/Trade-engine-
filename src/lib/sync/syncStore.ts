@@ -189,7 +189,152 @@ const getMergeKey = (value: unknown): string | null => {
 const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
-const mergeSyncedValues = <T>(localValue: T, cloudValue: T): T => {
+const LOSSY_MERGE_GUARDED_TABLES = new Set([
+  'user_journal_pages',
+  'user_trade_reviews',
+  'user_trade_tag_overrides',
+]);
+
+const LOSSY_REMOTE_WRITE_GUARDED_TABLES = new Set([
+  'user_journal_pages',
+  'user_trade_reviews',
+  'user_trade_tag_overrides',
+]);
+
+const LOSSY_SIZE_DROP_RATIO = 0.35;
+const LOSSY_OVERRIDE_NEWER_GRACE_MS = 1000 * 60 * 60 * 24 * 30;
+
+const countNonEmptyDocText = (value: unknown): number => {
+  if (!value || typeof value !== 'object') {
+    return 0;
+  }
+
+  const visit = (node: unknown): number => {
+    if (!node || typeof node !== 'object') {
+      return 0;
+    }
+
+    const record = node as Record<string, unknown>;
+    let total = 0;
+    if (typeof record.text === 'string' && record.text.trim().length > 0) {
+      total += record.text.trim().length;
+    }
+
+    if (Array.isArray(record.content)) {
+      total += record.content.reduce((sum, child) => sum + visit(child), 0);
+    }
+
+    return total;
+  };
+
+  return visit(value);
+};
+
+const getRecordRichnessScore = (value: unknown): number => {
+  if (!isPlainRecord(value)) {
+    return 0;
+  }
+
+  const record = value as Record<string, unknown>;
+  let score = 0;
+
+  if (typeof record.screenshotUrl === 'string' && record.screenshotUrl.trim().length > 0) {
+    score += 50;
+  }
+
+  if (Array.isArray(record.screenshotUrls)) {
+    score += record.screenshotUrls.filter((url) => typeof url === 'string' && url.trim().length > 0).length * 10;
+  }
+
+  if (Array.isArray(record.screenshotTags)) {
+    for (const tag of record.screenshotTags) {
+      if (!isPlainRecord(tag)) {
+        continue;
+      }
+
+      const tagLinks = Array.isArray(tag.linkedTrades) ? tag.linkedTrades.length : 0;
+      const hasLegacyLink =
+        typeof tag.linkedTradeId === 'string' &&
+        tag.linkedTradeId.trim().length > 0 &&
+        typeof tag.linkedTradeDate === 'string' &&
+        tag.linkedTradeDate.trim().length > 0;
+      score += tagLinks * 5 + (hasLegacyLink ? 5 : 0);
+    }
+  }
+
+  const contentFields = [
+    'morningContent',
+    'closingContent',
+    'mppPlanContent',
+    'inPlayStocksContent',
+    'traderReachOutsContent',
+    'notesContent',
+  ];
+  for (const field of contentFields) {
+    score += Math.min(200, countNonEmptyDocText(record[field]));
+  }
+
+  const textFields = [
+    'dayGrade',
+    'marketRegime',
+    'mpp',
+    'sleepHours',
+    'sleepScore',
+    'morningMood',
+    'openMood',
+    'afternoonMood',
+    'closeMood',
+    'notes',
+    'chartContext',
+  ];
+  for (const field of textFields) {
+    if (typeof record[field] === 'string') {
+      score += record[field].trim().length;
+    }
+  }
+
+  return score;
+};
+
+const getSerializedSize = (value: unknown): number => {
+  try {
+    return stableStringify(value).length;
+  } catch {
+    return 0;
+  }
+};
+
+const shouldProtectLossyRemoteWrite = (
+  tableName: string,
+  candidateValue: unknown,
+  cloudValue: unknown
+): boolean => {
+  if (!LOSSY_REMOTE_WRITE_GUARDED_TABLES.has(tableName)) {
+    return false;
+  }
+
+  const cloudSize = getSerializedSize(cloudValue);
+  if (cloudSize <= 0) {
+    return false;
+  }
+
+  const candidateSize = getSerializedSize(candidateValue);
+  const isLargeSizeDrop = candidateSize <= cloudSize * LOSSY_SIZE_DROP_RATIO;
+  if (!isLargeSizeDrop) {
+    return false;
+  }
+
+  const cloudTs = extractMaxTimestamp(cloudValue);
+  const candidateTs = extractMaxTimestamp(candidateValue);
+  const hasMajorNewerLead =
+    candidateTs !== null &&
+    cloudTs !== null &&
+    candidateTs >= cloudTs + LOSSY_OVERRIDE_NEWER_GRACE_MS;
+
+  return !hasMajorNewerLead;
+};
+
+const mergeSyncedValues = <T>(localValue: T, cloudValue: T, tableName?: string): T => {
   if (isPlainRecord(localValue) && isPlainRecord(cloudValue)) {
     const merged: Record<string, unknown> = { ...cloudValue };
 
@@ -205,7 +350,7 @@ const mergeSyncedValues = <T>(localValue: T, cloudValue: T): T => {
         (Array.isArray(localEntry) && Array.isArray(cloudEntry)) ||
         (isPlainRecord(localEntry) && isPlainRecord(cloudEntry))
       ) {
-        merged[key] = mergeSyncedValues(localEntry, cloudEntry);
+        merged[key] = mergeSyncedValues(localEntry, cloudEntry, tableName);
         continue;
       }
 
@@ -221,6 +366,7 @@ const mergeSyncedValues = <T>(localValue: T, cloudValue: T): T => {
 
   const merged: unknown[] = [];
   const indexByKey = new Map<string, number>();
+  const isLossyMergeGuarded = Boolean(tableName && LOSSY_MERGE_GUARDED_TABLES.has(tableName));
 
   const addItem = (item: unknown, preferOnTie: boolean): boolean => {
     const key = getMergeKey(item);
@@ -245,7 +391,20 @@ const mergeSyncedValues = <T>(localValue: T, cloudValue: T): T => {
           ? true
           : existingTs === null && preferOnTie;
 
-    if (shouldReplace) {
+    const existingRichness = getRecordRichnessScore(existing);
+    const candidateRichness = getRecordRichnessScore(item);
+    const shouldReplaceByRichness = candidateRichness > existingRichness;
+    const timestampLeadMs =
+      candidateTs !== null && existingTs !== null ? candidateTs - existingTs : null;
+    const riskyRichnessDrop =
+      isLossyMergeGuarded &&
+      existingRichness >= 120 &&
+      candidateRichness <= existingRichness * 0.25;
+    const allowLossyDropBecauseMuchNewer =
+      timestampLeadMs !== null && timestampLeadMs >= 1000 * 60 * 60 * 24 * 30;
+    const shouldBlockLossyReplace = riskyRichnessDrop && !allowLossyDropBecauseMuchNewer;
+
+    if ((shouldReplace || shouldReplaceByRichness) && !shouldBlockLossyReplace) {
       merged[existingIndex] = item;
     }
 
@@ -661,6 +820,10 @@ export class HybridSyncStore {
       // Parse and cache the data locally
       const parsed = JSON.parse(data.data) as T;
       const cloudHash = hashValue(parsed);
+      const shouldPromoteRicherLocal =
+        hasLocalValue &&
+        !localIsSyncedCloudCache &&
+        shouldPreferLocalOverCloud(effectiveLocalValue, parsed, defaultValue, data.updated_at);
 
       if (options.forcePushLocal && hasLocalValue) {
         console.debug(`[sync] ${this.config.tableName}: force-pushing local cache over cloud`);
@@ -674,6 +837,33 @@ export class HybridSyncStore {
             source: 'forced-local',
             pushed: true,
             dirty: false,
+          },
+        };
+      }
+
+      if (shouldPromoteRicherLocal) {
+        try {
+          console.debug(`[sync] ${this.config.tableName}: promoting richer local cache over cloud`);
+          await this.syncToSupabase(effectiveLocalValue, userId);
+          this.markRemoteSuccess(effectiveLocalValue, userId);
+        } catch (promoteError) {
+          console.warn(`Failed to promote local data to Supabase (${this.config.tableName}):`, promoteError);
+          this.markRemoteFailure(promoteError);
+          this.writeLocalCache(effectiveLocalValue, {
+            ...this.loadMetadata(),
+            dirty: true,
+            localUpdatedAt: new Date().toISOString(),
+          });
+        }
+
+        return {
+          value: effectiveLocalValue,
+          result: {
+            tableName: this.config.tableName,
+            storageKey: this.config.storageKey,
+            source: 'merged',
+            pushed: !this.loadMetadata().dirty,
+            dirty: this.loadMetadata().dirty,
           },
         };
       }
@@ -722,7 +912,7 @@ export class HybridSyncStore {
         };
       }
 
-      const merged = mergeSyncedValues(effectiveLocalValue, parsed);
+      const merged = mergeSyncedValues(effectiveLocalValue, parsed, this.config.tableName);
       const mergedHash = hashValue(merged);
 
       if (mergedHash !== cloudHash) {
@@ -799,7 +989,38 @@ export class HybridSyncStore {
    * Internal: sync data to Supabase
    */
   private async syncToSupabase<T>(data: T, userId: string): Promise<void> {
-    const dataJson = JSON.stringify(data);
+    let safeData = data;
+    if (LOSSY_REMOTE_WRITE_GUARDED_TABLES.has(this.config.tableName)) {
+      const { data: existingRow, error: readError } = await supabase
+        .from(this.config.tableName)
+        .select('data')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (readError) {
+        console.warn(
+          `[sync] ${this.config.tableName}: failed to read existing cloud snapshot before write; proceeding with candidate payload.`,
+          readError
+        );
+      } else if (existingRow?.data) {
+        try {
+          const parsedCloudValue = JSON.parse(existingRow.data) as T;
+          if (shouldProtectLossyRemoteWrite(this.config.tableName, data, parsedCloudValue)) {
+            safeData = mergeSyncedValues(data, parsedCloudValue, this.config.tableName);
+            console.warn(
+              `[sync] ${this.config.tableName}: protected cloud data from a suspicious lossy overwrite.`
+            );
+          }
+        } catch (parseError) {
+          console.warn(
+            `[sync] ${this.config.tableName}: failed to parse cloud snapshot for lossy write protection; proceeding with candidate payload.`,
+            parseError
+          );
+        }
+      }
+    }
+
+    const dataJson = JSON.stringify(safeData);
     const now = new Date().toISOString();
 
     const { error } = await supabase

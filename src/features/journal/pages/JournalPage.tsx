@@ -62,6 +62,7 @@ interface JournalPageProps {
   ) => void;
   onDeleteChecklistTemplate: (type: "morning" | "closing" | "mpp", templateId: string) => void;
   onUpdateTradeTag: (trade: EditableTradeRow, field: EditableTradeTagField, value: string | string[] | null) => void;
+  onBulkUpdateTradeTags: (tradeIds: string[], field: EditableTradeTagField, value: string | string[] | null) => void;
   onCreateTradeTagOption: (field: EditableTradeTagField, value: string) => void;
   onRenameTradeTagOption: (field: EditableTradeTagField, currentValue: string, nextValue: string) => void;
   onDeleteTradeTagOption: (field: EditableTradeTagField, value: string) => void;
@@ -284,6 +285,38 @@ const buildScreenshotTagFromTradeLinks = (
   };
 };
 
+const getScreenshotTickerPills = (
+  screenshotTag: JournalScreenshotTagRecord,
+  tradeLookup: Map<string, EditableTradeRow>
+): string[] => {
+  const screenshotTradeLinks = getScreenshotTradeLinks(screenshotTag);
+  const linkedTickers = Array.from(
+    new Set(
+      screenshotTradeLinks
+        .map((link) => tradeLookup.get(serializeTradeLink(link.tradeId, link.tradeDate))?.symbol.trim().toUpperCase() ?? "")
+        .filter(Boolean)
+    )
+  );
+
+  if (linkedTickers.length > 0) {
+    return linkedTickers;
+  }
+
+  return screenshotTag.ticker
+    .split(",")
+    .map((ticker) => ticker.trim().toUpperCase())
+    .filter(Boolean);
+};
+
+const getScreenshotCardLabel = (
+  fallbackLabel: string,
+  screenshotTag: JournalScreenshotTagRecord,
+  tradeLookup: Map<string, EditableTradeRow>
+): string => {
+  const primaryTicker = getScreenshotTickerPills(screenshotTag, tradeLookup)[0];
+  return primaryTicker ? `${primaryTicker} Chart` : fallbackLabel;
+};
+
 const getScreenshotSlotMeta = (index: number) => {
   const rowNumber = Math.floor(index / 3) + 1;
   const columnLabel = screenshotColumnLabels[index % 3];
@@ -332,6 +365,7 @@ const getSortableTimestamp = (value: string) => {
 };
 
 const formatSignedMoney = (value: number) => `${value >= 0 ? "+" : ""}$${value.toFixed(2)}`;
+const formatSignedWholeNumber = (value: number) => `${value >= 0 ? "+" : ""}${value.toLocaleString()}`;
 
 const getJournalDateIcon = (tradeDate: string): string => {
   const dayToken = tradeDate.trim().split("-")[2] ?? "";
@@ -406,6 +440,7 @@ export const JournalPage = ({
   onUpdateChecklistTemplate,
   onDeleteChecklistTemplate,
   onUpdateTradeTag,
+  onBulkUpdateTradeTags,
   onCreateTradeTagOption,
   onRenameTradeTagOption,
   onDeleteTradeTagOption,
@@ -424,6 +459,8 @@ export const JournalPage = ({
   const [selectedMppTemplateId, setSelectedMppTemplateId] = useState("");
   const [selectedJournalTradeId, setSelectedJournalTradeId] = useState("");
   const [selectedJournalTradeIds, setSelectedJournalTradeIds] = useState<string[]>([]);
+  const [isJournalBatchPlaybookOpen, setIsJournalBatchPlaybookOpen] = useState(false);
+  const [journalBatchPlaybookSearchQuery, setJournalBatchPlaybookSearchQuery] = useState("");
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [tempDate, setTempDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [expandedMonths, setExpandedMonths] = useState<Set<string>>(() => new Set());
@@ -453,7 +490,10 @@ export const JournalPage = ({
     defaultMarketRegimeOptions
   );
   const nonEmptyMoodOptions = useMemo(
-    () => moodOptions.filter((option) => option.trim().length > 0),
+    () =>
+      moodOptions
+        .filter((option) => option.trim().length > 0)
+        .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" })),
     [moodOptions]
   );
   const nonEmptyMarketRegimeOptions = useMemo(
@@ -628,6 +668,24 @@ export const JournalPage = ({
 
   const linkedTradeSummary = useMemo(() => getTradeSummary(linkedTrades), [linkedTrades]);
   const linkedDatabaseStats = useMemo(() => getDatabaseStats(linkedTrades), [linkedTrades]);
+  const handleBulkUpdateJournalTradeTags = (
+    tradeIds: string[],
+    field: EditableTradeTagField,
+    value: string | string[] | null
+  ) => {
+    if (tradeIds.length === 0) {
+      return;
+    }
+
+    const selectedTrades = linkedTrades.filter((trade) => tradeIds.includes(trade.id));
+    if (selectedTrades.length === 0) {
+      return;
+    }
+
+    for (const trade of selectedTrades) {
+      onUpdateTradeTag(trade, field, value);
+    }
+  };
   const mppTradeDays = useMemo(
     () =>
       Array.from(
@@ -652,6 +710,53 @@ export const JournalPage = ({
     : `${selectedPageMPP.formulaBreakdown.excludedDaysRemoved} worst day${
         selectedPageMPP.formulaBreakdown.excludedDaysRemoved === 1 ? "" : "s"
       } removed`;
+  const mppProjectionDays = selectedPageMPP.formulaBreakdown.projectionDays;
+  const mppLockInSteps = [5, 10, 20, 30] as const;
+  const mppLockInProjectionRows = useMemo(() => {
+    const anchorTradeDate = selectedPage?.tradeDate?.trim() ?? "";
+    const {
+      windowSize,
+      targetExcludedDays,
+      projectionDays
+    } = selectedPageMPP.formulaBreakdown;
+
+    const computeProjectedMPP = (replacementNetPnl: number): number => {
+      if (!anchorTradeDate) {
+        return selectedPageMPP.currentMPP;
+      }
+
+      const projectedDays = [...mppTradeDays];
+      const replacementIndex = projectedDays.findIndex((day) => day.tradeDate === anchorTradeDate);
+
+      if (replacementIndex >= 0) {
+        projectedDays[replacementIndex] = {
+          ...projectedDays[replacementIndex],
+          netPnl: replacementNetPnl
+        };
+      } else {
+        projectedDays.push({
+          tradeDate: anchorTradeDate,
+          netPnl: replacementNetPnl
+        });
+        projectedDays.sort((left, right) => left.tradeDate.localeCompare(right.tradeDate));
+      }
+
+      const projectedMPP = calculateMPPWindow(projectedDays, {
+        anchorTradeDate,
+        windowSize,
+        excludedWorstDays: targetExcludedDays,
+        projectionDays
+      });
+
+      return projectedMPP.currentMPP;
+    };
+
+    return mppLockInSteps.map((step) => ({
+      step,
+      positiveProjection: computeProjectedMPP(step),
+      negativeProjection: computeProjectedMPP(-step)
+    }));
+  }, [mppLockInSteps, mppTradeDays, selectedPage?.tradeDate, selectedPageMPP.currentMPP, selectedPageMPP.formulaBreakdown]);
   const linkedTickerStats = useMemo(() => {
     const grouped = new Map<string, EditableTradeRow[]>();
 
@@ -838,7 +943,16 @@ export const JournalPage = ({
   }, [expandedScreenshotUrl]);
 
   useEffect(() => {
-    setSelectedJournalTradeIds([]);
+    if (selectedJournalTradeIds.length === 0 && isJournalBatchPlaybookOpen) {
+      setIsJournalBatchPlaybookOpen(false);
+      setJournalBatchPlaybookSearchQuery("");
+    }
+  }, [isJournalBatchPlaybookOpen, selectedJournalTradeIds.length]);
+
+  useEffect(() => {
+    setSelectedJournalTradeIds((current) =>
+      current.filter((tradeId) => linkedTrades.some((trade) => trade.id === tradeId))
+    );
     setSelectedJournalTradeId((current) =>
       linkedTrades.some((trade) => trade.id === current) ? current : linkedTrades[0]?.id ?? ""
     );
@@ -940,7 +1054,11 @@ export const JournalPage = ({
     }
 
     const tradeIds = Array.from(
-      new Set(getScreenshotTradeLinks(screenshotTag).map((link) => link.tradeId).filter(Boolean))
+      new Set(
+        getScreenshotTradeLinks(screenshotTag)
+          .map((link) => linkedTradeByLink.get(serializeTradeLink(link.tradeId, link.tradeDate))?.id ?? "")
+          .filter(Boolean)
+      )
     );
     for (const tradeId of tradeIds) {
       onAttachScreenshotToTrade(tradeId, screenshotUrl);
@@ -1412,6 +1530,48 @@ export const JournalPage = ({
                           </div>
                         </div>
                       )}
+                    </section>
+
+                    <section className="journal-metric-card">
+                      <div className="journal-metric-card-header">
+                        <strong>MPP Lock-In (+)</strong>
+                        <span>Tomorrow MPP ({mppProjectionDays}-day projection)</span>
+                      </div>
+                      <div className="journal-metric-list">
+                        {mppLockInProjectionRows.map(({ step, positiveProjection }) => (
+                          <div key={`mpp-lock-positive-${step}`}>
+                            <span>Replace day with +{step}</span>
+                            <strong
+                              className={
+                                positiveProjection >= 0 ? "journal-page-pnl-positive" : "journal-page-pnl-negative"
+                              }
+                            >
+                              {formatSignedWholeNumber(positiveProjection)}
+                            </strong>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+
+                    <section className="journal-metric-card">
+                      <div className="journal-metric-card-header">
+                        <strong>MPP Lock-In (-)</strong>
+                        <span>Tomorrow MPP ({mppProjectionDays}-day projection)</span>
+                      </div>
+                      <div className="journal-metric-list">
+                        {mppLockInProjectionRows.map(({ step, negativeProjection }) => (
+                          <div key={`mpp-lock-negative-${step}`}>
+                            <span>Replace day with -{step}</span>
+                            <strong
+                              className={
+                                negativeProjection >= 0 ? "journal-page-pnl-positive" : "journal-page-pnl-negative"
+                              }
+                            >
+                              {formatSignedWholeNumber(negativeProjection)}
+                            </strong>
+                          </div>
+                        ))}
+                      </div>
                     </section>
 
                     <section className="journal-metric-card">
@@ -2004,7 +2164,13 @@ export const JournalPage = ({
                         <div key={`${selectedPage.id}-shot-${index}`} className="journal-screenshot-card">
                           <div className="journal-screenshot-card-header">
                             <div className="journal-screenshot-card-title">
-                              <strong>{slotMeta.label}</strong>
+                              <strong>
+                                {getScreenshotCardLabel(
+                                  slotMeta.label,
+                                  journalScreenshotTags[index] ?? createDefaultScreenshotTag(selectedPage.tradeDate),
+                                  linkedTradeByLink
+                                )}
+                              </strong>
                               <span>{slotMeta.rowLabel}</span>
                             </div>
                           </div>
@@ -2024,16 +2190,20 @@ export const JournalPage = ({
                               journalScreenshotTags[index] ??
                               createDefaultScreenshotTag(selectedPage.tradeDate);
                             const screenshotTradeLinks = getScreenshotTradeLinks(screenshotTag);
-                            const selectedTradeValues = screenshotTradeLinks.map((link) =>
-                              serializeTradeLink(link.tradeId, link.tradeDate)
+                            const availableTradeValueSet = new Set(
+                              screenshotTradeOptions.map((option) => option.value)
                             );
+                            const selectedTradeValues = screenshotTradeLinks
+                              .map((link) => serializeTradeLink(link.tradeId, link.tradeDate))
+                              .filter((value) => availableTradeValueSet.has(value));
                             const selectedTradeValueSet = new Set(selectedTradeValues);
-                            const resolvedLinkedTrades = screenshotTradeLinks
+                            const selectedTradeLinks = parseTradeLinkValues(selectedTradeValues);
+                            const resolvedLinkedTrades = selectedTradeLinks
                               .map((link) =>
                                 linkedTradeByLink.get(serializeTradeLink(link.tradeId, link.tradeDate)) ?? null
                               )
                               .filter((trade): trade is EditableTradeRow => trade !== null);
-                            const missingLinkedTradeCount = screenshotTradeLinks.length - resolvedLinkedTrades.length;
+                            const missingLinkedTradeCount = selectedTradeLinks.length - resolvedLinkedTrades.length;
                             const linkedTradeSummary = resolvedLinkedTrades
                               .slice(0, 2)
                               .map((trade) => `${trade.symbol} ${trade.name}`)
@@ -2043,21 +2213,9 @@ export const JournalPage = ({
                               resolvedLinkedTrades.length > 0
                                 ? `${resolvedLinkedTrades.length} trade${resolvedLinkedTrades.length === 1 ? "" : "s"} selected`
                                 : "Choose trades";
-                            const tickerPills =
-                              resolvedLinkedTrades.length > 0
-                                ? Array.from(
-                                    new Set(
-                                      resolvedLinkedTrades
-                                        .map((trade) => trade.symbol.trim().toUpperCase())
-                                        .filter(Boolean)
-                                    )
-                                  )
-                                : screenshotTag.ticker
-                                    .split(",")
-                                    .map((ticker) => ticker.trim().toUpperCase())
-                                    .filter(Boolean);
+                            const tickerPills = getScreenshotTickerPills(screenshotTag, linkedTradeByLink);
                             const linkedPlaybookPills = collectPlaybooksFromTradeLinks(
-                              screenshotTradeLinks,
+                              selectedTradeLinks,
                               linkedTradeByLink
                             );
                             const fallbackPlaybook = screenshotTag.playbook.trim();
@@ -2146,6 +2304,9 @@ export const JournalPage = ({
                                                 <span className="journal-screenshot-trade-option-main">
                                                   <strong>{trade.symbol}</strong>
                                                   <span>{trade.name}</span>
+                                                  <span className="journal-screenshot-trade-option-time">
+                                                    {trade.openTime} to {trade.closeTime}
+                                                  </span>
                                                 </span>
                                                 <span className="journal-screenshot-trade-option-meta">
                                                   {formatSignedMoney(trade.netPnlUsd)}
@@ -2223,7 +2384,7 @@ export const JournalPage = ({
                                       ? `Attached to ${linkedTradeSummary}${extraLinkedTradeCount > 0 ? ` (+${extraLinkedTradeCount} more)` : ""}${
                                           missingLinkedTradeCount > 0 ? ` (${missingLinkedTradeCount} missing)` : ""
                                         }`
-                                      : screenshotTradeLinks.length > 0
+                                      : selectedTradeLinks.length > 0
                                         ? "Linked trades not found on this date."
                                         : "Not attached to a trade yet."}
                                   </span>
@@ -2288,10 +2449,27 @@ export const JournalPage = ({
                     <strong>Trade Database</strong>
                     <span>{linkedTrades.length} trades for {formatJournalDate(selectedPage.tradeDate)}</span>
                   </div>
+                  {selectedJournalTradeIds.length > 0 ? (
+                    <div className="table-selection-actions">
+                      <button
+                        type="button"
+                        className="mini-action"
+                        onClick={() => {
+                          setJournalBatchPlaybookSearchQuery("");
+                          setIsJournalBatchPlaybookOpen(true);
+                        }}
+                      >
+                        Batch Playbook
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
                 <PreviewTable
                   trades={linkedTrades}
                   tagOptionsByField={tagOptionsByField}
+                  pinLeadingColumns
+                  maxTableHeight="clamp(300px, calc(100vh - 420px), 640px)"
+                  enableBatchPlaybookActions={false}
                   selectedTradeId={selectedJournalTradeId}
                   selectedTradeIds={selectedJournalTradeIds}
                   onSelectTrade={(trade) => setSelectedJournalTradeId(trade.id)}
@@ -2308,6 +2486,7 @@ export const JournalPage = ({
                     )
                   }
                   onUpdateTradeTag={onUpdateTradeTag}
+                  onBulkUpdateTradeTags={handleBulkUpdateJournalTradeTags}
                   onCreateTradeTagOption={onCreateTradeTagOption}
                   onRenameTradeTagOption={onRenameTradeTagOption}
                   onDeleteTradeTagOption={onDeleteTradeTagOption}
@@ -2369,6 +2548,44 @@ export const JournalPage = ({
           </div>
         </aside>
       </section>
+      {selectedPage && isJournalBatchPlaybookOpen ? (
+        <TagDrawer
+          isOpen={isJournalBatchPlaybookOpen}
+          title={`Batch Update - Playbook (${selectedJournalTradeIds.length} selected)`}
+          options={tagOptionsByField.playbook}
+          currentValue=""
+          allowClear
+          clearLabel="Clear Playbook"
+          searchValue={journalBatchPlaybookSearchQuery}
+          onSearchChange={setJournalBatchPlaybookSearchQuery}
+          onSelect={(value) => {
+            onBulkUpdateTradeTags(selectedJournalTradeIds, "playbook", value);
+            setIsJournalBatchPlaybookOpen(false);
+            setJournalBatchPlaybookSearchQuery("");
+          }}
+          onCreateOption={(value) => {
+            onCreateTradeTagOption("playbook", value);
+            onBulkUpdateTradeTags(selectedJournalTradeIds, "playbook", value);
+            setIsJournalBatchPlaybookOpen(false);
+            setJournalBatchPlaybookSearchQuery("");
+          }}
+          onRenameOption={(currentValue, nextValue) => {
+            onRenameTradeTagOption("playbook", currentValue, nextValue);
+          }}
+          onDeleteOption={(value) => {
+            onDeleteTradeTagOption("playbook", value);
+          }}
+          canManageOption={(value) =>
+            !defaultTradeTagOptionsByField.playbook.some(
+              (option) => option.toLowerCase() === value.toLowerCase()
+            )
+          }
+          onClose={() => {
+            setIsJournalBatchPlaybookOpen(false);
+            setJournalBatchPlaybookSearchQuery("");
+          }}
+        />
+      ) : null}
       {selectedPage && openPlaybookPickerIndex !== null && activePlaybookPickerTag ? (
         <TagDrawer
           isOpen

@@ -344,6 +344,19 @@ export const DateFilterPopover = (props: DateFilterPopoverProps) => {
               >
                 This Month
               </button>
+              <button
+                type="button"
+                className="calendar-date-pill"
+                onClick={() => {
+                  const today = new Date();
+                  applyRangePreset(
+                    new Date(today.getFullYear(), today.getMonth() - 1, 1),
+                    new Date(today.getFullYear(), today.getMonth(), 0)
+                  );
+                }}
+              >
+                Last Month
+              </button>
             </div>
           ) : null}
           {mode === "range" ? (

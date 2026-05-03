@@ -84,7 +84,7 @@ export const ReviewDatabaseTable = ({
             <th>Win Rate</th>
             <th>Net</th>
             <th>Gross</th>
-            <th>MPP</th>
+            <th>MPP (S -&gt; E)</th>
             <th>Closed Orders</th>
             <th>Overall</th>
             <th>Risk</th>

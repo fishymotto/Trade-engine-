@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { getTickerIcon, getTickerSector } from "../lib/tickers/tickerIcons";
 import { tradeTagFieldLabels, tradeTagOptionsByField as defaultTradeTagOptionsByField } from "../lib/trades/tradeTagCatalog";
 import type { EditableTradeRow, EditableTradeTagField } from "../types/tradeTags";
@@ -15,11 +15,15 @@ interface PreviewTableProps {
   onToggleSelectAll?: (tradeIds: string[]) => void;
   enableTagEditing?: boolean;
   onUpdateTradeTag?: (trade: EditableTradeRow, field: EditableTradeTagField, value: string | string[] | null) => void;
+  onBulkUpdateTradeTags?: (tradeIds: string[], field: EditableTradeTagField, value: string | string[] | null) => void;
   onCreateTradeTagOption?: (field: EditableTradeTagField, value: string) => void;
   onRenameTradeTagOption?: (field: EditableTradeTagField, currentValue: string, nextValue: string) => void;
   onDeleteTradeTagOption?: (field: EditableTradeTagField, value: string) => void;
   visibleColumnKeys?: PreviewSortKey[];
   emptyStateLabel?: string;
+  pinLeadingColumns?: boolean;
+  maxTableHeight?: string;
+  enableBatchPlaybookActions?: boolean;
 }
 
 type CellEditorState = {
@@ -27,7 +31,7 @@ type CellEditorState = {
   field: EditableTradeTagField;
 };
 
-type PreviewSortKey =
+export type PreviewSortKey =
   | "name"
   | "tradeDate"
   | "symbol"
@@ -63,7 +67,6 @@ const parseHoldTimeSeconds = (value: string): number => {
 
 const previewColumns: PreviewColumn[] = [
   { key: "name", label: "Name", getSortValue: (trade) => trade.name },
-  { key: "tradeDate", label: "Trade Date", getSortValue: (trade) => trade.tradeDate },
   { key: "symbol", label: "Symbol", getSortValue: (trade) => trade.symbol },
   { key: "side", label: "Side", getSortValue: (trade) => trade.side },
   { key: "openTime", label: "Open Time", getSortValue: (trade) => trade.openTime },
@@ -80,13 +83,26 @@ const previewColumns: PreviewColumn[] = [
   { key: "catalyst", label: "Catalyst", getSortValue: (trade) => getFieldDisplayValue(trade, "catalyst") },
   { key: "game", label: "Game", getSortValue: (trade) => getFieldDisplayValue(trade, "game") },
   { key: "outTag", label: "Out Tag", getSortValue: (trade) => getFieldDisplayValue(trade, "outTag") },
-  { key: "execution", label: "Execution", getSortValue: (trade) => getFieldDisplayValue(trade, "execution") }
+  { key: "execution", label: "Execution", getSortValue: (trade) => getFieldDisplayValue(trade, "execution") },
+  { key: "tradeDate", label: "Trade Date", getSortValue: (trade) => trade.tradeDate }
 ];
 
 const tagColumnKeys: EditableTradeTagField[] = ["status", "mistake", "playbook", "catalyst", "game", "outTag", "execution"];
 
 const isTagColumnKey = (key: PreviewSortKey): key is EditableTradeTagField =>
   tagColumnKeys.includes(key as EditableTradeTagField);
+
+const toKebabCase = (value: string): string => value.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`);
+
+const getColumnClassName = (key: PreviewSortKey): string => `preview-col-${toKebabCase(key)}`;
+
+const pinnedColumnClassByKey: Partial<Record<PreviewSortKey, string>> = {
+  name: "preview-col-sticky preview-col-sticky-name",
+  symbol: "preview-col-sticky preview-col-sticky-symbol",
+  side: "preview-col-sticky preview-col-sticky-side"
+};
+
+const getPinnedColumnClassName = (key: PreviewSortKey): string => pinnedColumnClassByKey[key] ?? "";
 
 const summarizeTags = (values: string[]): string => {
   if (values.length === 0) {
@@ -201,14 +217,20 @@ export const PreviewTable = ({
   onToggleSelectAll,
   enableTagEditing = true,
   onUpdateTradeTag,
+  onBulkUpdateTradeTags,
   onCreateTradeTagOption,
   onRenameTradeTagOption,
   onDeleteTradeTagOption,
   visibleColumnKeys,
-  emptyStateLabel = "No trades match the current filters."
+  emptyStateLabel = "No trades match the current filters.",
+  pinLeadingColumns = false,
+  maxTableHeight,
+  enableBatchPlaybookActions = true
 }: PreviewTableProps) => {
   const [cellEditor, setCellEditor] = useState<CellEditorState | null>(null);
   const [cellEditorSearchQuery, setCellEditorSearchQuery] = useState("");
+  const [isBatchPlaybookEditorOpen, setIsBatchPlaybookEditorOpen] = useState(false);
+  const [batchPlaybookSearchQuery, setBatchPlaybookSearchQuery] = useState("");
   const [sortConfig, setSortConfig] = useState<PreviewSortConfig>({ key: "tradeDate", direction: "desc" });
   const isTagFieldEnabled = (field: EditableTradeTagField) => tagOptionsByField[field].length > 0;
   const resolvedSelectedTradeIds = selectedTradeIds ?? [];
@@ -238,6 +260,28 @@ export const PreviewTable = ({
   );
 
   const selectedCount = showSelection ? resolvedSelectedTradeIds.length : 0;
+  const isPlaybookBatchEnabled = enableBatchPlaybookActions && showSelection && selectedCount > 0;
+  const selectedTradesForBatch = useMemo(
+    () => trades.filter((trade) => resolvedSelectedTradeIds.includes(trade.id)),
+    [trades, resolvedSelectedTradeIds]
+  );
+
+  const applyBatchPlaybook = (value: string | string[] | null) => {
+    if (selectedTradesForBatch.length === 0) {
+      return;
+    }
+
+    for (const trade of selectedTradesForBatch) {
+      updateTradeTag(trade, "playbook", value);
+    }
+  };
+
+  useEffect(() => {
+    if (!isPlaybookBatchEnabled && isBatchPlaybookEditorOpen) {
+      setIsBatchPlaybookEditorOpen(false);
+      setBatchPlaybookSearchQuery("");
+    }
+  }, [isBatchPlaybookEditorOpen, isPlaybookBatchEnabled]);
   const sortedTrades = useMemo(() => {
     const activeColumn = previewColumns.find((column) => column.key === sortConfig.key);
 
@@ -281,6 +325,18 @@ export const PreviewTable = ({
   const activeTrade = cellEditor
     ? trades.find((trade) => trade.id === cellEditor.tradeId) ?? null
     : null;
+  const tableShellClassName = `table-shell preview-table-shell${pinLeadingColumns ? " preview-table-shell-pin-leading" : ""}`;
+  const tableShellStyle: CSSProperties & Record<string, string> = {};
+
+  if (maxTableHeight) {
+    tableShellStyle.maxHeight = maxTableHeight;
+  }
+
+  if (pinLeadingColumns) {
+    tableShellStyle["--preview-sticky-name-left"] = showSelection ? "44px" : "0px";
+    tableShellStyle["--preview-sticky-symbol-left"] = showSelection ? "214px" : "170px";
+    tableShellStyle["--preview-sticky-side-left"] = showSelection ? "322px" : "278px";
+  }
 
   const toggleSort = (key: PreviewSortKey) => {
     setSortConfig((current) => {
@@ -350,12 +406,16 @@ export const PreviewTable = ({
   };
 
   return (
-    <div className="table-shell">
+    <div className={tableShellClassName} style={Object.keys(tableShellStyle).length > 0 ? tableShellStyle : undefined}>
       <table className="preview-table">
         <thead>
           <tr>
             {showSelection ? (
-              <th className="selection-column">
+              <th
+                className={`selection-column preview-col-selection${
+                  pinLeadingColumns ? " preview-col-sticky preview-col-sticky-selection" : ""
+                }`}
+              >
                 <input
                   type="checkbox"
                   checked={allVisibleSelected}
@@ -365,7 +425,12 @@ export const PreviewTable = ({
               </th>
             ) : null}
             {visibleColumns.map((column) => (
-              <th key={column.key}>
+              <th
+                key={column.key}
+                className={`${getColumnClassName(column.key)}${
+                  pinLeadingColumns ? ` ${getPinnedColumnClassName(column.key)}` : ""
+                }`.trim()}
+              >
                 <button type="button" className="sortable-header-button" onClick={() => toggleSort(column.key)}>
                   <span>{column.label}</span>
                   <span className={`sort-indicator ${sortConfig.key === column.key ? "sort-indicator-active" : ""}`}>
@@ -392,7 +457,11 @@ export const PreviewTable = ({
                 onClick={onSelectTrade ? () => onSelectTrade(trade) : undefined}
               >
                 {showSelection ? (
-                  <td className="selection-column">
+                  <td
+                    className={`selection-column preview-col-selection${
+                      pinLeadingColumns ? " preview-col-sticky preview-col-sticky-selection" : ""
+                    }`}
+                  >
                     <input
                       type="checkbox"
                       checked={resolvedSelectedTradeIds.includes(trade.id)}
@@ -403,7 +472,14 @@ export const PreviewTable = ({
                   </td>
                 ) : null}
                 {visibleColumns.map((column) => (
-                  <td key={column.key}>{renderCell(trade, column)}</td>
+                  <td
+                    key={column.key}
+                    className={`${getColumnClassName(column.key)}${
+                      pinLeadingColumns ? ` ${getPinnedColumnClassName(column.key)}` : ""
+                    }`.trim()}
+                  >
+                    {renderCell(trade, column)}
+                  </td>
                 ))}
               </tr>
               );
@@ -465,9 +541,68 @@ export const PreviewTable = ({
           }}
         />
       ) : null}
+      {isBatchPlaybookEditorOpen && isPlaybookBatchEnabled ? (
+        <TagDrawer
+          isOpen={isBatchPlaybookEditorOpen}
+          title={`Batch Update - ${tradeTagFieldLabels.playbook}`}
+          options={tagOptionsByField.playbook}
+          currentValue=""
+          allowClear
+          clearLabel={`Clear ${tradeTagFieldLabels.playbook}`}
+          searchValue={batchPlaybookSearchQuery}
+          onSearchChange={setBatchPlaybookSearchQuery}
+          onSelect={(value) => {
+            applyBatchPlaybook(value);
+            setIsBatchPlaybookEditorOpen(false);
+            setBatchPlaybookSearchQuery("");
+          }}
+          onCreateOption={(value) => {
+            createTradeTagOption("playbook", value);
+            applyBatchPlaybook(value);
+            setIsBatchPlaybookEditorOpen(false);
+            setBatchPlaybookSearchQuery("");
+          }}
+          onRenameOption={(currentValue, nextValue) => {
+            renameTradeTagOption("playbook", currentValue, nextValue);
+          }}
+          onDeleteOption={(value) => {
+            deleteTradeTagOption("playbook", value);
+          }}
+          canManageOption={(value) =>
+            !defaultTradeTagOptionsByField.playbook.some(
+              (option) => option.toLowerCase() === value.toLowerCase()
+            )
+          }
+          onClose={() => {
+            setIsBatchPlaybookEditorOpen(false);
+            setBatchPlaybookSearchQuery("");
+          }}
+        />
+      ) : null}
       {showSelection && selectedCount > 0 ? (
         <div className="table-selection-footer">
           <span>{selectedCount} trade{selectedCount === 1 ? "" : "s"} selected</span>
+          {isPlaybookBatchEnabled ? (
+            <div className="table-selection-actions">
+              <button
+                type="button"
+                className="mini-action"
+                onClick={() => {
+                  setBatchPlaybookSearchQuery("");
+                  setIsBatchPlaybookEditorOpen(true);
+                }}
+              >
+                Batch Playbook
+              </button>
+              <button
+                type="button"
+                className="mini-action mini-action-soft"
+                onClick={() => applyBatchPlaybook(null)}
+              >
+                Clear Playbook
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

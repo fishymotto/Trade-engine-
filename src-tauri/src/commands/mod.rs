@@ -1,6 +1,7 @@
 pub mod export;
 pub mod attachments;
 pub mod notion;
+pub mod journal;
 pub mod sessions;
 pub mod settings;
 pub mod trade_tags;
@@ -9,6 +10,7 @@ pub mod links;
 
 pub use export::{pick_export_folder, save_export_csv};
 pub use attachments::{pick_and_save_playbook_attachment, delete_playbook_attachment};
+pub use journal::{load_journal_pages, save_journal_pages};
 pub use notion::notion_api_request;
 pub use sessions::{load_trade_sessions, save_trade_sessions};
 pub use settings::{load_app_settings, save_app_settings};

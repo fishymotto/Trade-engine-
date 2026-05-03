@@ -10,8 +10,7 @@ import {
   addPlaybookRecord,
   loadPlaybooks,
   savePlaybooks,
-  updatePlaybookSectionContent,
-  updatePlaybookScreenshotUrls
+  updatePlaybookSectionContent
 } from "../../../lib/playbooks/playbookStore";
 import { SYNC_HYDRATED_EVENT } from "../../../lib/sync/syncStore";
 import type {
@@ -66,7 +65,7 @@ type PlaybookConfidence = "Low Confidence" | "Medium Confidence" | "High Confide
 type StatusFilterValue = "all" | PlaybookStatus;
 type ConfidenceFilterValue = "all" | PlaybookConfidence;
 type NetPnlFilterValue = "all" | "positive" | "negative";
-type PlaybookDetailPage = "playbook" | "tagged-charts" | "a-plus";
+type PlaybookDetailPage = "playbook" | "tagged-charts" | "trades" | "a-plus";
 
 const playbookStatusOptions: PlaybookStatus[] = [
   "Testing",
@@ -99,6 +98,8 @@ const TRADE_LINK_SEPARATOR = "::";
 
 const formatSignedMoney = (value: number): string =>
   `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`;
+
+const formatMoney = (value: number): string => `$${value.toFixed(2)}`;
 
 const getSignedValueClassName = (value: number): "positive-value" | "negative-value" =>
   value >= 0 ? "positive-value" : "negative-value";
@@ -152,8 +153,8 @@ const formatCalendarDate = (value: string): string => {
 };
 
 const formatLinkedTradeLabel = (trade: GroupedTrade): string => {
-  const symbol = trade.symbol.trim();
-  const tradeName = trade.name.trim();
+  const symbol = toSafeText(trade.symbol).trim();
+  const tradeName = toSafeText(trade.name).trim();
   if (!tradeName) {
     return symbol || "Trade";
   }
@@ -164,6 +165,8 @@ const formatLinkedTradeLabel = (trade: GroupedTrade): string => {
 };
 
 const normalizePlaybookName = (value: string): string => value.trim().toLowerCase();
+const toSafeText = (value: unknown): string => (typeof value === "string" ? value : "");
+const toSafeArray = <T,>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
 
 const toTradeLinkKey = (tradeId: string, tradeDate: string): string =>
   tradeId && tradeDate ? `${tradeId}${TRADE_LINK_SEPARATOR}${tradeDate}` : "";
@@ -363,9 +366,9 @@ const getPlaybookHeroWindowStart = (window: PlaybookHeroWindow): string | null =
 };
 
 const matchesPlaybook = (trade: GroupedTrade, playbook: PlaybookRecord): boolean =>
-  trade.setups.some((setup) =>
+  toSafeArray<string>(trade.setups).some((setup) =>
     playbook.aliases.some(
-      (alias) => normalizePlaybookName(alias) === normalizePlaybookName(setup)
+      (alias) => normalizePlaybookName(alias) === normalizePlaybookName(toSafeText(setup))
     )
   );
 
@@ -374,13 +377,13 @@ const getPlaybookSetupTypes = (trades: GroupedTrade[], playbook: PlaybookRecord)
     [...playbook.aliases, playbook.name].map((alias) => normalizePlaybookName(alias))
   );
   const setupCounts = trades.reduce<Map<string, number>>((acc, trade) => {
-    trade.setups.forEach((setup) => {
-      const normalizedSetup = normalizePlaybookName(setup);
+    toSafeArray<string>(trade.setups).forEach((setup) => {
+      const normalizedSetup = normalizePlaybookName(toSafeText(setup));
       if (!aliasSet.has(normalizedSetup)) {
         return;
       }
 
-      const trimmed = setup.trim();
+      const trimmed = toSafeText(setup).trim();
       if (!trimmed) {
         return;
       }
@@ -402,7 +405,11 @@ const createPlaybookCardData = (playbook: PlaybookRecord, trades: GroupedTrade[]
   const setupTypes = getPlaybookSetupTypes(trades, playbook);
   const setupType = setupTypes[0] ?? playbook.name;
   const uniqueSymbols = Array.from(
-    new Set(trades.map((trade) => trade.symbol).filter((symbol) => symbol.trim().length > 0))
+    new Set(
+      trades
+        .map((trade) => toSafeText(trade.symbol).trim())
+        .filter((symbol) => symbol.length > 0)
+    )
   );
   const confidence = getPlaybookConfidence(trades.length);
   const status = getPlaybookStatus(playbook, trades.length, summary.totalNetPnl);
@@ -461,7 +468,7 @@ const shouldShowPlaybook = (entry: PlaybookCardData): boolean => {
     return true;
   }
 
-  if (entry.playbook.aPlusExamples.length > 0) {
+  if ((Array.isArray(entry.playbook.aPlusExamples) ? entry.playbook.aPlusExamples : []).length > 0) {
     return true;
   }
 
@@ -486,17 +493,15 @@ export const PlaybooksPage = ({
   const [lastOpenedPlaybookId, setLastOpenedPlaybookId] = useState<string | null>(null);
   const [heroWindow, setHeroWindow] = useState<PlaybookHeroWindow>("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [tradeSearchQuery, setTradeSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilterValue>("all");
   const [tickerFilter, setTickerFilter] = useState<string>("all");
   const [setupTypeFilter, setSetupTypeFilter] = useState<string>("all");
   const [confidenceFilter, setConfidenceFilter] = useState<ConfidenceFilterValue>("all");
   const [netPnlFilter, setNetPnlFilter] = useState<NetPnlFilterValue>("all");
   const [activePlaybookPage, setActivePlaybookPage] = useState<PlaybookDetailPage>("playbook");
-  const [visibleScreenshotRows, setVisibleScreenshotRows] = useState(1);
   const [expandedScreenshotUrl, setExpandedScreenshotUrl] = useState("");
   const [isScreenshotZoomed, setIsScreenshotZoomed] = useState(false);
-  const [pendingScreenshotSlotIndex, setPendingScreenshotSlotIndex] = useState<number | null>(null);
-  const screenshotInputRef = useRef<HTMLInputElement | null>(null);
   const skipNextSaveRef = useRef(true);
 
   const handleImageInsert = async (file: File): Promise<string> => {
@@ -521,6 +526,10 @@ export const PlaybooksPage = ({
     window.addEventListener(SYNC_HYDRATED_EVENT, handleHydrated);
     return () => window.removeEventListener(SYNC_HYDRATED_EVENT, handleHydrated);
   }, []);
+
+  useEffect(() => {
+    setTradeSearchQuery("");
+  }, [selectedPlaybookId]);
 
   const playbookCards = useMemo<PlaybookCardData[]>(
     () =>
@@ -601,7 +610,7 @@ export const PlaybooksPage = ({
         const linkedTrade = linkedTrades[0] ?? null;
         const candidatePlaybookNames = [
           screenshotTag && typeof screenshotTag.playbook === "string" ? screenshotTag.playbook : "",
-          ...linkedTrades.flatMap((trade) => trade.setups)
+          ...linkedTrades.flatMap((trade) => toSafeArray<string>(trade.setups))
         ]
           .map((name) => normalizePlaybookName(name))
           .filter(Boolean);
@@ -669,11 +678,6 @@ export const PlaybooksPage = ({
 
     setSelectedPlaybookId(null);
   }, [playbookCards, selectedPlaybookId]);
-
-  const visibleScreenshotSlots = useMemo(() => {
-    const requiredSlots = Math.max(3, selectedPlaybook?.playbook.screenshotUrls.length ?? 0);
-    return Math.max(requiredSlots, visibleScreenshotRows * 3);
-  }, [selectedPlaybook?.playbook.screenshotUrls.length, visibleScreenshotRows]);
 
   const heroWindowStart = useMemo(() => getPlaybookHeroWindowStart(heroWindow), [heroWindow]);
 
@@ -944,11 +948,8 @@ export const PlaybooksPage = ({
   };
 
   useEffect(() => {
-    const imageCount = selectedPlaybook?.playbook.screenshotUrls.length ?? 0;
-    setVisibleScreenshotRows(Math.max(1, Math.ceil(Math.max(imageCount, 3) / 3)));
     setExpandedScreenshotUrl("");
-    setPendingScreenshotSlotIndex(null);
-  }, [selectedPlaybook?.playbook.id, selectedPlaybook?.playbook.screenshotUrls.length]);
+  }, [selectedPlaybook?.playbook.id]);
 
   useEffect(() => {
     if (!expandedScreenshotUrl) {
@@ -1238,16 +1239,33 @@ export const PlaybooksPage = ({
   const recentMatchLabel =
     selectedPlaybook.trades.length > 0
       ? ([...selectedPlaybook.trades].sort(
-          (left, right) => right.tradeDate.localeCompare(left.tradeDate)
+          (left, right) => toSafeText(right.tradeDate).localeCompare(toSafeText(left.tradeDate))
         )[0]?.tradeDate ?? "No matches yet")
       : "No matches yet";
-  const exampleTrades = [...selectedPlaybook.trades]
+  const taggedTrades = [...selectedPlaybook.trades]
     .sort(
       (left, right) =>
-        right.tradeDate.localeCompare(left.tradeDate) ||
-        left.openTime.localeCompare(right.openTime)
-    )
-    .slice(0, 10);
+        toSafeText(right.tradeDate).localeCompare(toSafeText(left.tradeDate)) ||
+        toSafeText(right.openTime).localeCompare(toSafeText(left.openTime))
+    );
+  const normalizedTradeSearchQuery = tradeSearchQuery.trim().toLowerCase();
+  const filteredTaggedTrades = taggedTrades.filter((trade) => {
+    if (!normalizedTradeSearchQuery) {
+      return true;
+    }
+
+    const searchFields = [
+      trade.name,
+      trade.symbol,
+      trade.side,
+      trade.status,
+      trade.tradeDate,
+      trade.openTime,
+      trade.closeTime,
+      ...toSafeArray<string>(trade.setups)
+    ];
+    return searchFields.join(" ").toLowerCase().includes(normalizedTradeSearchQuery);
+  });
 
   const handleScrollToSection = (sectionId: string) => {
     if (typeof document === "undefined") {
@@ -1339,6 +1357,15 @@ export const PlaybooksPage = ({
             >
               A+ Example Library
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activePlaybookPage === "trades"}
+              className={`mini-action mini-action-soft${activePlaybookPage === "trades" ? " playbook-subnav-active" : ""}`}
+              onClick={() => setActivePlaybookPage("trades")}
+            >
+              Trades
+            </button>
             {onViewReportsForPlaybook ? (
               <button
                 type="button"
@@ -1355,7 +1382,9 @@ export const PlaybooksPage = ({
         <span>
           {activePlaybookPage === "tagged-charts"
             ? `${taggedCharts.length} tagged chart${taggedCharts.length === 1 ? "" : "s"} in journal (${linkedTradeCount} linked trade${linkedTradeCount === 1 ? "" : "s"}).`
-            : `${symbolCount} symbol${symbolCount === 1 ? "" : "s"} matched across tagged examples - ${selectedPlaybook.playbook.sections.length} section${selectedPlaybook.playbook.sections.length === 1 ? "" : "s"}.`}
+            : activePlaybookPage === "trades"
+              ? `${filteredTaggedTrades.length} trade${filteredTaggedTrades.length === 1 ? "" : "s"} shown${normalizedTradeSearchQuery ? ` (${taggedTrades.length} total)` : ""} for ${selectedPlaybook.playbook.name}.`
+              : `${symbolCount} symbol${symbolCount === 1 ? "" : "s"} matched across tagged examples - ${selectedPlaybook.playbook.sections.length} section${selectedPlaybook.playbook.sections.length === 1 ? "" : "s"}.`}
         </span>
       </section>
 
@@ -1525,6 +1554,84 @@ export const PlaybooksPage = ({
               )}
             </article>
           </div>
+        ) : activePlaybookPage === "trades" ? (
+          <div className="playbook-sections-column">
+            <article className="placeholder-panel playbook-section-card">
+              <div className="panel-header">
+                <WorkspaceIcon
+                  icon="trades"
+                  alt="Trades icon"
+                  className="panel-header-icon"
+                />
+                <h2>Trades</h2>
+              </div>
+              <span className="playbook-example-subtitle">
+                Click any trade to jump straight into the review station.
+              </span>
+              <div className="playbook-database-search-row">
+                <input
+                  type="search"
+                  className="playbook-search-input"
+                  value={tradeSearchQuery}
+                  onChange={(event) => setTradeSearchQuery(event.target.value)}
+                  placeholder="Search trades by symbol, name, side, status, or date"
+                  aria-label="Search trades"
+                />
+                {tradeSearchQuery.trim().length > 0 ? (
+                  <button type="button" className="mini-action mini-action-soft" onClick={() => setTradeSearchQuery("")}>
+                    Clear
+                  </button>
+                ) : null}
+              </div>
+              <div className="playbook-example-list">
+                {filteredTaggedTrades.length > 0 ? (
+                  filteredTaggedTrades.map((trade) => {
+                    const holdLabel = trade.holdTime.trim().length > 0 ? trade.holdTime : `${Math.max(0, Math.round(trade.holdSeconds / 60))}m`;
+                    return (
+                      <button
+                        key={trade.id}
+                        type="button"
+                        className="playbook-example-card"
+                        onClick={() => onSelectTrade(trade.id, trade.tradeDate)}
+                      >
+                        <div className="playbook-example-card-top">
+                          <strong>{trade.name}</strong>
+                          <span className={trade.netPnlUsd >= 0 ? "positive-value" : "negative-value"}>
+                            {formatSignedMoney(trade.netPnlUsd)}
+                          </span>
+                        </div>
+                        <span className="playbook-example-inline-row">
+                          <span>Date {formatCalendarDate(trade.tradeDate)}</span>
+                          <span>{trade.symbol}</span>
+                          <span>
+                            {trade.openTime} to {trade.closeTime}
+                          </span>
+                          <span>Hold {holdLabel}</span>
+                        </span>
+                        <span className="playbook-example-inline-row playbook-example-inline-row-tight">
+                          <span>
+                            {trade.side} - {trade.status}
+                          </span>
+                          <span>Size {trade.size.toLocaleString()}</span>
+                          <span>In {formatMoney(trade.entryPrice)}</span>
+                          <span>Out {formatMoney(trade.exitPrice)}</span>
+                          <span>Fees {formatMoney(trade.feesUsd)}</span>
+                        </span>
+                      </button>
+                    );
+                  })
+                ) : taggedTrades.length > 0 ? (
+                  <div className="empty-state">
+                    No trades match "{tradeSearchQuery.trim()}".
+                  </div>
+                ) : (
+                  <div className="empty-state">
+                    Tag trades with {selectedPlaybook.playbook.name} to see examples here.
+                  </div>
+                )}
+              </div>
+            </article>
+          </div>
         ) : (
           <APlusExampleLibrary
             playbook={selectedPlaybook.playbook}
@@ -1608,239 +1715,6 @@ export const PlaybooksPage = ({
             </div>
           </article>
 
-          <article className="placeholder-panel playbook-aside-card">
-              <div className="panel-header">
-                <WorkspaceIcon
-                  icon="journal"
-                  alt="Chart examples icon"
-                  className="panel-header-icon"
-                />
-                <h2>Chart Examples</h2>
-              </div>
-              <span className="playbook-example-subtitle">
-                Save open, close, and context examples directly on the playbook.
-              </span>
-              <div className="journal-writing-header-actions playbook-chart-example-actions">
-                <input
-                  ref={screenshotInputRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
-                  multiple
-                  className="drop-zone-input"
-                  onChange={(event) => {
-                    const files = Array.from(event.target.files ?? []);
-                    if (!selectedPlaybook || files.length === 0) {
-                      event.currentTarget.value = "";
-                      return;
-                    }
-
-                    void Promise.all(files.map((file) => readFileAsDataUrl(file)))
-                      .then((dataUrls) => {
-                        if (pendingScreenshotSlotIndex !== null) {
-                          const nextScreenshotUrls = [...selectedPlaybook.playbook.screenshotUrls];
-                          nextScreenshotUrls[pendingScreenshotSlotIndex] = dataUrls[0];
-                          if (dataUrls.length > 1) {
-                            nextScreenshotUrls.splice(
-                              pendingScreenshotSlotIndex + 1,
-                              0,
-                              ...dataUrls.slice(1)
-                            );
-                          }
-                          setPlaybooks((current) =>
-                            updatePlaybookScreenshotUrls(
-                              current,
-                              selectedPlaybook.playbook.id,
-                              nextScreenshotUrls
-                            )
-                          );
-                          setVisibleScreenshotRows((current) =>
-                            Math.max(current, Math.ceil(Math.max(nextScreenshotUrls.length, 3) / 3))
-                          );
-                          setPendingScreenshotSlotIndex(null);
-                          return;
-                        }
-
-                        setPlaybooks((current) =>
-                          updatePlaybookScreenshotUrls(current, selectedPlaybook.playbook.id, [
-                            ...selectedPlaybook.playbook.screenshotUrls,
-                            ...dataUrls
-                          ])
-                        );
-                      })
-                      .catch(() => undefined);
-
-                    setPendingScreenshotSlotIndex(null);
-                    event.currentTarget.value = "";
-                  }}
-                />
-                <button
-                  type="button"
-                  className="mini-action"
-                  onClick={() => {
-                    setPendingScreenshotSlotIndex(null);
-                    screenshotInputRef.current?.click();
-                  }}
-                >
-                  <WorkspaceIcon icon="camera" alt="Upload screenshot icon" className="mini-action-icon" />
-                  Add Screenshots
-                </button>
-                <button
-                  type="button"
-                  className="mini-action"
-                  onClick={() => setVisibleScreenshotRows((current) => current + 1)}
-                >
-                  <WorkspaceIcon icon="plan" alt="Add screenshot row icon" className="mini-action-icon" />
-                  Add Row
-                </button>
-                <button
-                  type="button"
-                  className="mini-action"
-                  disabled={selectedPlaybook.playbook.screenshotUrls.length === 0}
-                  onClick={() =>
-                    setPlaybooks((current) =>
-                      updatePlaybookScreenshotUrls(current, selectedPlaybook.playbook.id, [])
-                    )
-                  }
-                >
-                  <WorkspaceIcon icon="data" alt="Clear screenshots icon" className="mini-action-icon" />
-                  Clear All
-                </button>
-              </div>
-              <div className="journal-screenshot-gallery playbook-screenshot-gallery">
-                {Array.from({ length: visibleScreenshotSlots }).map((_, index) => {
-                  const screenshotUrl = selectedPlaybook.playbook.screenshotUrls[index];
-                  const slotMeta = getPlaybookScreenshotSlotMeta(index);
-
-                  if (!screenshotUrl) {
-                    return (
-                      <button
-                        key={`${selectedPlaybook.playbook.id}-slot-${index}`}
-                        type="button"
-                        className="journal-screenshot-slot"
-                        onClick={() => {
-                          setPendingScreenshotSlotIndex(index);
-                          screenshotInputRef.current?.click();
-                        }}
-                      >
-                        <WorkspaceIcon
-                          icon="camera"
-                          alt="Empty playbook screenshot slot icon"
-                          className="journal-screenshot-slot-icon"
-                        />
-                        <strong>{slotMeta.label}</strong>
-                        <span>{slotMeta.rowLabel}</span>
-                        <em>Add Screenshot</em>
-                      </button>
-                    );
-                  }
-
-                  return (
-                    <div
-                      key={`${selectedPlaybook.playbook.id}-shot-${index}`}
-                      className="journal-screenshot-card"
-                    >
-                      <div className="journal-screenshot-card-header">
-                        <div className="journal-screenshot-card-title">
-                          <strong>{slotMeta.label}</strong>
-                          <span>{slotMeta.rowLabel}</span>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        className="journal-screenshot-preview-button"
-                        onClick={() => setExpandedScreenshotUrl(screenshotUrl)}
-                      >
-                        <img
-                          className="journal-screenshot-image"
-                          src={screenshotUrl}
-                          alt={`${selectedPlaybook.playbook.name} screenshot ${index + 1}`}
-                        />
-                      </button>
-                      <div className="journal-screenshot-actions">
-                        <button
-                          type="button"
-                          className="mini-action"
-                          onClick={() => {
-                            setPendingScreenshotSlotIndex(index);
-                            screenshotInputRef.current?.click();
-                          }}
-                        >
-                          Replace
-                        </button>
-                        <a
-                          className="review-link"
-                          href={screenshotUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Open
-                        </a>
-                        <button
-                          type="button"
-                          className="mini-action mini-action-danger"
-                          onClick={() =>
-                            setPlaybooks((current) =>
-                              updatePlaybookScreenshotUrls(
-                                current,
-                                selectedPlaybook.playbook.id,
-                                selectedPlaybook.playbook.screenshotUrls.filter(
-                                  (_, screenshotIndex) => screenshotIndex !== index
-                                )
-                              )
-                            )
-                          }
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-          </article>
-
-          <article className="placeholder-panel playbook-aside-card">
-            <div className="panel-header">
-              <WorkspaceIcon
-                icon="trades"
-                alt="Example trades icon"
-                className="panel-header-icon"
-              />
-              <h2>Example Trades</h2>
-            </div>
-            <span className="playbook-example-subtitle">
-              Click any trade to jump straight into the review station.
-            </span>
-            <div className="playbook-example-list">
-              {exampleTrades.length > 0 ? (
-                exampleTrades.map((trade) => (
-                  <button
-                    key={trade.id}
-                    type="button"
-                    className="playbook-example-card"
-                    onClick={() => onSelectTrade(trade.id, trade.tradeDate)}
-                  >
-                    <div className="playbook-example-card-top">
-                      <strong>{trade.name}</strong>
-                      <span className={trade.netPnlUsd >= 0 ? "positive-value" : "negative-value"}>
-                        {formatSignedMoney(trade.netPnlUsd)}
-                      </span>
-                    </div>
-                    <span>
-                      {trade.symbol} - {trade.openTime} to {trade.closeTime}
-                    </span>
-                    <span>
-                      {trade.side} - {trade.status}
-                    </span>
-                  </button>
-                ))
-              ) : (
-                <div className="empty-state">
-                  Tag trades with {selectedPlaybook.playbook.name} to see examples here.
-                </div>
-              )}
-            </div>
-          </article>
         </aside>
       </section>
 

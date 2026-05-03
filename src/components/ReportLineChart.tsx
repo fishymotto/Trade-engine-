@@ -4,10 +4,14 @@ import type { TimeSeriesPoint } from "../lib/analytics/tradeAnalytics";
 
 interface ReportLineChartProps {
   points: TimeSeriesPoint[];
+  comparePoints?: TimeSeriesPoint[];
   color: string;
+  compareColor?: string;
   title: string;
   yAxisLabel: string;
   valueFormatter?: (value: number) => string;
+  primarySeriesLabel?: string;
+  compareSeriesLabel?: string;
 }
 
 const formatAxisDate = (value: string): string => {
@@ -73,10 +77,14 @@ const buildSmoothPath = (points: Array<{ x: number; y: number }>): string => {
 
 export const ReportLineChart = ({
   points,
+  comparePoints = [],
   color,
+  compareColor = "#89a0c8",
   title,
   yAxisLabel,
-  valueFormatter = (value) => value.toFixed(2)
+  valueFormatter = (value) => value.toFixed(2),
+  primarySeriesLabel = "Current",
+  compareSeriesLabel = "Previous"
 }: ReportLineChartProps) => {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const chartId = useId().replace(/:/g, "");
@@ -90,7 +98,7 @@ export const ReportLineChart = ({
     const paddingLeft = 84;
     const innerWidth = width - paddingLeft - paddingRight;
     const innerHeight = height - paddingTop - paddingBottom;
-    const values = points.map((point) => point.value);
+    const values = [...points.map((point) => point.value), ...comparePoints.map((point) => point.value)];
     const minValue = values.length > 0 ? Math.min(...values) : 0;
     const maxValue = values.length > 0 ? Math.max(...values) : 0;
     const rawRange = maxValue - minValue || Math.max(1, Math.abs(maxValue) * 0.1);
@@ -106,7 +114,16 @@ export const ReportLineChart = ({
       x: xScale(index),
       y: yScale(point.value)
     }));
+    const compareChartPoints = comparePoints.map((point, index) => ({
+      ...point,
+      x:
+        comparePoints.length <= 1
+          ? paddingLeft + innerWidth / 2
+          : paddingLeft + (index / (comparePoints.length - 1)) * innerWidth,
+      y: yScale(point.value)
+    }));
     const linePath = buildSmoothPath(chartPoints);
+    const compareLinePath = buildSmoothPath(compareChartPoints);
     const baselineY = yScale(baselineValue);
     const areaPath =
       chartPoints.length > 0
@@ -137,6 +154,8 @@ export const ReportLineChart = ({
       areaPath,
       baselineY,
       chartPoints,
+      compareChartPoints,
+      compareLinePath,
       height,
       innerHeight,
       innerWidth,
@@ -150,13 +169,21 @@ export const ReportLineChart = ({
       xTickIndexes,
       yTicks
     };
-  }, [points]);
+  }, [comparePoints, points]);
 
   if (points.length === 0) {
     return <div className="empty-state">Adjust the report filters to populate this chart.</div>;
   }
 
   const hoveredPoint = hoveredIndex === null ? null : chart.chartPoints[hoveredIndex] ?? null;
+  const hoveredComparePoint =
+    hoveredIndex === null || comparePoints.length === 0
+      ? null
+      : comparePoints[
+          points.length <= 1 || comparePoints.length <= 1
+            ? Math.min(hoveredIndex, comparePoints.length - 1)
+            : Math.round((hoveredIndex / (points.length - 1)) * (comparePoints.length - 1))
+        ] ?? null;
   const shouldRenderPointSeries = chart.chartPoints.length <= 72;
   const tooltipX =
     hoveredPoint && hoveredPoint.x > chart.width - chart.paddingRight - 210 ? hoveredPoint.x - 204 : (hoveredPoint?.x ?? 0) + 14;
@@ -184,9 +211,15 @@ export const ReportLineChart = ({
         </div>
         <span className="report-line-chart-readout">
           {hoveredPoint
-            ? `${formatAxisDate(hoveredPoint.label)} - ${valueFormatter(hoveredPoint.value)}`
+            ? `${formatAxisDate(hoveredPoint.label)} - ${primarySeriesLabel}: ${valueFormatter(hoveredPoint.value)}${
+                hoveredComparePoint ? ` | ${compareSeriesLabel}: ${valueFormatter(hoveredComparePoint.value)}` : ""
+              }`
             : chart.latestPoint
-              ? `Latest ${formatAxisDate(chart.latestPoint.label)} - ${valueFormatter(chart.latestPoint.value)}`
+              ? `Latest ${formatAxisDate(chart.latestPoint.label)} - ${primarySeriesLabel}: ${valueFormatter(chart.latestPoint.value)}${
+                  comparePoints.length > 0 && comparePoints[comparePoints.length - 1]
+                    ? ` | ${compareSeriesLabel}: ${valueFormatter(comparePoints[comparePoints.length - 1].value)}`
+                    : ""
+                }`
               : "Hover chart for point details"}
         </span>
       </div>
@@ -203,6 +236,10 @@ export const ReportLineChart = ({
               <stop offset="0%" stopColor={color} stopOpacity="0.24" />
               <stop offset="65%" stopColor={color} stopOpacity="0.06" />
               <stop offset="100%" stopColor={color} stopOpacity="0" />
+            </linearGradient>
+            <linearGradient id={`${chartId}-compare-line-gradient`} x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor={compareColor} stopOpacity="0.68" />
+              <stop offset="100%" stopColor={compareColor} stopOpacity="0.86" />
             </linearGradient>
             <filter id={`${chartId}-line-glow`} x="-20%" y="-30%" width="140%" height="160%">
               <feGaussianBlur stdDeviation="2.4" result="lineBlur" />
@@ -277,6 +314,17 @@ export const ReportLineChart = ({
             y2={chart.height - chart.paddingBottom}
             className="report-line-chart-axis"
           />
+          {chart.compareLinePath ? (
+            <path
+              d={chart.compareLinePath}
+              className="report-line-chart-compare-path"
+              fill="none"
+              stroke={`url(#${chartId}-compare-line-gradient)`}
+              strokeWidth="2.2"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+          ) : null}
           <path d={chart.areaPath} className="report-line-chart-area" fill={`url(#${chartId}-area-gradient)`} />
           <path
             d={chart.linePath}
@@ -328,13 +376,18 @@ export const ReportLineChart = ({
               />
               <circle cx={hoveredPoint.x} cy={hoveredPoint.y} r="7" fill={color} stroke="#f8fbff" strokeWidth="2" />
               <g transform={`translate(${tooltipX}, ${tooltipY})`}>
-                <rect width="190" height="56" rx="12" className="report-line-chart-tooltip-box" />
+                <rect width="214" height={hoveredComparePoint ? "76" : "56"} rx="12" className="report-line-chart-tooltip-box" />
                 <text x="14" y="22" className="report-line-chart-tooltip-label">
                   {formatAxisDate(hoveredPoint.label)}
                 </text>
                 <text x="14" y="42" className="report-line-chart-tooltip-value">
-                  {valueFormatter(hoveredPoint.value)}
+                  {primarySeriesLabel}: {valueFormatter(hoveredPoint.value)}
                 </text>
+                {hoveredComparePoint ? (
+                  <text x="14" y="61" className="report-line-chart-tooltip-label">
+                    {compareSeriesLabel}: {valueFormatter(hoveredComparePoint.value)}
+                  </text>
+                ) : null}
               </g>
             </g>
           ) : null}

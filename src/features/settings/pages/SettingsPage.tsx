@@ -5,6 +5,15 @@ import { tradeTagFieldLabels, tradeTagFields } from "../../../lib/trades/tradeTa
 import type { AdminWorkspaceUserRecord } from "../../../lib/admin/adminUsers";
 import type { Settings } from "../../../types/trade";
 
+const backupIntervalOptions: Array<{ value: number; label: string }> = [
+  { value: 0, label: "Every Save (Recommended)" },
+  { value: 5, label: "Every 5 minutes" },
+  { value: 15, label: "Every 15 minutes" },
+  { value: 60, label: "Every 1 hour" },
+  { value: 360, label: "Every 6 hours" },
+  { value: 1440, label: "Every 24 hours" },
+];
+
 interface SettingsPageProps {
   settings: Settings;
   isAdmin: boolean;
@@ -12,6 +21,7 @@ interface SettingsPageProps {
   onBrowse: () => Promise<void>;
   onTestConnection: () => Promise<string>;
   onForceCloudSeed: () => Promise<string>;
+  onRecoverFromCloud: () => Promise<string>;
   onLoadAdminUsers: () => Promise<AdminWorkspaceUserRecord[]>;
 }
 
@@ -31,12 +41,18 @@ export const SettingsPage = ({
   onBrowse,
   onTestConnection,
   onForceCloudSeed,
+  onRecoverFromCloud,
   onLoadAdminUsers
 }: SettingsPageProps) => {
   const [message, setMessage] = useState("");
   const [adminUsers, setAdminUsers] = useState<AdminWorkspaceUserRecord[]>([]);
   const [adminUsersLoading, setAdminUsersLoading] = useState(false);
   const [adminUsersError, setAdminUsersError] = useState("");
+  const selectedBackupInterval = backupIntervalOptions.some(
+    (option) => option.value === settings.desktopBackupIntervalMinutes
+  )
+    ? settings.desktopBackupIntervalMinutes
+    : 0;
 
   const update = (patch: Partial<Settings>) => onChange({ ...settings, ...patch });
   const updateTagVisibility = (field: keyof Settings["tradeTagVisibility"], enabled: boolean) =>
@@ -55,6 +71,11 @@ export const SettingsPage = ({
   const handleForceCloudSeed = async () => {
     setMessage("Pushing this computer to cloud...");
     setMessage(await onForceCloudSeed());
+  };
+
+  const handleRecoverFromCloud = async () => {
+    setMessage("Pulling latest data from cloud...");
+    setMessage(await onRecoverFromCloud());
   };
 
   const refreshAdminUsers = async () => {
@@ -161,6 +182,25 @@ export const SettingsPage = ({
             />
             <small>Used to count breach days in Weekly/Monthly Review entries.</small>
           </label>
+          <label>
+            <span>Desktop Backup Frequency</span>
+            <select
+              value={String(selectedBackupInterval)}
+              onChange={(event) =>
+                update({ desktopBackupIntervalMinutes: Number(event.target.value) || 0 })
+              }
+            >
+              {backupIntervalOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <small>
+              Main data still saves every time. This controls how often extra backup snapshots are created in
+              the desktop backup folder.
+            </small>
+          </label>
 
           <section className="settings-section">
             <div>
@@ -184,6 +224,9 @@ export const SettingsPage = ({
           <div className="settings-page-actions">
             <Button variant="secondary" onClick={handleTest}>
               Test Notion Connection
+            </Button>
+            <Button variant="secondary" onClick={handleRecoverFromCloud}>
+              Pull Latest From Cloud
             </Button>
             <Button variant="secondary" onClick={handleForceCloudSeed}>
               Push This Computer To Cloud

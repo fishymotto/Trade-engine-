@@ -12,6 +12,7 @@ interface ExecutionRow {
   positionSize?: number;
   price: number;
   netPnlUsd?: number;
+  perShareUsd?: number;
   commissionUsd?: number;
   feesUsd?: number;
   returnPercent?: number;
@@ -30,7 +31,7 @@ const formatSignedPercent = (value: number): string => {
 
 const formatShares = (value: number): string => {
   const sign = value > 0 ? "+" : "";
-  return `${sign}${value.toLocaleString()} sh`;
+  return `${sign}${value.toLocaleString()} Shares`;
 };
 
 const deriveSide = (tradeSide: GroupedTrade["side"], kind: ExecutionKind): "Buy" | "Sell" => {
@@ -48,6 +49,7 @@ const buildRowFromExecution = (
 ): ExecutionRow => {
   const notional = execution.price * execution.quantity;
   const returnPercent = notional > 0 ? (execution.netPnlUsd / notional) * 100 : undefined;
+  const perShareUsd = execution.quantity > 0 ? execution.netPnlUsd / execution.quantity : undefined;
   const feesExCommission = execution.feesUsd - execution.gatewayFee;
 
   return {
@@ -59,6 +61,7 @@ const buildRowFromExecution = (
     quantity: execution.quantity,
     price: execution.price,
     netPnlUsd: execution.netPnlUsd,
+    perShareUsd,
     commissionUsd: execution.gatewayFee,
     feesUsd: feesExCommission,
     returnPercent,
@@ -127,6 +130,7 @@ export function TradeExecutionsTable({ trade }: { trade: GroupedTrade }) {
         <span className="trade-execution-header-cell trade-execution-cell-right">Pos</span>
         <span className="trade-execution-header-cell trade-execution-cell-right">Price</span>
         <span className="trade-execution-header-cell trade-execution-cell-right">Return</span>
+        <span className="trade-execution-header-cell trade-execution-cell-right">P/Share</span>
         <span className="trade-execution-header-cell trade-execution-cell-right">Comm</span>
         <span className="trade-execution-header-cell trade-execution-cell-right">Fees</span>
         <span className="trade-execution-header-cell trade-execution-cell-right">Return%</span>
@@ -149,13 +153,13 @@ export function TradeExecutionsTable({ trade }: { trade: GroupedTrade }) {
                 <span>{row.time}</span>
               </div>
               <div className="trade-execution-cell">
-                <span>{row.gateway ? row.gateway : "—"}</span>
+                <span>{row.gateway ? row.gateway : "-"}</span>
               </div>
               <div className="trade-execution-cell trade-execution-cell-right">
-                {row.quantity != null ? `${row.quantity.toLocaleString()} sh` : "—"}
+                {row.quantity != null ? `${row.quantity.toLocaleString()} Shares` : "-"}
               </div>
               <div className="trade-execution-cell trade-execution-cell-right">
-                {row.positionSize != null ? formatShares(row.positionSize) : "—"}
+                {row.positionSize != null ? formatShares(row.positionSize) : "-"}
               </div>
               <div className="trade-execution-cell trade-execution-cell-right trade-execution-cell-numeric">
                 {row.price.toFixed(4)}
@@ -163,18 +167,23 @@ export function TradeExecutionsTable({ trade }: { trade: GroupedTrade }) {
               <div
                 className={`trade-execution-cell trade-execution-cell-right trade-execution-cell-numeric ${pnlTone}`}
               >
-                {row.netPnlUsd != null ? formatSignedUsd(row.netPnlUsd) : "—"}
-              </div>
-              <div className="trade-execution-cell trade-execution-cell-right trade-execution-cell-numeric">
-                {row.commissionUsd != null ? formatSignedUsd(row.commissionUsd) : "—"}
-              </div>
-              <div className="trade-execution-cell trade-execution-cell-right trade-execution-cell-numeric">
-                {row.feesUsd != null ? formatSignedUsd(row.feesUsd) : "—"}
+                {row.netPnlUsd != null ? formatSignedUsd(row.netPnlUsd) : "-"}
               </div>
               <div
                 className={`trade-execution-cell trade-execution-cell-right trade-execution-cell-numeric ${pnlTone}`}
               >
-                {row.returnPercent != null ? formatSignedPercent(row.returnPercent) : "—"}
+                {row.perShareUsd != null ? formatSignedUsd(row.perShareUsd) : "-"}
+              </div>
+              <div className="trade-execution-cell trade-execution-cell-right trade-execution-cell-numeric">
+                {row.commissionUsd != null ? formatSignedUsd(row.commissionUsd) : "-"}
+              </div>
+              <div className="trade-execution-cell trade-execution-cell-right trade-execution-cell-numeric">
+                {row.feesUsd != null ? formatSignedUsd(row.feesUsd) : "-"}
+              </div>
+              <div
+                className={`trade-execution-cell trade-execution-cell-right trade-execution-cell-numeric ${pnlTone}`}
+              >
+                {row.returnPercent != null ? formatSignedPercent(row.returnPercent) : "-"}
               </div>
             </div>
           );
@@ -183,3 +192,4 @@ export function TradeExecutionsTable({ trade }: { trade: GroupedTrade }) {
     </div>
   );
 }
+

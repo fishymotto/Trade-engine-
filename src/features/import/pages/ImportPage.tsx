@@ -3,8 +3,30 @@ import { useState } from "react";
 import { Button } from "../../../components/Button";
 import { DropZone } from "../../../components/DropZone";
 import { PageHero } from "../../../components/PageHero";
-import { PreviewTable } from "../../../components/PreviewTable";
+import { PreviewTable, type PreviewSortKey } from "../../../components/PreviewTable";
 import type { EditableTradeRow, EditableTradeTagField } from "../../../types/tradeTags";
+
+const importPreviewColumnOrder: PreviewSortKey[] = [
+  "name",
+  "symbol",
+  "side",
+  "openTime",
+  "closeTime",
+  "holdTime",
+  "size",
+  "entryPrice",
+  "exitPrice",
+  "netPnlUsd",
+  "returnPerShare",
+  "status",
+  "mistake",
+  "playbook",
+  "catalyst",
+  "game",
+  "outTag",
+  "execution",
+  "tradeDate"
+];
 
 interface ImportPageProps {
   fileName: string;
@@ -81,6 +103,9 @@ export const ImportPage = ({
       <PreviewTable
         trades={trades}
         tagOptionsByField={tagOptionsByField}
+        visibleColumnKeys={importPreviewColumnOrder}
+        pinLeadingColumns
+        maxTableHeight="clamp(360px, calc(100vh - 340px), 760px)"
         selectedTradeIds={selectedTradeIds}
         onToggleTradeSelection={(tradeId) =>
           setSelectedTradeIds((current) =>

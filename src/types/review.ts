@@ -1,3 +1,5 @@
+import type { JSONContent } from "@tiptap/core";
+
 export type TradeChartDrawing =
   | {
       id: string;
@@ -48,7 +50,7 @@ export type TradeChartDrawing =
 
 export interface TradeReviewRecord {
   tradeId: string;
-  notes: string;
+  notes: string | JSONContent;
   chartContext: string;
   screenshotUrl: string;
   drawings?: TradeChartDrawing[];

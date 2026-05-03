@@ -1,5 +1,6 @@
 import type { GroupedTrade, Settings } from "../../../types/trade";
 import type { LibraryCollectionId, LibraryPageRecord } from "../../../types/library";
+import { calculateMPPWindow } from "../../../lib/analytics/mppAnalytics";
 
 export type ReviewPeriod = "weekly" | "monthly";
 
@@ -168,6 +169,29 @@ export const computeReviewMetrics = ({
   const net = inRange.reduce((sum, trade) => sum + (trade.netPnlUsd || 0), 0);
   const gross = inRange.reduce((sum, trade) => sum + (trade.grossPnlUsd || 0), 0);
 
+  const allDayNetMap = trades.reduce<Map<string, number>>((acc, trade) => {
+    const date = normalizeTradeDate(trade.tradeDate);
+    if (!date) {
+      return acc;
+    }
+
+    acc.set(date, (acc.get(date) ?? 0) + (trade.netPnlUsd || 0));
+    return acc;
+  }, new Map());
+
+  const mppDays = Array.from(allDayNetMap.entries())
+    .sort(([leftDate], [rightDate]) => leftDate.localeCompare(rightDate))
+    .map(([tradeDate, dayNetPnl]) => ({
+      tradeDate,
+      netPnl: dayNetPnl
+    }));
+  const startMppSnapshot = calculateMPPWindow(mppDays, { anchorTradeDate: start });
+  const endMppSnapshot = calculateMPPWindow(mppDays, { anchorTradeDate: end });
+  const hasStartMpp = startMppSnapshot.formulaBreakdown.eligibleDayCount > 0;
+  const hasEndMpp = endMppSnapshot.formulaBreakdown.eligibleDayCount > 0;
+  const startMppLabel = hasStartMpp ? startMppSnapshot.currentMPP.toLocaleString() : "-";
+  const endMppLabel = hasEndMpp ? endMppSnapshot.currentMPP.toLocaleString() : "-";
+
   const dayNetMap = inRange.reduce<Map<string, number>>((acc, trade) => {
     const date = normalizeTradeDate(trade.tradeDate);
     if (!date) {
@@ -194,6 +218,7 @@ export const computeReviewMetrics = ({
     winRate,
     net,
     gross,
+    mppSummary: `${startMppLabel} -> ${endMppLabel}`,
     breachDays,
     redDays,
     greenDays
@@ -217,6 +242,7 @@ export const buildReviewPropertiesPatch = ({
   next[REVIEW_PROPERTY_KEYS.winRate] = formatPercent(metrics.winRate);
   next[REVIEW_PROPERTY_KEYS.net] = formatSignedMoney(metrics.net);
   next[REVIEW_PROPERTY_KEYS.gross] = formatSignedMoney(metrics.gross);
+  next[REVIEW_PROPERTY_KEYS.mpp] = metrics.mppSummary;
   next[REVIEW_PROPERTY_KEYS.closedOrders] = toWholeNumberString(metrics.breachDays.length);
   next[REVIEW_PROPERTY_KEYS.breachDays] = metrics.breachDays;
   next[REVIEW_PROPERTY_KEYS.redDays] = toWholeNumberString(metrics.redDays);

@@ -34,6 +34,7 @@ export const defaultSettings: Settings = {
   brlToUsdRate: 0,
   brlTickerList: DEFAULT_BRL_TICKER_LIST,
   dailyShutdownRiskUsd: 0,
+  desktopBackupIntervalMinutes: 0,
   tradeTagVisibility: {
     status: true,
     mistake: true,
@@ -57,6 +58,15 @@ const toSyncedSettings = (settings: Settings): SyncedSettings => {
 };
 
 export const defaultSyncedSettings: SyncedSettings = toSyncedSettings(defaultSettings);
+
+const normalizeBackupIntervalMinutes = (value: unknown): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 0;
+  }
+
+  return Math.min(60 * 24 * 30, Math.round(parsed));
+};
 
 const loadMachineSettings = (): MachineSettings => {
   const fallback: MachineSettings = { exportFolder: "" };
@@ -115,6 +125,7 @@ const normalizeSettings = (settings: Partial<Settings>): Settings => ({
   ...settings,
   brlTickerList: settings.brlTickerList?.trim() ? settings.brlTickerList : DEFAULT_BRL_TICKER_LIST,
   dailyShutdownRiskUsd: Number(settings.dailyShutdownRiskUsd) || 0,
+  desktopBackupIntervalMinutes: normalizeBackupIntervalMinutes(settings.desktopBackupIntervalMinutes),
   tradeTagVisibility: {
     ...defaultSettings.tradeTagVisibility,
     ...(settings.tradeTagVisibility ?? {})

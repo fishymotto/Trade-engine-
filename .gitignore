@@ -24,3 +24,6 @@ pnpm-debug.log*
 Thumbs.db
 .idea/
 .vscode/
+
+# Local temporary/cache data
+.tmp/

@@ -20,6 +20,7 @@ export interface Settings {
   brlToUsdRate: number;
   brlTickerList: string;
   dailyShutdownRiskUsd: number;
+  desktopBackupIntervalMinutes: number;
   tradeTagVisibility: TradeTagVisibilitySettings;
 }
 

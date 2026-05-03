@@ -35,6 +35,10 @@ fn default_trade_tag_visibility() -> TradeTagVisibilitySettings {
     }
 }
 
+fn default_backup_interval_minutes() -> u32 {
+    0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -48,6 +52,8 @@ pub struct AppSettings {
     daily_shutdown_risk_usd: f64,
     #[serde(default = "default_trade_tag_visibility")]
     trade_tag_visibility: TradeTagVisibilitySettings,
+    #[serde(default = "default_backup_interval_minutes")]
+    desktop_backup_interval_minutes: u32,
 }
 
 pub fn default_settings() -> AppSettings {
@@ -62,5 +68,12 @@ pub fn default_settings() -> AppSettings {
                 .to_string(),
         daily_shutdown_risk_usd: 0.0,
         trade_tag_visibility: default_trade_tag_visibility(),
+        desktop_backup_interval_minutes: default_backup_interval_minutes(),
+    }
+}
+
+impl AppSettings {
+    pub fn desktop_backup_interval_minutes(&self) -> u64 {
+        self.desktop_backup_interval_minutes as u64
     }
 }
