@@ -4,11 +4,16 @@
 
 -- Ensure admin columns/tables exist for idempotent reruns.
 alter table public.user_profiles add column if not exists is_admin boolean not null default false;
+alter table public.user_profiles enable row level security;
+alter table public.user_profiles force row level security;
 
 create table if not exists public.workspace_admins (
   user_id uuid primary key references auth.users (id) on delete cascade,
   created_at timestamptz not null default now()
 );
+
+alter table public.workspace_admins enable row level security;
+alter table public.workspace_admins force row level security;
 
 -- 1) Backup helper: copies all current rows into backup_* tables with a snapshot label.
 create or replace function public.trade_engine_backup_snapshot(snapshot_label text default to_char(now(), 'YYYYMMDD_HH24MISS'))
@@ -21,6 +26,8 @@ declare
   t text;
   backup_table text;
   backup_constraint record;
+  has_user_id_column boolean;
+  has_id_column boolean;
   source_columns text;
   source_select text;
   tables text[] := array[
@@ -79,6 +86,55 @@ begin
       'alter table public.%I add column if not exists backed_up_at timestamptz not null default now();',
       backup_table
     );
+
+    -- Lock down backup tables so client roles cannot read cross-user snapshots.
+    execute format('alter table public.%I enable row level security;', backup_table);
+    execute format('alter table public.%I force row level security;', backup_table);
+    execute format('revoke all on table public.%I from public;', backup_table);
+
+    if exists (select 1 from pg_roles where rolname = 'anon') then
+      execute format('revoke all on table public.%I from anon;', backup_table);
+    end if;
+
+    if exists (select 1 from pg_roles where rolname = 'authenticated') then
+      execute format('revoke all on table public.%I from authenticated;', backup_table);
+    end if;
+
+    select exists (
+      select 1
+        from information_schema.columns
+       where table_schema = 'public'
+         and table_name = backup_table
+         and column_name = 'user_id'
+    )
+      into has_user_id_column;
+
+    select exists (
+      select 1
+        from information_schema.columns
+       where table_schema = 'public'
+         and table_name = backup_table
+         and column_name = 'id'
+    )
+      into has_id_column;
+
+    if has_user_id_column then
+      begin
+        execute format(
+          'create policy %I on public.%I for select using (auth.uid() = user_id);',
+          backup_table || '_select_own',
+          backup_table
+        );
+      exception when duplicate_object then null; end;
+    elsif has_id_column then
+      begin
+        execute format(
+          'create policy %I on public.%I for select using (auth.uid() = id);',
+          backup_table || '_select_own',
+          backup_table
+        );
+      exception when duplicate_object then null; end;
+    end if;
 
     -- Ensure inserts are stable even if source schema evolves over time.
     select
@@ -297,6 +353,7 @@ create unique index if not exists trade_engine_blob_history_dedupe_idx
   on public.trade_engine_blob_history (table_name, user_id, data_hash, source_updated_at);
 
 alter table public.trade_engine_blob_history enable row level security;
+alter table public.trade_engine_blob_history force row level security;
 
 do $$
 begin

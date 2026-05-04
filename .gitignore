@@ -27,3 +27,6 @@ Thumbs.db
 
 # Local temporary/cache data
 .tmp/
+
+# Local recovery exports (never ship in app bundle)
+src/recovery/*.recovered.json

@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import {
+  normalizeTickerGroupIconValue,
   resolveTickerGroupIcon,
   tickerGroupIconPresetOptions,
   tickerGroupIconPresets,
@@ -28,12 +29,12 @@ const readFileAsDataUrl = (file: File): Promise<string> =>
   });
 
 const getSelectedPreset = (value: string): TickerGroupIconPresetKey | null => {
-  const trimmed = value.trim();
-  if (!trimmed.startsWith("preset:")) {
+  const normalized = normalizeTickerGroupIconValue(value);
+  if (!normalized.startsWith("preset:")) {
     return null;
   }
 
-  return trimmed.slice("preset:".length) as TickerGroupIconPresetKey;
+  return normalized.slice("preset:".length) as TickerGroupIconPresetKey;
 };
 
 export const TickerGroupIconPicker = ({ label, value, onChange }: TickerGroupIconPickerProps) => {

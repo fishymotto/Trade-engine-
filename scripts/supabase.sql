@@ -15,6 +15,7 @@ create table if not exists public.user_profiles (
 alter table public.user_profiles add column if not exists is_admin boolean not null default false;
 
 alter table public.user_profiles enable row level security;
+alter table public.user_profiles force row level security;
 
 do $$ begin
   create policy "user_profiles_select_own"
@@ -69,6 +70,7 @@ create table if not exists public.workspace_admins (
 );
 
 alter table public.workspace_admins enable row level security;
+alter table public.workspace_admins force row level security;
 
 do $$ begin
   create policy "workspace_admins_select_own"
@@ -275,6 +277,7 @@ declare
 begin
   foreach t in array tables loop
     execute format('alter table public.%I enable row level security;', t);
+    execute format('alter table public.%I force row level security;', t);
 
     begin
       execute format(

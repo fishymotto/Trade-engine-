@@ -36,7 +36,6 @@ interface PlaybookCardData {
   summary: ReturnType<typeof getTradeSummary>;
   status: PlaybookStatus;
   confidence: PlaybookConfidence;
-  confidenceRank: number;
   setupType: string;
   setupTypes: string[];
   topSymbols: string[];
@@ -80,12 +79,6 @@ const playbookConfidenceOptions: PlaybookConfidence[] = [
   "Medium Confidence",
   "High Confidence"
 ];
-
-const playbookConfidenceRank: Record<PlaybookConfidence, number> = {
-  "Low Confidence": 1,
-  "Medium Confidence": 2,
-  "High Confidence": 3
-};
 
 const playbookHeroWindowOptions: { label: string; value: PlaybookHeroWindow }[] = [
   { label: "All", value: "all" },
@@ -429,7 +422,6 @@ const createPlaybookCardData = (playbook: PlaybookRecord, trades: GroupedTrade[]
     summary,
     status,
     confidence,
-    confidenceRank: playbookConfidenceRank[confidence],
     setupType,
     setupTypes,
     topSymbols: getTopSymbols(trades),
@@ -802,6 +794,29 @@ export const PlaybooksPage = ({
     [filteredPlaybookCards]
   );
 
+  const heroTradesInWindow = useMemo(
+    () => playbooksWithTrades.reduce((sum, entry) => sum + entry.trades.length, 0),
+    [playbooksWithTrades]
+  );
+
+  const heroWinsInWindow = useMemo(
+    () => playbooksWithTrades.reduce((sum, entry) => sum + entry.summary.winCount, 0),
+    [playbooksWithTrades]
+  );
+
+  const heroLossesInWindow = useMemo(
+    () => playbooksWithTrades.reduce((sum, entry) => sum + entry.summary.lossCount, 0),
+    [playbooksWithTrades]
+  );
+
+  const heroNetPnlInWindow = useMemo(
+    () => playbooksWithTrades.reduce((sum, entry) => sum + entry.summary.totalNetPnl, 0),
+    [playbooksWithTrades]
+  );
+
+  const heroWinRateInWindow =
+    heroTradesInWindow > 0 ? (heroWinsInWindow / heroTradesInWindow) * 100 : 0;
+
   const comparePlaybookNames = (left: PlaybookCardData, right: PlaybookCardData): number =>
     left.playbook.name.localeCompare(right.playbook.name, undefined, { sensitivity: "base" });
 
@@ -812,26 +827,6 @@ export const PlaybooksPage = ({
 
     return [...playbooksWithTrades].sort((left, right) => {
       const pnlCompare = right.summary.totalNetPnl - left.summary.totalNetPnl;
-      if (pnlCompare !== 0) {
-        return pnlCompare;
-      }
-
-      const tradeCompare = right.trades.length - left.trades.length;
-      if (tradeCompare !== 0) {
-        return tradeCompare;
-      }
-
-      return comparePlaybookNames(left, right);
-    })[0];
-  }, [playbooksWithTrades]);
-
-  const worstPlaybook = useMemo(() => {
-    if (playbooksWithTrades.length === 0) {
-      return null;
-    }
-
-    return [...playbooksWithTrades].sort((left, right) => {
-      const pnlCompare = left.summary.totalNetPnl - right.summary.totalNetPnl;
       if (pnlCompare !== 0) {
         return pnlCompare;
       }
@@ -865,43 +860,18 @@ export const PlaybooksPage = ({
     })[0];
   }, [playbooksWithTrades]);
 
-  const highestConfidencePlaybook = useMemo(() => {
-    if (filteredPlaybookCards.length === 0) {
-      return null;
-    }
-
-    return [...filteredPlaybookCards].sort((left, right) => {
-      const confidenceCompare = right.confidenceRank - left.confidenceRank;
-      if (confidenceCompare !== 0) {
-        return confidenceCompare;
-      }
-
-      const tradeCompare = right.trades.length - left.trades.length;
-      if (tradeCompare !== 0) {
-        return tradeCompare;
-      }
-
-      const pnlCompare = right.summary.totalNetPnl - left.summary.totalNetPnl;
-      if (pnlCompare !== 0) {
-        return pnlCompare;
-      }
-
-      return comparePlaybookNames(left, right);
-    })[0];
-  }, [filteredPlaybookCards]);
-
   const bestPlaybookLabel = bestPlaybook
-    ? `${bestPlaybook.playbook.name} (${formatSignedMoney(bestPlaybook.summary.totalNetPnl)})`
-    : "-";
-  const worstPlaybookLabel = worstPlaybook
-    ? `${worstPlaybook.playbook.name} (${formatSignedMoney(worstPlaybook.summary.totalNetPnl)})`
-    : "-";
+    ? bestPlaybook.playbook.name
+    : "No playbook data";
+  const bestPlaybookMetaLabel = bestPlaybook
+    ? `${formatSignedMoney(bestPlaybook.summary.totalNetPnl)} net`
+    : "Tag trades to surface leaders";
   const mostTradedPlaybookLabel = mostTradedPlaybook
-    ? `${mostTradedPlaybook.playbook.name} (${mostTradedPlaybook.trades.length} trades)`
-    : "-";
-  const highestConfidenceLabel = highestConfidencePlaybook
-    ? `${highestConfidencePlaybook.playbook.name} (${highestConfidencePlaybook.confidence})`
-    : "-";
+    ? mostTradedPlaybook.playbook.name
+    : "No playbook data";
+  const mostTradedPlaybookMetaLabel = mostTradedPlaybook
+    ? `${mostTradedPlaybook.trades.length} trade${mostTradedPlaybook.trades.length === 1 ? "" : "s"} tagged`
+    : "Tag trades to surface leaders";
 
   const sortedPlaybookCards = useMemo(() => {
     return [...filteredPlaybookCards].sort((left, right) => {
@@ -971,7 +941,63 @@ export const PlaybooksPage = ({
   if (!selectedPlaybook) {
     return (
       <Shell className="page-shell">
-        <PageHero eyebrow="Playbooks" title="Playbooks">
+        <PageHero
+          eyebrow="Playbooks"
+          title="Playbooks"
+          className="page-hero-playbooks"
+          description={`Organize your setups, review examples, and track execution quality. ${heroWindowLabel} window in view.`}
+          content={
+            <div className="playbooks-hero-content">
+              <div className="playbooks-hero-window-toolbar" aria-label="Playbook period controls">
+                {playbookHeroWindowOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className={`playbooks-hero-window-chip${heroWindow === option.value ? " is-active" : ""}`}
+                    onClick={() => setHeroWindow(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+                {hasActiveFilters ? (
+                  <button
+                    type="button"
+                    className="mini-action mini-action-soft"
+                    onClick={() => {
+                      setSearchQuery("");
+                      setStatusFilter("all");
+                      setTickerFilter("all");
+                      setSetupTypeFilter("all");
+                      setConfidenceFilter("all");
+                      setNetPnlFilter("all");
+                    }}
+                  >
+                    Reset Filters
+                  </button>
+                ) : null}
+              </div>
+              <div className="playbooks-hero-kpi-strip" aria-label="Playbook snapshot">
+                <span className="playbook-meta-pill">
+                  {heroTradesInWindow} tagged trade{heroTradesInWindow === 1 ? "" : "s"}
+                </span>
+                <span className="playbook-meta-pill">
+                  {heroWinsInWindow}W - {heroLossesInWindow}L
+                </span>
+                <span
+                  className={`playbook-meta-pill${
+                    heroTradesInWindow > 0
+                      ? heroNetPnlInWindow >= 0
+                        ? " positive-value"
+                        : " negative-value"
+                      : ""
+                  }`}
+                >
+                  {heroTradesInWindow > 0 ? formatSignedMoney(heroNetPnlInWindow) : "No tagged P&L yet"}
+                </span>
+              </div>
+            </div>
+          }
+        >
           <div className="page-hero-stat-grid playbooks-hero-stat-grid">
             <div className="page-hero-stat-card">
               <span>Total Playbooks</span>
@@ -982,6 +1008,22 @@ export const PlaybooksPage = ({
               <span>Active Playbooks</span>
               <strong>{activePlaybookCount}</strong>
               <small>Active plus Proven</small>
+            </div>
+            <div className="page-hero-stat-card">
+              <span>Window Net P&amp;L</span>
+              <strong className={heroTradesInWindow > 0 ? getSignedValueClassName(heroNetPnlInWindow) : ""}>
+                {heroTradesInWindow > 0 ? formatSignedMoney(heroNetPnlInWindow) : "-"}
+              </strong>
+              <small>Combined across tagged playbooks</small>
+            </div>
+            <div className="page-hero-stat-card">
+              <span>Window Win Rate</span>
+              <strong>{heroTradesInWindow > 0 ? `${heroWinRateInWindow.toFixed(1)}%` : "-"}</strong>
+              <small>
+                {heroTradesInWindow > 0
+                  ? `${heroWinsInWindow}W - ${heroLossesInWindow}L`
+                  : "Tag trades to compute win rate"}
+              </small>
             </div>
             <button
               type="button"
@@ -995,19 +1037,13 @@ export const PlaybooksPage = ({
             >
               <span>Best Performer</span>
               <strong>{bestPlaybookLabel}</strong>
-            </button>
-            <button
-              type="button"
-              className="page-hero-stat-card page-hero-stat-card-action"
-              onClick={() => {
-                if (worstPlaybook) {
-                  handleOpenPlaybook(worstPlaybook.playbook.id);
+              <small
+                className={
+                  bestPlaybook ? getSignedValueClassName(bestPlaybook.summary.totalNetPnl) : undefined
                 }
-              }}
-              disabled={!worstPlaybook}
-            >
-              <span>Worst Performer</span>
-              <strong>{worstPlaybookLabel}</strong>
+              >
+                {bestPlaybookMetaLabel}
+              </small>
             </button>
             <button
               type="button"
@@ -1021,19 +1057,7 @@ export const PlaybooksPage = ({
             >
               <span>Most Traded</span>
               <strong>{mostTradedPlaybookLabel}</strong>
-            </button>
-            <button
-              type="button"
-              className="page-hero-stat-card page-hero-stat-card-action"
-              onClick={() => {
-                if (highestConfidencePlaybook) {
-                  handleOpenPlaybook(highestConfidencePlaybook.playbook.id);
-                }
-              }}
-              disabled={!highestConfidencePlaybook}
-            >
-              <span>Highest Confidence</span>
-              <strong>{highestConfidenceLabel}</strong>
+              <small>{mostTradedPlaybookMetaLabel}</small>
             </button>
           </div>
         </PageHero>
@@ -1106,34 +1130,6 @@ export const PlaybooksPage = ({
                 ariaLabel="Filter playbooks by net P&L sign"
                 onChange={(value) => setNetPnlFilter(value as NetPnlFilterValue)}
               />
-            </div>
-            <div className="playbook-database-chip-row" aria-label="Playbook period controls">
-              {playbookHeroWindowOptions.map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  className={`playbooks-hero-window-chip${heroWindow === option.value ? " is-active" : ""}`}
-                  onClick={() => setHeroWindow(option.value)}
-                >
-                  {option.label}
-                </button>
-              ))}
-              {hasActiveFilters ? (
-                <button
-                  type="button"
-                  className="mini-action mini-action-soft"
-                  onClick={() => {
-                    setSearchQuery("");
-                    setStatusFilter("all");
-                    setTickerFilter("all");
-                    setSetupTypeFilter("all");
-                    setConfidenceFilter("all");
-                    setNetPnlFilter("all");
-                  }}
-                >
-                  Reset Filters
-                </button>
-              ) : null}
             </div>
           </div>
 

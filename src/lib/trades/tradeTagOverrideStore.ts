@@ -150,20 +150,13 @@ export const loadTradeTagOverrides = async (): Promise<TradeTagOverrideRecord[]>
   const activeUserId = syncStores.tradeTagOverrides.getUserId();
   const allowLegacyDesktopBackup = canUseMachineLegacyData(activeUserId);
 
+  if (!allowLegacyDesktopBackup) {
+    return localOverrides;
+  }
+
   const desktopOverrides = await readTradeTagOverridesFromDesktopBackup();
   if (desktopOverrides && desktopOverrides.length > 0) {
-    const shouldUseDesktopOverrides =
-      allowLegacyDesktopBackup && shouldUseDesktopOverridesForRecovery(localOverrides, desktopOverrides);
-    const shouldUseEmergencyRecovery =
-      !allowLegacyDesktopBackup && shouldUseDesktopOverridesForRecovery(localOverrides, desktopOverrides);
-
-    if (shouldUseDesktopOverrides || shouldUseEmergencyRecovery) {
-      if (shouldUseEmergencyRecovery) {
-        console.warn(
-          "[tags] Using richer desktop trade-tag overrides snapshot for recovery despite legacy ownership guard."
-        );
-      }
-
+    if (shouldUseDesktopOverridesForRecovery(localOverrides, desktopOverrides)) {
       return desktopOverrides;
     }
   }
@@ -175,6 +168,11 @@ export const saveTradeTagOverrides = async (
   overrides: TradeTagOverrideRecord[]
 ): Promise<void> => {
   await syncStores.tradeTagOverrides.save(overrides);
+
+  const activeUserId = syncStores.tradeTagOverrides.getUserId();
+  if (!canUseMachineLegacyData(activeUserId)) {
+    return;
+  }
 
   const existingDesktopOverrides = await readTradeTagOverridesFromDesktopBackup();
   if (

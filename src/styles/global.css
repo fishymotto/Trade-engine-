@@ -286,6 +286,10 @@ body {
   align-items: start;
 }
 
+.page-hero-playbooks .page-hero-layout-with-aside {
+  align-items: start;
+}
+
 .page-hero-stat-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -6604,42 +6608,70 @@ body {
 }
 
 .journal-rich-editor .ProseMirror .tableWrapper {
-  margin: 8px 0 10px;
+  margin: 10px 0 12px;
   width: 100%;
   max-width: 100%;
   display: block;
   overflow-x: auto;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 9px;
-  background: rgba(8, 11, 16, 0.56);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 11px;
+  background: linear-gradient(180deg, rgba(16, 22, 32, 0.86) 0%, rgba(10, 14, 22, 0.88) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
 .journal-rich-editor .ProseMirror table {
   width: max-content;
   min-width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   table-layout: fixed;
 }
 
 .journal-rich-editor .ProseMirror th,
 .journal-rich-editor .ProseMirror td {
   position: relative;
-  min-width: 82px;
-  padding: 7px 9px;
-  font-size: 0.92rem;
-  line-height: 1.45;
-  vertical-align: top;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  min-width: 92px;
+  padding: 8px 12px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  vertical-align: middle;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .journal-rich-editor .ProseMirror th {
-  font-weight: 700;
-  color: #f2f7ff;
-  background: rgba(94, 126, 181, 0.2);
+  font-weight: 640;
+  color: #edf4ff;
+  background: linear-gradient(180deg, rgba(68, 94, 136, 0.42) 0%, rgba(54, 77, 112, 0.38) 100%);
 }
 
 .journal-rich-editor .ProseMirror td {
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.journal-rich-editor .ProseMirror tr th:last-child,
+.journal-rich-editor .ProseMirror tr td:last-child {
+  border-right: none;
+}
+
+.journal-rich-editor .ProseMirror tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.journal-rich-editor .ProseMirror tbody tr:nth-child(odd) td {
   background: rgba(255, 255, 255, 0.02);
+}
+
+.journal-rich-editor .ProseMirror tbody tr:hover td {
+  background: rgba(127, 160, 214, 0.12);
+}
+
+.journal-rich-editor .ProseMirror thead tr:first-child th:first-child {
+  border-top-left-radius: 10px;
+}
+
+.journal-rich-editor .ProseMirror thead tr:first-child th:last-child {
+  border-top-right-radius: 10px;
 }
 
 .journal-rich-editor .ProseMirror .selectedCell::after {
@@ -7750,11 +7782,28 @@ body {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.playbooks-hero-content {
+  display: grid;
+  gap: 10px;
+  max-width: 780px;
+}
+
 .playbooks-hero-window-toolbar {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-start;
+  align-items: center;
   gap: 8px;
+}
+
+.playbooks-hero-kpi-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.playbooks-hero-kpi-strip .playbook-meta-pill {
+  background: rgba(12, 19, 31, 0.72);
 }
 
 .playbooks-hero-window-chip {
@@ -7849,13 +7898,6 @@ body {
   display: grid;
   gap: 10px;
   grid-template-columns: repeat(5, minmax(150px, 1fr));
-}
-
-.playbook-database-chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
 }
 
 .playbook-table-wrap {

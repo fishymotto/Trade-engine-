@@ -14,7 +14,7 @@ import {
   hasJournalDocContent,
   journalBlocksToDoc
 } from "./journalContent";
-import { syncStores } from "../sync/syncStore";
+import { canUseMachineLegacyData, syncStores } from "../sync/syncStore";
 
 const normalizeTradeDate = (tradeDate: string) => {
   if (!tradeDate) {
@@ -493,6 +493,13 @@ export const dedupeJournalPages = (pages: JournalPageRecord[]): JournalPageRecor
 
 export const loadJournalPages = async (): Promise<JournalPageRecord[]> => {
   const localPages = normalizeJournalPagesValue(syncStores.journalPages.load<unknown>([]));
+  const activeUserId = syncStores.journalPages.getUserId();
+  const allowLegacyDesktopBackup = canUseMachineLegacyData(activeUserId);
+
+  if (!allowLegacyDesktopBackup) {
+    return localPages;
+  }
+
   const desktopPages = await readJournalPagesFromDesktopBackup();
 
   if (desktopPages && shouldUseDesktopJournalPagesForRecovery(localPages, desktopPages)) {
@@ -506,6 +513,11 @@ export const loadJournalPages = async (): Promise<JournalPageRecord[]> => {
 export const saveJournalPages = async (pages: JournalPageRecord[]): Promise<void> => {
   const dedupedPages = dedupeJournalPages(pages);
   await syncStores.journalPages.save(dedupedPages);
+
+  const activeUserId = syncStores.journalPages.getUserId();
+  if (!canUseMachineLegacyData(activeUserId)) {
+    return;
+  }
 
   const desktopPages = await readJournalPagesFromDesktopBackup();
   if (desktopPages && shouldUseDesktopJournalPagesForRecovery(dedupedPages, desktopPages)) {

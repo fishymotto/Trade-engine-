@@ -1078,7 +1078,8 @@ export class HybridSyncStore {
   }
 
   /**
-   * Clear data from both localStorage and Supabase (for logout)
+   * Clear local cache only.
+   * Logging out should never delete the signed-in user's cloud data.
    */
   async clear(userId?: string): Promise<void> {
     if (hasLocalStorage()) {
@@ -1092,18 +1093,6 @@ export class HybridSyncStore {
         localStorage.removeItem(this.getMetaKey());
       } catch (err) {
         console.warn(`[sync] ${this.config.tableName}: failed clearing local metadata key.`, err);
-      }
-    }
-
-    const user = userId || this.config.userId;
-    if (user) {
-      const { error } = await supabase
-        .from(this.config.tableName)
-        .delete()
-        .eq('user_id', user);
-
-      if (error) {
-        console.warn(`Failed to clear Supabase (${this.config.tableName}):`, error);
       }
     }
   }

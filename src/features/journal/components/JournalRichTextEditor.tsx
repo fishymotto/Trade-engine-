@@ -32,6 +32,7 @@ interface JournalRichTextEditorProps {
   autosize?: boolean;
   taskListColumns?: 1 | 2;
   appearance?: "default" | "notion";
+  showBlockActions?: boolean;
   onImageInsert?: (file: File) => Promise<string>;
 }
 
@@ -355,6 +356,7 @@ export const JournalRichTextEditor = ({
   autosize = false,
   taskListColumns = 1,
   appearance = "default",
+  showBlockActions = true,
   onImageInsert
 }: JournalRichTextEditorProps) => {
   const [pendingContent, setPendingContent] = useState<JSONContent>(content);
@@ -806,7 +808,7 @@ export const JournalRichTextEditor = ({
           appearance === "notion" ? " journal-rich-editor-surface-notion" : ""
         }`}
       >
-        {!readOnly ? <JournalBlockActionsMenu editor={editor} appearance={appearance} /> : null}
+        {!readOnly && showBlockActions ? <JournalBlockActionsMenu editor={editor} appearance={appearance} /> : null}
         <EditorContent
           editor={editor}
           className={`journal-rich-editor${taskListColumns === 2 ? " journal-rich-editor-task-columns-2" : ""}`}

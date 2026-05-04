@@ -2947,6 +2947,7 @@ export const LibraryPage = ({
                         onImageInsert={handleImageInsert}
                         placeholder="Optional short description"
                         compact
+                        showBlockActions={false}
                       />
                     </label>
 
@@ -3364,6 +3365,7 @@ export const LibraryPage = ({
                         onImageInsert={handleImageInsert}
                         placeholder="Open/close behavior to watch."
                         compact
+                        showBlockActions={false}
                       />
                     </label>
                     <label className="library-open-page-note">
@@ -3375,6 +3377,7 @@ export const LibraryPage = ({
                         onImageInsert={handleImageInsert}
                         placeholder="Support levels and context."
                         compact
+                        showBlockActions={false}
                       />
                     </label>
                     <label className="library-open-page-note">
@@ -3386,6 +3389,7 @@ export const LibraryPage = ({
                         onImageInsert={handleImageInsert}
                         placeholder="Resistance levels and context."
                         compact
+                        showBlockActions={false}
                       />
                     </label>
                   </div>
@@ -3400,6 +3404,7 @@ export const LibraryPage = ({
                         onImageInsert={handleImageInsert}
                         placeholder="Additional context and observations."
                         compact
+                        showBlockActions={false}
                       />
                     </label>
                     <label className="library-open-page-note">
@@ -3411,6 +3416,7 @@ export const LibraryPage = ({
                         onImageInsert={handleImageInsert}
                         placeholder="Upcoming catalysts and event risk."
                         compact
+                        showBlockActions={false}
                       />
                     </label>
                   </div>
@@ -3425,6 +3431,7 @@ export const LibraryPage = ({
                         onImageInsert={handleImageInsert}
                         placeholder="Execution plan and invalidation."
                         compact
+                        showBlockActions={false}
                       />
                     </label>
                     <section className="library-strong-view-attachment library-strong-view-attachment-inline">

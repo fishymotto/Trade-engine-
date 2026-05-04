@@ -90,12 +90,12 @@ export const loadTradeSessions = async (): Promise<TradeSessionRecord[]> => {
   const activeUserId = syncStores.tradeSessions.getUserId();
   const allowLegacyDesktopBackup = canUseMachineLegacyData(activeUserId);
 
+  if (!allowLegacyDesktopBackup) {
+    return localSessions;
+  }
+
   const desktopSessions = await readTradeSessionsFromDesktopBackup();
-  if (
-    desktopSessions &&
-    (allowLegacyDesktopBackup || shouldUseDesktopSessionsForRecovery(localSessions, desktopSessions)) &&
-    shouldUseDesktopSessionsForRecovery(localSessions, desktopSessions)
-  ) {
+  if (desktopSessions && shouldUseDesktopSessionsForRecovery(localSessions, desktopSessions)) {
     return desktopSessions;
   }
 
@@ -104,6 +104,11 @@ export const loadTradeSessions = async (): Promise<TradeSessionRecord[]> => {
 
 export const saveTradeSessions = async (sessions: TradeSessionRecord[]): Promise<void> => {
   await syncStores.tradeSessions.save(sessions);
+
+  const activeUserId = syncStores.tradeSessions.getUserId();
+  if (!canUseMachineLegacyData(activeUserId)) {
+    return;
+  }
 
   const desktopSessions = await readTradeSessionsFromDesktopBackup();
   if (desktopSessions && shouldUseDesktopSessionsForRecovery(sessions, desktopSessions)) {

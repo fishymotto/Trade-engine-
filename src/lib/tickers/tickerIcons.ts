@@ -48,23 +48,89 @@ export const tickerGroupIconPresetOptions: Array<{
 
 const PRESET_PREFIX = "preset:";
 const TICKER_GROUP_COLLECTION_ID = "ticker-groups";
+const tickerGroupPresetKeySet = new Set<TickerGroupIconPresetKey>(Object.keys(tickerGroupIconPresets) as TickerGroupIconPresetKey[]);
 
-export const resolveTickerGroupIcon = (iconValue: string | undefined): string | undefined => {
+const normalizePresetToken = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_/]+/g, "-");
+
+const tickerGroupPresetAliasMap: Record<string, TickerGroupIconPresetKey> = (() => {
+  const aliases: Record<string, TickerGroupIconPresetKey> = {};
+  const addAlias = (alias: string, key: TickerGroupIconPresetKey) => {
+    aliases[normalizePresetToken(alias)] = key;
+  };
+
+  for (const option of tickerGroupIconPresetOptions) {
+    addAlias(option.key, option.key);
+    addAlias(option.label, option.key);
+  }
+
+  addAlias("air-travel", "sector-airlines-travel");
+  addAlias("gas-oil", "sector-energy");
+  addAlias("metals", "sector-materials-mining");
+  addAlias("social-media", "sector-social-consumer-apps");
+  addAlias("pharma", "sector-healthcare");
+  addAlias("finance", "sector-financials");
+  addAlias("tech", "sector-technology");
+  addAlias("crypto-miners", "sector-crypto-miners");
+
+  return aliases;
+})();
+
+const resolvePresetKey = (value: string): TickerGroupIconPresetKey | null => {
+  const normalized = normalizePresetToken(value);
+  if (!normalized) {
+    return null;
+  }
+
+  if (tickerGroupPresetKeySet.has(normalized as TickerGroupIconPresetKey)) {
+    return normalized as TickerGroupIconPresetKey;
+  }
+
+  return tickerGroupPresetAliasMap[normalized] ?? null;
+};
+
+export const normalizeTickerGroupIconValue = (iconValue: string | undefined): string => {
   if (!iconValue) {
-    return undefined;
+    return "";
   }
 
   const trimmed = iconValue.trim();
   if (!trimmed) {
-    return undefined;
+    return "";
   }
 
-  if (trimmed.startsWith("data:")) {
+  if (
+    trimmed.startsWith("data:") ||
+    trimmed.startsWith("http://") ||
+    trimmed.startsWith("https://")
+  ) {
     return trimmed;
   }
 
-  if (trimmed.startsWith(PRESET_PREFIX)) {
-    const presetKey = trimmed.slice(PRESET_PREFIX.length) as TickerGroupIconPresetKey;
+  const rawValue = trimmed.startsWith(PRESET_PREFIX) ? trimmed.slice(PRESET_PREFIX.length) : trimmed;
+  const presetKey = resolvePresetKey(rawValue);
+  return presetKey ? `${PRESET_PREFIX}${presetKey}` : trimmed;
+};
+
+export const resolveTickerGroupIcon = (iconValue: string | undefined): string | undefined => {
+  const normalized = normalizeTickerGroupIconValue(iconValue);
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (
+    normalized.startsWith("data:") ||
+    normalized.startsWith("http://") ||
+    normalized.startsWith("https://")
+  ) {
+    return normalized;
+  }
+
+  if (normalized.startsWith(PRESET_PREFIX)) {
+    const presetKey = normalized.slice(PRESET_PREFIX.length) as TickerGroupIconPresetKey;
     return tickerGroupIconPresets[presetKey];
   }
 
@@ -187,4 +253,3 @@ export const getTickerSector = (ticker: string) => {
 };
 
 export const tickerIcons: Record<string, string> = tickerIconOverrides;
-

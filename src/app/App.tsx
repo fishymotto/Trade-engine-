@@ -21,11 +21,6 @@ import {
   testNotionConnection
 } from "../features/notion/lib/notionClient";
 import { loadTradeReviews, saveTradeReviews } from "../lib/reviews/tradeReviewStore";
-import {
-  loadEmbeddedJournalPagesSeed,
-  loadEmbeddedTradeSessionsSeed,
-  loadEmbeddedTradeTagOverridesSeed
-} from "../lib/recovery/embeddedRecoverySeed";
 import { ensurePlaybooksForNames, loadPlaybooks, savePlaybooks } from "../lib/playbooks/playbookStore";
 import {
   buildBarSetKey,
@@ -337,13 +332,9 @@ function App() {
   const [hasExecutionProperty, setHasExecutionProperty] = useState(false);
   const [fileName, setFileName] = useState("");
   const [trades, setTrades] = useState<GroupedTrade[]>([]);
-  const [tradeSessions, setTradeSessions] = useState<TradeSessionRecord[]>(() =>
-    loadEmbeddedTradeSessionsSeed()
-  );
+  const [tradeSessions, setTradeSessions] = useState<TradeSessionRecord[]>([]);
   const [tradeSessionsLoaded, setTradeSessionsLoaded] = useState(false);
-  const [tradeTagOverrides, setTradeTagOverrides] = useState<TradeTagOverrideRecord[]>(() =>
-    loadEmbeddedTradeTagOverridesSeed()
-  );
+  const [tradeTagOverrides, setTradeTagOverrides] = useState<TradeTagOverrideRecord[]>([]);
   const [tradeTagOverridesLoaded, setTradeTagOverridesLoaded] = useState(false);
   const [tradeTagOptions, setTradeTagOptions] = useState<TradeTagOptionsRecord>({});
   const [tradeTagOptionsLoaded, setTradeTagOptionsLoaded] = useState(false);
@@ -359,9 +350,7 @@ function App() {
   const [reviewChartInterval, setReviewChartInterval] = useState<ChartInterval>("1m");
   const [dayChartInterval, setDayChartInterval] = useState<ChartInterval>("1D");
   const [historicalBarSets, setHistoricalBarSets] = useState<HistoricalBarSet[]>([]);
-  const [journalPages, setJournalPages] = useState<JournalPageRecord[]>(() =>
-    loadEmbeddedJournalPagesSeed()
-  );
+  const [journalPages, setJournalPages] = useState<JournalPageRecord[]>([]);
   const [journalChecklistTemplates, setJournalChecklistTemplates] = useState<JournalChecklistTemplates>(
     defaultJournalChecklistTemplates()
   );
@@ -377,12 +366,6 @@ function App() {
     const loadedOptions = await loadTradeTagOptions();
     const loadedOverrides = await loadTradeTagOverrides();
     const loadedSessions = await loadTradeSessions();
-    const embeddedOverrides = loadEmbeddedTradeTagOverridesSeed();
-    const embeddedSessions = loadEmbeddedTradeSessionsSeed();
-    const recoveredOverrides =
-      embeddedOverrides.length > loadedOverrides.length ? embeddedOverrides : loadedOverrides;
-    const recoveredSessions =
-      embeddedSessions.length > loadedSessions.length ? embeddedSessions : loadedSessions;
 
     setSettings(loadedSettings);
     setSettingsLoaded(true);
@@ -390,10 +373,10 @@ function App() {
     setTradeTagOptions(loadedOptions);
     setTradeTagOptionsLoaded(true);
 
-    setTradeTagOverrides(recoveredOverrides);
+    setTradeTagOverrides(loadedOverrides);
     setTradeTagOverridesLoaded(true);
 
-    setTradeSessions(recoveredSessions);
+    setTradeSessions(loadedSessions);
     setTradeSessionsLoaded(true);
 
     const workspaceState = loadWorkspaceState();
@@ -408,10 +391,7 @@ function App() {
     setHistoricalBarSetsLoaded(true);
 
     const loadedJournalPages = await loadJournalPages();
-    const embeddedJournalPages = loadEmbeddedJournalPagesSeed();
-    setJournalPages(
-      embeddedJournalPages.length > loadedJournalPages.length ? embeddedJournalPages : loadedJournalPages
-    );
+    setJournalPages(loadedJournalPages);
     setJournalPagesLoaded(true);
 
     setJournalChecklistTemplates(loadJournalChecklistTemplates());
@@ -505,15 +485,12 @@ function App() {
     hasRetriedSessionsDesktopRecoveryRef.current = true;
     void (async () => {
       const desktopSessions = await loadTradeSessions();
-      const embeddedSessions = loadEmbeddedTradeSessionsSeed();
-      const recoveredSessions =
-        embeddedSessions.length > desktopSessions.length ? embeddedSessions : desktopSessions;
-      if (recoveredSessions.length === 0) {
+      if (desktopSessions.length === 0) {
         return;
       }
 
-      setTradeSessions(recoveredSessions);
-      setMessage(`Recovered ${recoveredSessions.length} saved trade days from the desktop backup.`);
+      setTradeSessions(desktopSessions);
+      setMessage(`Recovered ${desktopSessions.length} saved trade days from the desktop backup.`);
     })();
   }, [tradeSessions, tradeSessionsLoaded]);
 
@@ -529,15 +506,12 @@ function App() {
     hasRetriedTradeTagsDesktopRecoveryRef.current = true;
     void (async () => {
       const desktopOverrides = await loadTradeTagOverrides();
-      const embeddedOverrides = loadEmbeddedTradeTagOverridesSeed();
-      const recoveredOverrides =
-        embeddedOverrides.length > desktopOverrides.length ? embeddedOverrides : desktopOverrides;
-      if (recoveredOverrides.length === 0) {
+      if (desktopOverrides.length === 0) {
         return;
       }
 
-      setTradeTagOverrides(recoveredOverrides);
-      setMessage(`Recovered ${recoveredOverrides.length} trade tag overrides from the desktop backup.`);
+      setTradeTagOverrides(desktopOverrides);
+      setMessage(`Recovered ${desktopOverrides.length} trade tag overrides from the desktop backup.`);
     })();
   }, [tradeTagOverrides, tradeTagOverridesLoaded]);
 
@@ -576,15 +550,13 @@ function App() {
       hasRetriedJournalDesktopRecoveryRef.current = true;
       void (async () => {
         const desktopPages = await loadJournalPages();
-        const embeddedPages = loadEmbeddedJournalPagesSeed();
-        const recoveredPages = embeddedPages.length > desktopPages.length ? embeddedPages : desktopPages;
-        if (recoveredPages.length === 0) {
+        if (desktopPages.length === 0) {
           return;
         }
 
-        setJournalPages(recoveredPages);
-        setSelectedJournalPageId(recoveredPages[0]?.id ?? "");
-        setMessage(`Recovered ${recoveredPages.length} journal pages from the desktop backup.`);
+        setJournalPages(desktopPages);
+        setSelectedJournalPageId(desktopPages[0]?.id ?? "");
+        setMessage(`Recovered ${desktopPages.length} journal pages from the desktop backup.`);
       })();
       return;
     }
