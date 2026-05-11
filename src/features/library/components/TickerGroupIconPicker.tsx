@@ -6,11 +6,13 @@ import {
   tickerGroupIconPresets,
   type TickerGroupIconPresetKey
 } from "../../../lib/tickers/tickerIcons";
+import { saveWorkspaceInlineImage } from "../../../lib/workspace/workspaceAttachmentClient";
 
 interface TickerGroupIconPickerProps {
   label: string;
   value: string;
   onChange: (next: string) => void;
+  attachmentRecordId?: string;
 }
 
 const readFileAsDataUrl = (file: File): Promise<string> =>
@@ -37,7 +39,12 @@ const getSelectedPreset = (value: string): TickerGroupIconPresetKey | null => {
   return normalized.slice("preset:".length) as TickerGroupIconPresetKey;
 };
 
-export const TickerGroupIconPicker = ({ label, value, onChange }: TickerGroupIconPickerProps) => {
+export const TickerGroupIconPicker = ({
+  label,
+  value,
+  onChange,
+  attachmentRecordId
+}: TickerGroupIconPickerProps) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
 
@@ -51,8 +58,16 @@ export const TickerGroupIconPicker = ({ label, value, onChange }: TickerGroupIco
 
     setBusy(true);
     try {
-      const dataUrl = await readFileAsDataUrl(file);
-      onChange(dataUrl);
+      const nextIconValue =
+        attachmentRecordId
+          ? await saveWorkspaceInlineImage({
+              category: "library-ticker-group-icons",
+              recordId: attachmentRecordId,
+              slotKey: "icon",
+              file
+            }).then((result) => result.storageSrc ?? result.src)
+          : await readFileAsDataUrl(file);
+      onChange(nextIconValue);
     } finally {
       setBusy(false);
     }
@@ -79,7 +94,9 @@ export const TickerGroupIconPicker = ({ label, value, onChange }: TickerGroupIco
           <button
             type="button"
             className="button button-secondary"
-            onClick={() => onChange("")}
+            onClick={() => {
+              onChange("");
+            }}
             disabled={!value.trim() || busy}
           >
             Clear

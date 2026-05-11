@@ -3,6 +3,7 @@ import type { HeadlineItem } from "../../../types/headline";
 import {
   loadHeadlinesForTradeDate,
   migrateLegacyHeadlinesToTradeDate,
+  repairStoredHeadlineBuckets,
   saveHeadlinesForTradeDate
 } from "../../../lib/headlines/headlineStore";
 import { canOpenExternalUrl, openExternalUrl } from "../../../lib/links/openExternalUrl";
@@ -111,7 +112,7 @@ export const HeadlinesBar = ({ className = "", journalDate }: HeadlinesBarProps)
     }
 
     void saveHeadlinesForTradeDate(journalDate, headlines);
-  }, [headlines, journalDate]);
+  }, [headlines]);
 
   useEffect(() => {
     setIsAdding(false);
@@ -121,6 +122,12 @@ export const HeadlinesBar = ({ className = "", journalDate }: HeadlinesBarProps)
     setHeadlines(loadHeadlinesForTradeDate(journalDate));
 
     void (async () => {
+      const repairedStoredBuckets = await repairStoredHeadlineBuckets();
+      if (repairedStoredBuckets) {
+        skipNextSaveRef.current = true;
+        setHeadlines(loadHeadlinesForTradeDate(journalDate));
+      }
+
       const migrated = await migrateLegacyHeadlinesToTradeDate(journalDate);
       if (migrated) {
         skipNextSaveRef.current = true;

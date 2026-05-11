@@ -11,9 +11,15 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             pick_export_folder,
+            pick_workspace_bundle_file,
             save_export_csv,
+            export_workspace_bundle,
+            import_workspace_bundle,
             pick_and_save_playbook_attachment,
+            save_workspace_attachment,
             delete_playbook_attachment,
+            audit_workspace_attachments,
+            prune_workspace_attachments,
             open_external_url,
             load_journal_pages,
             save_journal_pages,
@@ -25,6 +31,14 @@ fn main() {
             save_trade_tag_overrides,
             load_trade_tag_options,
             save_trade_tag_options,
+            load_library_pages,
+            save_library_pages,
+            load_playbooks,
+            save_playbooks,
+            load_trade_reviews,
+            save_trade_reviews,
+            load_workspace_store_backup,
+            save_workspace_store_backup,
             notion_api_request,
             fetch_twelve_data_time_series
         ])

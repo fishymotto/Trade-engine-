@@ -2,6 +2,7 @@ import type { JSONContent } from "@tiptap/core";
 import { useEffect, useMemo, useState } from "react";
 import { WorkspaceIcon } from "../../../../components/WorkspaceIcon";
 import { useEditableSelectOptions } from "../../../../lib/select/useEditableSelectOptions";
+import type { InlineImageInsertResult } from "../../../../lib/workspace/workspaceAttachmentClient";
 import type { NamedReviewTemplate, ReviewPeriod, ReviewReflectionState } from "../../../../types/libraryReview";
 import { JournalRichTextEditor } from "../../../journal/components/JournalRichTextEditor";
 
@@ -36,6 +37,8 @@ type ReviewReflectionPanelProps = {
   onSaveTemplate: (templateId: string, content: ReviewReflectionState) => void;
   onSaveTemplateAs: (name: string, content: ReviewReflectionState) => void;
   onDeleteTemplate: (templateId: string) => void;
+  onTakeawayImageInsert?: (file: File) => Promise<string | InlineImageInsertResult>;
+  onImprovementGoalsImageInsert?: (file: File) => Promise<string | InlineImageInsertResult>;
 };
 
 export const ReviewReflectionPanel = ({
@@ -52,7 +55,9 @@ export const ReviewReflectionPanel = ({
   onChangeReflection,
   onSaveTemplate,
   onSaveTemplateAs,
-  onDeleteTemplate
+  onDeleteTemplate,
+  onTakeawayImageInsert,
+  onImprovementGoalsImageInsert
 }: ReviewReflectionPanelProps) => {
   const selectedTemplate = useMemo(
     () => templates.find((template) => template.id === selectedTemplateId) ?? templates[0] ?? null,
@@ -251,6 +256,7 @@ export const ReviewReflectionPanel = ({
           key={`${pageId}-takeaway`}
           content={reflection.takeaway}
           onChange={setTakeaway}
+          onImageInsert={onTakeawayImageInsert}
           placeholder="Main takeaway / summary reflection"
           compact
         />
@@ -389,6 +395,7 @@ export const ReviewReflectionPanel = ({
           key={`${pageId}-improvement-goals`}
           content={reflection.improvementGoals}
           onChange={setImprovementGoals}
+          onImageInsert={onImprovementGoalsImageInsert}
           placeholder="Focus areas, goals, and habits to improve"
           compact
         />

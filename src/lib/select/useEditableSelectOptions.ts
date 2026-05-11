@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SYNC_HYDRATED_EVENT, syncStores } from "../sync/syncStore";
+import { SYNC_HYDRATED_EVENT } from "../sync/syncStore";
+import {
+  loadSelectOptionAdditions,
+  persistSelectOptionAdditions
+} from "./selectOptionAdditionsStore";
 
 const normalizeOption = (value: string) => value.trim().replace(/\s+/g, " ");
 
@@ -11,7 +15,7 @@ const loadStoredAdditions = (storageKey: string): string[] => {
       return [];
     }
 
-    const store = syncStores.selectOptionAdditions.load<Record<string, string[]>>({});
+    const store = loadSelectOptionAdditions();
     const values = store?.[storageKey];
     if (!Array.isArray(values)) {
       return [];
@@ -59,8 +63,8 @@ export const useEditableSelectOptions = (storageKey: string, defaultOptions: str
     }
 
     try {
-      const current = syncStores.selectOptionAdditions.load<Record<string, string[]>>({});
-      void syncStores.selectOptionAdditions.save({
+      const current = loadSelectOptionAdditions();
+      void persistSelectOptionAdditions({
         ...(current && typeof current === "object" ? current : {}),
         [storageKey]: additions
       });

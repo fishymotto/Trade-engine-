@@ -10,6 +10,7 @@ import { FilterSelect } from "../../../components/FilterSelect";
 import { TagDrawer } from "../../../components/TagDrawer";
 import { ErrorBoundary } from "../../../components/ErrorBoundary";
 import { getTickerIcon, resolveTickerGroupIcon, tickerIcons } from "../../../lib/tickers/tickerIcons";
+import { useDebouncedSave } from "../../../lib/hooks/useDebouncedSave";
 import { useEditableSelectOptions } from "../../../lib/select/useEditableSelectOptions";
 import {
   createLibraryBookRow,
@@ -18,6 +19,7 @@ import {
   createLibraryQuoteRow,
   libraryCollections,
   loadLibraryPages,
+  recoverLibraryPagesFromDesktopBackup,
   saveLibraryPages
 } from "../../../lib/library/libraryStore";
 import type { LibraryCollectionId, LibraryPageRecord } from "../../../types/library";
@@ -31,11 +33,20 @@ import { coerceReviewReflectionState, loadReviewTemplates, saveReviewTemplates }
 import { SYNC_HYDRATED_EVENT } from "../../../lib/sync/syncStore";
 import { createEmptyJournalDoc } from "../../../lib/journal/journalContent";
 import {
+  LIBRARY_PAGES_STORAGE_KEY,
+  collectWorkspaceAttachmentPaths,
+  deleteWorkspaceAttachmentIfUnused,
+  resolveWorkspaceAttachmentSrc,
+  saveWorkspaceInlineImage,
+  saveUploadedWorkspaceAttachment
+} from "../../../lib/workspace/workspaceAttachmentClient";
+import {
   buildReviewPropertiesPatch,
   computeOverallScore,
   computeReviewMetrics,
   getDailyShutdownRiskFromSettings,
   getReviewPeriodForCollection,
+  getPreviousReviewRange,
   getReviewRangesFromTrades,
   getReviewRange,
   getReviewTitleForRange,
@@ -115,22 +126,6 @@ const renderPropertyValue = (
 
   return fallback;
 };
-
-const readFileAsDataUrl = (file: File): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        resolve(reader.result);
-        return;
-      }
-
-      reject(new Error("The file could not be read."));
-    };
-    reader.onerror = () =>
-      reject(reader.error ?? new Error("The file could not be read."));
-    reader.readAsDataURL(file);
-  });
 
 const renderPropertyList = (page: LibraryPageRecord, propertyName: string): string[] => {
   const value = page.properties?.[propertyName];
@@ -257,6 +252,8 @@ const getQuoteFieldValue = (page: LibraryPageRecord, propertyName: string): stri
 const getQuoteRichTextFieldValue = (page: LibraryPageRecord): JSONContent =>
   getPropertyRichTextFieldValue(page, "Quote");
 
+const getLibraryDraftStorageKey = (pageId: string, fieldKey: string): string => `library:${pageId}:${fieldKey}`;
+
 const getQuoteUsedValue = (page: LibraryPageRecord): boolean => {
   const value = page.properties?.Used;
   return typeof value === "boolean" ? value : false;
@@ -273,8 +270,60 @@ const getQuoteDateUsedForInput = (page: LibraryPageRecord): string =>
 const getStrongViewFieldValue = (page: LibraryPageRecord, propertyName: string): string =>
   renderPropertyValue(page, propertyName, "");
 
+const getStrongViewTickerValue = (page: LibraryPageRecord): string =>
+  getStrongViewFieldValue(page, "Ticker").trim().toUpperCase();
+
+const getStrongViewTickerIcon = (page: LibraryPageRecord): string => {
+  const ticker = getStrongViewTickerValue(page);
+  return ticker ? getTickerIcon(ticker) ?? "" : "";
+};
+
 const getStrongViewDateValue = (page: LibraryPageRecord): string =>
   getDateOnlyIsoString(getStrongViewFieldValue(page, "Date"));
+
+const formatReadableDate = (dateValue: string): string => {
+  const normalized = getDateOnlyIsoString(dateValue);
+  if (!normalized) {
+    return "";
+  }
+
+  const parts = normalized.split("-");
+  if (parts.length !== 3) {
+    return normalized;
+  }
+
+  const year = Number(parts[0]);
+  const month = Number(parts[1]);
+  const day = Number(parts[2]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return normalized;
+  }
+
+  const monthNames = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December"
+  ];
+
+  const monthName = monthNames[month - 1];
+  if (!monthName) {
+    return normalized;
+  }
+
+  const isTeen = day % 100 >= 11 && day % 100 <= 13;
+  const suffix = isTeen ? "th" : day % 10 === 1 ? "st" : day % 10 === 2 ? "nd" : day % 10 === 3 ? "rd" : "th";
+
+  return `${monthName} ${day}${suffix}, ${year}`;
+};
 
 const getStrongViewNumericValue = (page: LibraryPageRecord, propertyName: "ATR" | "RVOL"): number | null => {
   const rawValue = getStrongViewFieldValue(page, propertyName).trim();
@@ -293,6 +342,9 @@ const formatStrongViewNumeric = (page: LibraryPageRecord, propertyName: "ATR" | 
 
 const getStrongViewMorningChatValue = (page: LibraryPageRecord): string =>
   getStrongViewFieldValue(page, "Morning Chat");
+
+const getStrongViewMorningChatSrc = (page: LibraryPageRecord): string =>
+  resolveWorkspaceAttachmentSrc(getStrongViewMorningChatValue(page));
 
 const getStrongViewRichTextFieldValue = (page: LibraryPageRecord, propertyName: string): JSONContent =>
   getPropertyRichTextFieldValue(page, propertyName);
@@ -445,13 +497,13 @@ const formatSignedUsd = (value: number): string => {
   return amount >= 0 ? `+$${formatted}` : `-$${formatted}`;
 };
 
-type ReviewMppTone = "positive" | "negative" | "neutral";
+type ReviewComparisonTone = "positive" | "negative" | "neutral";
 
-type ReviewMppCardData = {
+type ReviewCompareCardData = {
   currentLabel: string;
   previousLabel: string;
   deltaLabel: string;
-  deltaTone: ReviewMppTone;
+  deltaTone: ReviewComparisonTone;
 };
 
 const parseReviewMppNumber = (value: string): number | null => {
@@ -482,16 +534,21 @@ const formatRelativeDeltaPercent = (delta: number, previous: number): string => 
   return `${relative >= 0 ? "+" : ""}${relative.toFixed(1)}%`;
 };
 
-const buildReviewMppCardData = (rawValue: string): ReviewMppCardData => {
-  const parts = rawValue
-    .split("->")
-    .map((part) => part.trim())
-    .filter(Boolean);
-  const previousValue = parts.length > 0 ? parseReviewMppNumber(parts[0]) : null;
-  const currentValue = parts.length > 1 ? parseReviewMppNumber(parts[parts.length - 1]) : previousValue;
-
-  const currentLabel = currentValue === null ? "-" : currentValue.toLocaleString();
-  const previousLabel = previousValue === null ? "-" : previousValue.toLocaleString();
+const buildReviewCompareCardData = ({
+  currentValue,
+  previousValue,
+  formatValue = (value: number) => value.toLocaleString(),
+  favorableDirection = "increase",
+  formatDeltaValue = formatSignedWhole
+}: {
+  currentValue: number | null;
+  previousValue: number | null;
+  formatValue?: (value: number) => string;
+  favorableDirection?: "increase" | "decrease";
+  formatDeltaValue?: (value: number) => string;
+}): ReviewCompareCardData => {
+  const currentLabel = currentValue === null ? "-" : formatValue(currentValue);
+  const previousLabel = previousValue === null ? "-" : formatValue(previousValue);
 
   if (currentValue === null || previousValue === null) {
     return {
@@ -503,15 +560,62 @@ const buildReviewMppCardData = (rawValue: string): ReviewMppCardData => {
   }
 
   const delta = currentValue - previousValue;
-  const deltaTone: ReviewMppTone = delta > 0 ? "positive" : delta < 0 ? "negative" : "neutral";
+  const deltaTone: ReviewComparisonTone =
+    delta === 0
+      ? "neutral"
+      : favorableDirection === "decrease"
+        ? delta < 0
+          ? "positive"
+          : "negative"
+        : delta > 0
+          ? "positive"
+          : "negative";
 
   return {
     currentLabel,
     previousLabel,
-    deltaLabel: `${formatSignedWhole(delta)} (${formatRelativeDeltaPercent(delta, previousValue)})`,
+    deltaLabel: `${formatDeltaValue(delta)} (${formatRelativeDeltaPercent(delta, previousValue)})`,
     deltaTone
   };
 };
+
+const buildReviewMppCardData = (rawValue: string): ReviewCompareCardData => {
+  const parts = rawValue
+    .split("->")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const previousValue = parts.length > 0 ? parseReviewMppNumber(parts[0]) : null;
+  const currentValue = parts.length > 1 ? parseReviewMppNumber(parts[parts.length - 1]) : previousValue;
+
+  return buildReviewCompareCardData({
+    currentValue,
+    previousValue
+  });
+};
+
+const buildReviewCountCardData = (
+  currentValue: number | null,
+  previousValue: number | null,
+  favorableDirection: "increase" | "decrease"
+): ReviewCompareCardData =>
+  buildReviewCompareCardData({
+    currentValue,
+    previousValue,
+    favorableDirection,
+    formatValue: (value) => Math.round(value).toLocaleString()
+  });
+
+const buildReviewMoneyCardData = (
+  currentValue: number | null,
+  previousValue: number | null
+): ReviewCompareCardData =>
+  buildReviewCompareCardData({
+    currentValue,
+    previousValue,
+    favorableDirection: "increase",
+    formatValue: formatSignedUsd,
+    formatDeltaValue: formatSignedUsd
+  });
 
 type BookCellEditorState = {
   pageId: string;
@@ -578,6 +682,8 @@ export const LibraryPage = ({
     isCustomOption: isCustomStrongViewTickerOption
   } = useEditableSelectOptions("strongViewTickers", Object.keys(tickerIcons).sort());
   const [pages, setPages] = useState<LibraryPageRecord[]>(() => loadLibraryPages());
+  const pagesRef = useRef<LibraryPageRecord[]>([]);
+  pagesRef.current = pages;
   const [selectedCollectionId, setSelectedCollectionId] =
     useState<LibraryCollectionId>("idea-inbox");
   const [selectedPageId, setSelectedPageId] = useState("");
@@ -622,8 +728,8 @@ export const LibraryPage = ({
     () => reviewTemplates.monthlyTemplates[0]?.id ?? ""
   );
   const [showLegacyReviewNotes, setShowLegacyReviewNotes] = useState(false);
-  const skipNextPagesSaveRef = useRef(true);
-  const skipNextReviewTemplatesSaveRef = useRef(true);
+  const dailyShutdownRiskUsd = getDailyShutdownRiskFromSettings(settings);
+  const hasRetriedDesktopRecoveryRef = useRef(false);
   const strongViewMorningChatInputRef = useRef<HTMLInputElement | null>(null);
   const quoteSaveStatusTimeoutRef = useRef<number | null>(null);
 
@@ -639,8 +745,29 @@ export const LibraryPage = ({
     setQuoteSaveStatus("saving");
   };
 
-  const handleImageInsert = async (file: File): Promise<string> => {
-    return readFileAsDataUrl(file);
+  const createLibraryInlineImageInsertHandler = (pageId: string, fieldKey: string) => async (file: File) =>
+    saveWorkspaceInlineImage({
+      category: "library-inline-images",
+      recordId: pageId,
+      slotKey: fieldKey,
+      file
+    });
+
+  const persistPages = (nextPages: LibraryPageRecord[]) => {
+    pagesRef.current = nextPages;
+    setPages(nextPages);
+  };
+
+  const deleteUnusedLibraryAttachments = (paths: string[], nextPages: LibraryPageRecord[]) => {
+    const uniquePaths = Array.from(new Set(paths.map((path) => path.trim()).filter(Boolean)));
+    for (const path of uniquePaths) {
+      void deleteWorkspaceAttachmentIfUnused(path, {
+        delayMs: 0,
+        storageOverrides: {
+          [LIBRARY_PAGES_STORAGE_KEY]: nextPages
+        }
+      }).catch(() => undefined);
+    }
   };
 
   useEffect(() => {
@@ -667,23 +794,25 @@ export const LibraryPage = ({
     });
   }, []);
 
-  useEffect(() => {
-    if (skipNextPagesSaveRef.current) {
-      skipNextPagesSaveRef.current = false;
-      return;
-    }
+  useDebouncedSave(
+    pages,
+    900,
+    (nextPages) => {
+      saveLibraryPages(nextPages);
+    },
+    true,
+    { skipInitialSave: true }
+  );
 
-    saveLibraryPages(pages);
-  }, [pages]);
-
-  useEffect(() => {
-    if (skipNextReviewTemplatesSaveRef.current) {
-      skipNextReviewTemplatesSaveRef.current = false;
-      return;
-    }
-
-    saveReviewTemplates(reviewTemplates);
-  }, [reviewTemplates]);
+  useDebouncedSave(
+    reviewTemplates,
+    500,
+    (nextTemplates) => {
+      saveReviewTemplates(nextTemplates);
+    },
+    true,
+    { skipInitialSave: true }
+  );
 
   useEffect(() => {
     if (quoteSaveStatus !== "saving") {
@@ -706,16 +835,38 @@ export const LibraryPage = ({
   );
 
   useEffect(() => {
+    if (hasRetriedDesktopRecoveryRef.current) {
+      return;
+    }
+
+    hasRetriedDesktopRecoveryRef.current = true;
+    void (async () => {
+      const recoveredPages = await recoverLibraryPagesFromDesktopBackup(pagesRef.current);
+      if (!recoveredPages) {
+        return;
+      }
+
+      persistPages(recoveredPages);
+    })();
+  }, []);
+
+  useEffect(() => {
     const handleHydrated = () => {
       const nextPages = loadLibraryPages();
       const nextTemplates = loadReviewTemplates();
 
-      skipNextPagesSaveRef.current = true;
-      skipNextReviewTemplatesSaveRef.current = true;
       setPages(nextPages);
       setReviewTemplates(nextTemplates);
       setSelectedWeeklyReviewTemplateId(nextTemplates.weeklyTemplates[0]?.id ?? "");
       setSelectedMonthlyReviewTemplateId(nextTemplates.monthlyTemplates[0]?.id ?? "");
+      void (async () => {
+        const recoveredPages = await recoverLibraryPagesFromDesktopBackup(nextPages);
+        if (!recoveredPages) {
+          return;
+        }
+
+        persistPages(recoveredPages);
+      })();
     };
 
     window.addEventListener(SYNC_HYDRATED_EVENT, handleHydrated);
@@ -723,8 +874,6 @@ export const LibraryPage = ({
   }, []);
 
   useEffect(() => {
-    const shutdownRiskUsd = getDailyShutdownRiskFromSettings(settings);
-
     setPages((current) => {
       let changed = false;
       const now = new Date().toISOString();
@@ -744,7 +893,7 @@ export const LibraryPage = ({
           trades,
           rangeStart: range.start,
           rangeEnd: range.end,
-          dailyShutdownRiskUsd: shutdownRiskUsd
+          dailyShutdownRiskUsd
         });
 
         const nextProperties = buildReviewPropertiesPatch({
@@ -762,7 +911,7 @@ export const LibraryPage = ({
 
       return changed ? next : current;
     });
-  }, [settings, trades]);
+  }, [dailyShutdownRiskUsd, trades]);
 
   useEffect(() => {
     if (trades.length === 0) {
@@ -1178,6 +1327,42 @@ export const LibraryPage = ({
     const rawMpp = renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.mpp, "");
     return buildReviewMppCardData(rawMpp);
   }, [selectedPage]);
+  const selectedReviewComparisonData = useMemo(() => {
+    if (!selectedPage || !isReviewCollection || !selectedReviewPeriod) {
+      return null;
+    }
+
+    const range = getReviewRange(selectedPage.properties);
+    if (!range) {
+      return null;
+    }
+
+    const previousRange = getPreviousReviewRange(selectedReviewPeriod, range.start, range.end);
+    if (!previousRange) {
+      return null;
+    }
+
+    const currentMetrics = computeReviewMetrics({
+      trades,
+      rangeStart: range.start,
+      rangeEnd: range.end,
+      dailyShutdownRiskUsd
+    });
+    const previousMetrics = computeReviewMetrics({
+      trades,
+      rangeStart: previousRange.start,
+      rangeEnd: previousRange.end,
+      dailyShutdownRiskUsd
+    });
+
+    return {
+      previousPeriodLabel: selectedReviewPeriod === "monthly" ? "Last month" : "Last week",
+      net: buildReviewMoneyCardData(currentMetrics.net, previousMetrics.net),
+      gross: buildReviewMoneyCardData(currentMetrics.gross, previousMetrics.gross),
+      redDays: buildReviewCountCardData(currentMetrics.redDays, previousMetrics.redDays, "decrease"),
+      greenDays: buildReviewCountCardData(currentMetrics.greenDays, previousMetrics.greenDays, "increase")
+    };
+  }, [dailyShutdownRiskUsd, isReviewCollection, selectedPage, selectedReviewPeriod, trades]);
 
   const bestDayEntries = useMemo(() => {
     if (!selectedPage) {
@@ -1343,8 +1528,7 @@ export const LibraryPage = ({
   );
 
   const updatePage = (pageId: string, updates: Partial<LibraryPageRecord>) => {
-    setPages((current) =>
-      current.map((page) =>
+    const nextPages = pagesRef.current.map((page) =>
         page.id === pageId
           ? {
               ...page,
@@ -1352,8 +1536,8 @@ export const LibraryPage = ({
               updatedAt: new Date().toISOString()
             }
           : page
-      )
-    );
+      );
+    persistPages(nextPages);
   };
 
   const updatePageNoteType = (page: LibraryPageRecord, nextTypeLabel: string) => {
@@ -1393,8 +1577,7 @@ export const LibraryPage = ({
       return;
     }
 
-    setPages((current) =>
-      current.map((page) => {
+    const nextPages = pagesRef.current.map((page) => {
         if (page.collectionId !== "idea-inbox" || resolveNoteTypeTag(page) !== currentTypeToken) {
           return page;
         }
@@ -1411,8 +1594,8 @@ export const LibraryPage = ({
           },
           updatedAt: new Date().toISOString()
         };
-      })
-    );
+      });
+    persistPages(nextPages);
   };
 
   const deleteNotesTypeOption = (value: string) => {
@@ -1421,8 +1604,7 @@ export const LibraryPage = ({
       return;
     }
 
-    setPages((current) =>
-      current.map((page) => {
+    const nextPages = pagesRef.current.map((page) => {
         if (page.collectionId !== "idea-inbox" || resolveNoteTypeTag(page) !== typeToken) {
           return page;
         }
@@ -1438,8 +1620,8 @@ export const LibraryPage = ({
           },
           updatedAt: new Date().toISOString()
         };
-      })
-    );
+      });
+    persistPages(nextPages);
   };
 
   const renameNotesTagOption = (currentValue: string, nextValue: string) => {
@@ -1449,8 +1631,7 @@ export const LibraryPage = ({
       return;
     }
 
-    setPages((current) =>
-      current.map((page) => {
+    const nextPages = pagesRef.current.map((page) => {
         if (page.collectionId !== "idea-inbox") {
           return page;
         }
@@ -1469,8 +1650,8 @@ export const LibraryPage = ({
           tags: nextTags,
           updatedAt: new Date().toISOString()
         };
-      })
-    );
+      });
+    persistPages(nextPages);
   };
 
   const deleteNotesTagOption = (value: string) => {
@@ -1479,8 +1660,7 @@ export const LibraryPage = ({
       return;
     }
 
-    setPages((current) =>
-      current.map((page) => {
+    const nextPages = pagesRef.current.map((page) => {
         if (page.collectionId !== "idea-inbox") {
           return page;
         }
@@ -1495,17 +1675,16 @@ export const LibraryPage = ({
           tags: normalizedTags.filter((currentTag) => currentTag !== tag),
           updatedAt: new Date().toISOString()
         };
-      })
-    );
+      });
+    persistPages(nextPages);
   };
 
-  const updatePageProperty = (
+  const buildNextPagesWithUpdatedProperty = (
     page: LibraryPageRecord,
     propertyName: string,
     value: unknown
-  ) => {
-    setPages((current) =>
-      current.map((currentPage) =>
+  ): LibraryPageRecord[] =>
+    pagesRef.current.map((currentPage) =>
         currentPage.id === page.id
           ? {
               ...currentPage,
@@ -1516,16 +1695,31 @@ export const LibraryPage = ({
               updatedAt: new Date().toISOString()
             }
           : currentPage
-      )
-    );
+      );
+
+  const updatePageProperty = (
+    page: LibraryPageRecord,
+    propertyName: string,
+    value: unknown
+  ) => {
+    const nextPages = buildNextPagesWithUpdatedProperty(page, propertyName, value);
+    persistPages(nextPages);
+  };
+
+  const updateTickerGroupIcon = (page: LibraryPageRecord, nextValue: string) => {
+    const previousValue = typeof page.properties?.Icon === "string" ? page.properties.Icon : "";
+    const nextPages = buildNextPagesWithUpdatedProperty(page, "Icon", nextValue);
+    persistPages(nextPages);
+    if (previousValue && previousValue !== nextValue) {
+      deleteUnusedLibraryAttachments([previousValue], nextPages);
+    }
   };
 
   const updateBookCustomTextFields = (
     page: LibraryPageRecord,
     updater: (fields: BookCustomTextField[]) => BookCustomTextField[]
   ) => {
-    setPages((current) =>
-      current.map((currentPage) => {
+    const nextPages = pagesRef.current.map((currentPage) => {
         if (currentPage.id !== page.id) {
           return currentPage;
         }
@@ -1539,8 +1733,8 @@ export const LibraryPage = ({
           },
           updatedAt: new Date().toISOString()
         };
-      })
-    );
+      });
+    persistPages(nextPages);
   };
 
   const addBookCustomTextField = (page: LibraryPageRecord) => {
@@ -1576,8 +1770,7 @@ export const LibraryPage = ({
 
   const updateQuoteUsed = (page: LibraryPageRecord, nextUsed: boolean) => {
     markQuoteSaving();
-    setPages((current) =>
-      current.map((currentPage) => {
+    const nextPages = pagesRef.current.map((currentPage) => {
         if (currentPage.id !== page.id) {
           return currentPage;
         }
@@ -1594,8 +1787,8 @@ export const LibraryPage = ({
           },
           updatedAt: new Date().toISOString()
         };
-      })
-    );
+      });
+    persistPages(nextPages);
   };
 
   const updateQuoteDateUsed = (page: LibraryPageRecord, nextDateUsed: string) => {
@@ -1607,8 +1800,7 @@ export const LibraryPage = ({
       return;
     }
 
-    setPages((current) =>
-      current.map((currentPage) =>
+    const nextPages = pagesRef.current.map((currentPage) =>
         currentPage.id === page.id
           ? {
               ...currentPage,
@@ -1620,8 +1812,8 @@ export const LibraryPage = ({
               updatedAt: new Date().toISOString()
             }
           : currentPage
-      )
-    );
+      );
+    persistPages(nextPages);
   };
 
   const handleStrongViewMorningChatUpload = async (page: LibraryPageRecord, file: File | null) => {
@@ -1630,8 +1822,18 @@ export const LibraryPage = ({
     }
 
     try {
-      const dataUrl = await readFileAsDataUrl(file);
-      updatePageProperty(page, "Morning Chat", dataUrl);
+      const nextAttachmentPath = await saveUploadedWorkspaceAttachment({
+        category: "library-strong-view",
+        recordId: page.id,
+        slotKey: "morning-chat",
+        file
+      });
+      const previousAttachmentPath = getStrongViewMorningChatValue(page);
+      const nextPages = buildNextPagesWithUpdatedProperty(page, "Morning Chat", nextAttachmentPath);
+      persistPages(nextPages);
+      if (previousAttachmentPath && previousAttachmentPath !== nextAttachmentPath) {
+        deleteUnusedLibraryAttachments([previousAttachmentPath], nextPages);
+      }
     } catch {
       window.alert("The Morning Chat image could not be read.");
     }
@@ -1645,8 +1847,7 @@ export const LibraryPage = ({
     }
 
     markQuoteSaving();
-    setPages((current) =>
-      current.map((page) => {
+    const nextPages = pagesRef.current.map((page) => {
         if (page.collectionId !== "quotes") {
           return page;
         }
@@ -1664,8 +1865,8 @@ export const LibraryPage = ({
           },
           updatedAt: new Date().toISOString()
         };
-      })
-    );
+      });
+    persistPages(nextPages);
   };
 
   const deleteQuoteOption = (field: "Author" | "Source", value: string) => {
@@ -1675,8 +1876,7 @@ export const LibraryPage = ({
     }
 
     markQuoteSaving();
-    setPages((current) =>
-      current.map((page) => {
+    const nextPages = pagesRef.current.map((page) => {
         if (page.collectionId !== "quotes") {
           return page;
         }
@@ -1694,8 +1894,8 @@ export const LibraryPage = ({
           },
           updatedAt: new Date().toISOString()
         };
-      })
-    );
+      });
+    persistPages(nextPages);
   };
 
   useEffect(() => {
@@ -1723,49 +1923,49 @@ export const LibraryPage = ({
       new Set(nextTickers.map(normalizeTickerToken).filter(Boolean))
     ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
 
-    setPages((current) => {
-      const now = new Date().toISOString();
-      let changed = false;
+    const now = new Date().toISOString();
+    let changed = false;
 
-      const nextPages = current.map((page) => {
-        if (page.collectionId !== "ticker-groups") {
-          return page;
-        }
+    const nextPages = pagesRef.current.map((page) => {
+      if (page.collectionId !== "ticker-groups") {
+        return page;
+      }
 
-        const existingTickers = renderPropertyList(page, "Tickers").map(normalizeTickerToken).filter(Boolean);
+      const existingTickers = renderPropertyList(page, "Tickers").map(normalizeTickerToken).filter(Boolean);
 
-        if (page.id === groupPageId) {
-          const nextProperties = {
-            ...(page.properties ?? {}),
-            Tickers: normalizedTickers
-          };
+      if (page.id === groupPageId) {
+        const nextProperties = {
+          ...(page.properties ?? {}),
+          Tickers: normalizedTickers
+        };
 
-          if (JSON.stringify(existingTickers) === JSON.stringify(normalizedTickers)) {
-            return page;
-          }
-
-          changed = true;
-          return { ...page, properties: nextProperties, updatedAt: now };
-        }
-
-        const filtered = existingTickers.filter((ticker) => !normalizedTickers.includes(ticker));
-        if (filtered.length === existingTickers.length) {
+        if (JSON.stringify(existingTickers) === JSON.stringify(normalizedTickers)) {
           return page;
         }
 
         changed = true;
-        return {
-          ...page,
-          properties: {
-            ...(page.properties ?? {}),
-            Tickers: filtered
-          },
-          updatedAt: now
-        };
-      });
+        return { ...page, properties: nextProperties, updatedAt: now };
+      }
 
-      return changed ? nextPages : current;
+      const filtered = existingTickers.filter((ticker) => !normalizedTickers.includes(ticker));
+      if (filtered.length === existingTickers.length) {
+        return page;
+      }
+
+      changed = true;
+      return {
+        ...page,
+        properties: {
+          ...(page.properties ?? {}),
+          Tickers: filtered
+        },
+        updatedAt: now
+      };
     });
+
+    if (changed) {
+      persistPages(nextPages);
+    }
   };
 
   const handleCreatePage = () => {
@@ -1774,7 +1974,7 @@ export const LibraryPage = ({
       selectedCollectionId === "idea-inbox"
         ? { ...newPage, title: "New Note", tags: ["idea"] }
         : newPage;
-    setPages((current) => [seededPage, ...current]);
+    persistPages([seededPage, ...pagesRef.current]);
     if (selectedCollectionId === "idea-inbox") {
       setNotesTab(DEFAULT_NOTES_TAB);
     }
@@ -1784,7 +1984,7 @@ export const LibraryPage = ({
 
   const handleCreateBookRow = () => {
     const newPage = createLibraryBookRow();
-    setPages((current) => [newPage, ...current]);
+    persistPages([newPage, ...pagesRef.current]);
     setSelectedPageId(newPage.id);
     setCollectionView("page");
     setBookSearchQuery("");
@@ -1794,7 +1994,7 @@ export const LibraryPage = ({
 
   const handleCreateQuoteRow = () => {
     const newPage = createLibraryQuoteRow();
-    setPages((current) => [newPage, ...current]);
+    persistPages([newPage, ...pagesRef.current]);
     setSelectedPageId(newPage.id);
     setCollectionView("list");
     setQuoteSearchQuery("");
@@ -1808,7 +2008,7 @@ export const LibraryPage = ({
 
   const handleCreateStrongViewRow = () => {
     const newPage = createLibraryStrongViewRow();
-    setPages((current) => [newPage, ...current]);
+    persistPages([newPage, ...pagesRef.current]);
     setSelectedPageId(newPage.id);
     setCollectionView("page");
     setStrongViewTickerQuery("");
@@ -1826,7 +2026,9 @@ export const LibraryPage = ({
       return;
     }
 
-    setPages((current) => current.filter((page) => page.id !== pageId));
+    const nextPages = pagesRef.current.filter((page) => page.id !== pageId);
+    persistPages(nextPages);
+    deleteUnusedLibraryAttachments(collectWorkspaceAttachmentPaths(targetPage), nextPages);
     setSelectedPageId("");
     setCollectionView("list");
   };
@@ -1881,9 +2083,12 @@ export const LibraryPage = ({
             key={`${page.id}-book-summary-editor`}
             content={getPropertyRichTextFieldValue(page, "Summary")}
             onChange={(content) => updatePageProperty(page, "Summary", content)}
+            onImageInsert={createLibraryInlineImageInsertHandler(page.id, "book-summary")}
             placeholder="Key ideas, takeaways, and notes from the book."
             appearance="notion"
             autosize
+            draftStorageKey={getLibraryDraftStorageKey(page.id, "book-summary")}
+            sourceUpdatedAt={page.updatedAt}
           />
         </div>
         <div className="library-open-page-note">
@@ -1892,9 +2097,12 @@ export const LibraryPage = ({
             key={`${page.id}-book-review-editor`}
             content={getPropertyRichTextFieldValue(page, "Review")}
             onChange={(content) => updatePageProperty(page, "Review", content)}
+            onImageInsert={createLibraryInlineImageInsertHandler(page.id, "book-review")}
             placeholder="What stood out, what mattered, and how it applies to trading."
             appearance="notion"
             autosize
+            draftStorageKey={getLibraryDraftStorageKey(page.id, "book-review")}
+            sourceUpdatedAt={page.updatedAt}
           />
         </div>
         {customFields.map((field) => (
@@ -1904,9 +2112,12 @@ export const LibraryPage = ({
               key={`${page.id}-${field.id}-editor`}
               content={field.content}
               onChange={(content) => updateBookCustomTextField(page, field.id, { content })}
+              onImageInsert={createLibraryInlineImageInsertHandler(page.id, `book-custom-${field.id}`)}
               placeholder={`${field.label} notes`}
               appearance="notion"
               autosize
+              draftStorageKey={getLibraryDraftStorageKey(page.id, `book-custom-${field.id}`)}
+              sourceUpdatedAt={page.updatedAt}
             />
             <div className="library-book-note-actions">
               <button
@@ -2541,9 +2752,11 @@ export const LibraryPage = ({
                                 markQuoteSaving();
                                 updatePageProperty(page, "Quote", content);
                               }}
-                              onImageInsert={handleImageInsert}
+                              onImageInsert={createLibraryInlineImageInsertHandler(page.id, "quote")}
                               placeholder="Type a quote..."
                               compact
+                              draftStorageKey={getLibraryDraftStorageKey(page.id, "quote")}
+                              sourceUpdatedAt={page.updatedAt}
                             />
                           </div>
                         </td>
@@ -2665,6 +2878,8 @@ export const LibraryPage = ({
                         <span className="sort-indicator sort-indicator-active">{strongViewSortDirection}</span>
                       </button>
                     </th>
+                    <th>Key Level Up</th>
+                    <th>Key Level Down</th>
                     <th>Bias</th>
                     <th>ATR</th>
                     <th>RVOL</th>
@@ -2673,10 +2888,14 @@ export const LibraryPage = ({
                 <tbody>
                   {filteredStrongViewRows.length > 0 ? (
                     filteredStrongViewRows.map((page) => {
-                      const ticker = getStrongViewFieldValue(page, "Ticker").trim().toUpperCase();
+                      const ticker = getStrongViewTickerValue(page);
                       const date = getStrongViewDateValue(page);
+                      const readableDate = formatReadableDate(date);
+                      const keyLevelUp = getStrongViewFieldValue(page, "Key Level Up").trim();
+                      const keyLevelDown = getStrongViewFieldValue(page, "Key Level Down").trim();
                       const bias = getStrongViewFieldValue(page, "Bias").trim();
                       const biasLabel = bias || "Unset";
+                      const tickerIcon = ticker ? getTickerIcon(ticker) : "";
 
                       return (
                         <tr
@@ -2686,10 +2905,19 @@ export const LibraryPage = ({
                         >
                           <td>
                             <button type="button" className="library-table-title" onClick={() => openPage(page.id)}>
-                              {ticker || "-"}
+                              <span className="library-strong-view-ticker-cell">
+                                {tickerIcon ? (
+                                  <img src={tickerIcon} alt={`${ticker} ticker icon`} className="symbol-pill-icon" />
+                                ) : (
+                                  <WorkspaceIcon icon="trades" alt="" className="symbol-pill-icon" />
+                                )}
+                                <span>{ticker || "-"}</span>
+                              </span>
                             </button>
                           </td>
-                          <td>{date || <span className="library-table-muted">-</span>}</td>
+                          <td>{readableDate || <span className="library-table-muted">-</span>}</td>
+                          <td>{keyLevelUp || <span className="library-table-muted">-</span>}</td>
+                          <td>{keyLevelDown || <span className="library-table-muted">-</span>}</td>
                           <td>
                             <span className={`library-status-pill ${getStrongViewBiasToneClass(bias)}`}>{biasLabel}</span>
                           </td>
@@ -2700,7 +2928,7 @@ export const LibraryPage = ({
                     })
                   ) : (
                     <tr>
-                      <td colSpan={5} className="empty-state">
+                      <td colSpan={7} className="empty-state">
                         {strongViewRows.length > 0
                           ? "No strong views match the current filters."
                           : "No strong views yet. Create your first view."}
@@ -2935,7 +3163,8 @@ export const LibraryPage = ({
                     <TickerGroupIconPicker
                       label="Icon"
                       value={typeof selectedPage.properties?.Icon === "string" ? selectedPage.properties.Icon : ""}
-                      onChange={(next) => updatePageProperty(selectedPage, "Icon", next)}
+                      onChange={(next) => updateTickerGroupIcon(selectedPage, next)}
+                      attachmentRecordId={selectedPage.id}
                     />
 
                     <label className="library-open-page-property ticker-group-description">
@@ -2944,10 +3173,12 @@ export const LibraryPage = ({
                         key={`${selectedPage.id}-ticker-group-description`}
                         content={getPropertyRichTextFieldValue(selectedPage, "Description")}
                         onChange={(content) => updatePageProperty(selectedPage, "Description", content)}
-                        onImageInsert={handleImageInsert}
+                        onImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "ticker-group-description")}
                         placeholder="Optional short description"
                         compact
                         showBlockActions={false}
+                        draftStorageKey={getLibraryDraftStorageKey(selectedPage.id, "ticker-group-description")}
+                        sourceUpdatedAt={selectedPage.updatedAt}
                       />
                     </label>
 
@@ -3012,7 +3243,7 @@ export const LibraryPage = ({
                     </label>
                     <label className="library-open-page-property">
                       <span>Daily Shutdown Risk</span>
-                      <input type="text" readOnly value={`$${getDailyShutdownRiskFromSettings(settings).toFixed(2)}`} />
+                      <input type="text" readOnly value={`$${dailyShutdownRiskUsd.toFixed(2)}`} />
                     </label>
                     <label className="library-open-page-property">
                       <span>Closed Orders</span>
@@ -3031,15 +3262,41 @@ export const LibraryPage = ({
                       <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.winRate, "-")} />
                     </label>
 
-                    <label className="library-open-page-property">
+                    <label className="library-open-page-property library-open-page-property-compare">
                       <span>Net</span>
-                      <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.net, "-")} />
+                      <strong>
+                        {selectedReviewComparisonData?.net.currentLabel ??
+                          renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.net, "-")}
+                      </strong>
+                      {selectedReviewComparisonData ? (
+                        <small>
+                          {selectedReviewComparisonData.previousPeriodLabel} {selectedReviewComparisonData.net.previousLabel}
+                        </small>
+                      ) : null}
+                      {selectedReviewComparisonData?.net.deltaLabel ? (
+                        <em className={`report-period-delta report-period-delta-${selectedReviewComparisonData.net.deltaTone}`}>
+                          {selectedReviewComparisonData.net.deltaLabel}
+                        </em>
+                      ) : null}
                     </label>
-                    <label className="library-open-page-property">
+                    <label className="library-open-page-property library-open-page-property-compare">
                       <span>Gross</span>
-                      <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.gross, "-")} />
+                      <strong>
+                        {selectedReviewComparisonData?.gross.currentLabel ??
+                          renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.gross, "-")}
+                      </strong>
+                      {selectedReviewComparisonData ? (
+                        <small>
+                          {selectedReviewComparisonData.previousPeriodLabel} {selectedReviewComparisonData.gross.previousLabel}
+                        </small>
+                      ) : null}
+                      {selectedReviewComparisonData?.gross.deltaLabel ? (
+                        <em className={`report-period-delta report-period-delta-${selectedReviewComparisonData.gross.deltaTone}`}>
+                          {selectedReviewComparisonData.gross.deltaLabel}
+                        </em>
+                      ) : null}
                     </label>
-                    <label className="library-open-page-property library-open-page-property-mpp">
+                    <label className="library-open-page-property library-open-page-property-compare library-open-page-property-mpp">
                       <span>MPP</span>
                       <strong>{selectedReviewMppCardData?.currentLabel ?? "-"}</strong>
                       <small>Prev {selectedReviewMppCardData?.previousLabel ?? "-"}</small>
@@ -3049,13 +3306,39 @@ export const LibraryPage = ({
                         </em>
                       ) : null}
                     </label>
-                    <label className="library-open-page-property library-open-page-property-red-days">
+                    <label className="library-open-page-property library-open-page-property-compare library-open-page-property-red-days">
                       <span>Red Days</span>
-                      <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.redDays, "-")} />
+                      <strong>
+                        {selectedReviewComparisonData?.redDays.currentLabel ??
+                          renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.redDays, "-")}
+                      </strong>
+                      {selectedReviewComparisonData ? (
+                        <small>
+                          {selectedReviewComparisonData.previousPeriodLabel} {selectedReviewComparisonData.redDays.previousLabel}
+                        </small>
+                      ) : null}
+                      {selectedReviewComparisonData?.redDays.deltaLabel ? (
+                        <em className={`report-period-delta report-period-delta-${selectedReviewComparisonData.redDays.deltaTone}`}>
+                          {selectedReviewComparisonData.redDays.deltaLabel}
+                        </em>
+                      ) : null}
                     </label>
-                    <label className="library-open-page-property library-open-page-property-green-days">
+                    <label className="library-open-page-property library-open-page-property-compare library-open-page-property-green-days">
                       <span>Green Days</span>
-                      <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.greenDays, "-")} />
+                      <strong>
+                        {selectedReviewComparisonData?.greenDays.currentLabel ??
+                          renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.greenDays, "-")}
+                      </strong>
+                      {selectedReviewComparisonData ? (
+                        <small>
+                          {selectedReviewComparisonData.previousPeriodLabel} {selectedReviewComparisonData.greenDays.previousLabel}
+                        </small>
+                      ) : null}
+                      {selectedReviewComparisonData?.greenDays.deltaLabel ? (
+                        <em className={`report-period-delta report-period-delta-${selectedReviewComparisonData.greenDays.deltaTone}`}>
+                          {selectedReviewComparisonData.greenDays.deltaLabel}
+                        </em>
+                      ) : null}
                     </label>
 
                     <label className="library-open-page-property">
@@ -3194,8 +3477,8 @@ export const LibraryPage = ({
                         : setSelectedWeeklyReviewTemplateId
                     }
                     onChangeReflection={(next) =>
-                      setPages((current) =>
-                        current.map((page) => {
+                      persistPages(
+                        pagesRef.current.map((page) => {
                           if (page.id !== selectedPage.id) {
                             return page;
                           }
@@ -3223,6 +3506,10 @@ export const LibraryPage = ({
                     onDeleteTemplate={(templateId) =>
                       handleDeleteReviewTemplate(selectedReviewPeriod === "monthly" ? "monthly" : "weekly", templateId)
                     }
+                    onTakeawayImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "review-takeaway")}
+                    onImprovementGoalsImageInsert={
+                      createLibraryInlineImageInsertHandler(selectedPage.id, "review-improvement-goals")
+                    }
                   />
 
                   <section className="journal-writing-section review-writing-section review-legacy-notes">
@@ -3246,9 +3533,11 @@ export const LibraryPage = ({
                         key={`${selectedPage.id}-review-legacy-notes`}
                         content={selectedPage.content}
                         onChange={(content) => updatePage(selectedPage.id, { content })}
-                        onImageInsert={handleImageInsert}
+                        onImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "review-legacy-notes")}
                         placeholder="Optional extra notes (legacy editor)"
                         taskListColumns={2}
+                        draftStorageKey={getLibraryDraftStorageKey(selectedPage.id, "review-legacy-notes")}
+                        sourceUpdatedAt={selectedPage.updatedAt}
                       />
                     ) : null}
                   </section>
@@ -3307,10 +3596,21 @@ export const LibraryPage = ({
                         className="library-property-pill-button"
                         onClick={() => {
                           setIsStrongViewTickerDrawerOpen(true);
-                          setStrongViewTickerSearch(getStrongViewFieldValue(selectedPage, "Ticker").trim().toUpperCase());
+                          setStrongViewTickerSearch(getStrongViewTickerValue(selectedPage));
                         }}
                       >
-                        {getStrongViewFieldValue(selectedPage, "Ticker").trim().toUpperCase() || "Select ticker"}
+                        <span className="library-strong-view-ticker-cell">
+                          {getStrongViewTickerIcon(selectedPage) ? (
+                            <img
+                              src={getStrongViewTickerIcon(selectedPage)}
+                              alt={`${getStrongViewTickerValue(selectedPage)} ticker icon`}
+                              className="symbol-pill-icon"
+                            />
+                          ) : (
+                            <WorkspaceIcon icon="trades" alt="" className="symbol-pill-icon" />
+                          )}
+                          <span>{getStrongViewTickerValue(selectedPage) || "Select ticker"}</span>
+                        </span>
                       </button>
                     </label>
                     <label className="library-open-page-property">
@@ -3319,6 +3619,22 @@ export const LibraryPage = ({
                         type="date"
                         value={getStrongViewDateValue(selectedPage)}
                         onChange={(event) => updatePageProperty(selectedPage, "Date", event.target.value)}
+                      />
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Key Level Up</span>
+                      <input
+                        value={getStrongViewFieldValue(selectedPage, "Key Level Up")}
+                        onChange={(event) => updatePageProperty(selectedPage, "Key Level Up", event.target.value)}
+                        placeholder="Ex: 548.20"
+                      />
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Key Level Down</span>
+                      <input
+                        value={getStrongViewFieldValue(selectedPage, "Key Level Down")}
+                        onChange={(event) => updatePageProperty(selectedPage, "Key Level Down", event.target.value)}
+                        placeholder="Ex: 533.80"
                       />
                     </label>
                     <label className="library-open-page-property">
@@ -3362,10 +3678,12 @@ export const LibraryPage = ({
                         key={`${selectedPage.id}-strong-view-open-close`}
                         content={getStrongViewRichTextFieldValue(selectedPage, "Open / Close")}
                         onChange={(content) => updatePageProperty(selectedPage, "Open / Close", content)}
-                        onImageInsert={handleImageInsert}
+                        onImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "strong-view-open-close")}
                         placeholder="Open/close behavior to watch."
                         compact
                         showBlockActions={false}
+                        draftStorageKey={getLibraryDraftStorageKey(selectedPage.id, "strong-view-open-close")}
+                        sourceUpdatedAt={selectedPage.updatedAt}
                       />
                     </label>
                     <label className="library-open-page-note">
@@ -3374,10 +3692,12 @@ export const LibraryPage = ({
                         key={`${selectedPage.id}-strong-view-support`}
                         content={getStrongViewRichTextFieldValue(selectedPage, "Support")}
                         onChange={(content) => updatePageProperty(selectedPage, "Support", content)}
-                        onImageInsert={handleImageInsert}
+                        onImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "strong-view-support")}
                         placeholder="Support levels and context."
                         compact
                         showBlockActions={false}
+                        draftStorageKey={getLibraryDraftStorageKey(selectedPage.id, "strong-view-support")}
+                        sourceUpdatedAt={selectedPage.updatedAt}
                       />
                     </label>
                     <label className="library-open-page-note">
@@ -3386,10 +3706,12 @@ export const LibraryPage = ({
                         key={`${selectedPage.id}-strong-view-resistance`}
                         content={getStrongViewRichTextFieldValue(selectedPage, "Resistance")}
                         onChange={(content) => updatePageProperty(selectedPage, "Resistance", content)}
-                        onImageInsert={handleImageInsert}
+                        onImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "strong-view-resistance")}
                         placeholder="Resistance levels and context."
                         compact
                         showBlockActions={false}
+                        draftStorageKey={getLibraryDraftStorageKey(selectedPage.id, "strong-view-resistance")}
+                        sourceUpdatedAt={selectedPage.updatedAt}
                       />
                     </label>
                   </div>
@@ -3401,10 +3723,12 @@ export const LibraryPage = ({
                         key={`${selectedPage.id}-strong-view-notes`}
                         content={getStrongViewRichTextFieldValue(selectedPage, "Notes")}
                         onChange={(content) => updatePageProperty(selectedPage, "Notes", content)}
-                        onImageInsert={handleImageInsert}
+                        onImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "strong-view-notes")}
                         placeholder="Additional context and observations."
                         compact
                         showBlockActions={false}
+                        draftStorageKey={getLibraryDraftStorageKey(selectedPage.id, "strong-view-notes")}
+                        sourceUpdatedAt={selectedPage.updatedAt}
                       />
                     </label>
                     <label className="library-open-page-note">
@@ -3413,10 +3737,12 @@ export const LibraryPage = ({
                         key={`${selectedPage.id}-strong-view-catalyst`}
                         content={getStrongViewRichTextFieldValue(selectedPage, "Catalyst")}
                         onChange={(content) => updatePageProperty(selectedPage, "Catalyst", content)}
-                        onImageInsert={handleImageInsert}
+                        onImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "strong-view-catalyst")}
                         placeholder="Upcoming catalysts and event risk."
                         compact
                         showBlockActions={false}
+                        draftStorageKey={getLibraryDraftStorageKey(selectedPage.id, "strong-view-catalyst")}
+                        sourceUpdatedAt={selectedPage.updatedAt}
                       />
                     </label>
                   </div>
@@ -3428,10 +3754,12 @@ export const LibraryPage = ({
                         key={`${selectedPage.id}-strong-view-game-plan`}
                         content={getStrongViewRichTextFieldValue(selectedPage, "Game Plan")}
                         onChange={(content) => updatePageProperty(selectedPage, "Game Plan", content)}
-                        onImageInsert={handleImageInsert}
+                        onImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "strong-view-game-plan")}
                         placeholder="Execution plan and invalidation."
                         compact
                         showBlockActions={false}
+                        draftStorageKey={getLibraryDraftStorageKey(selectedPage.id, "strong-view-game-plan")}
+                        sourceUpdatedAt={selectedPage.updatedAt}
                       />
                     </label>
                     <section className="library-strong-view-attachment library-strong-view-attachment-inline">
@@ -3460,7 +3788,16 @@ export const LibraryPage = ({
                             <button
                               type="button"
                               className="mini-action"
-                              onClick={() => updatePageProperty(selectedPage, "Morning Chat", "")}
+                              onClick={() => {
+                                const previousAttachmentPath = getStrongViewMorningChatValue(selectedPage);
+                                const nextPages = buildNextPagesWithUpdatedProperty(
+                                  selectedPage,
+                                  "Morning Chat",
+                                  ""
+                                );
+                                persistPages(nextPages);
+                                deleteUnusedLibraryAttachments([previousAttachmentPath], nextPages);
+                              }}
                             >
                               Remove
                             </button>
@@ -3469,7 +3806,7 @@ export const LibraryPage = ({
                       </div>
                       {getStrongViewMorningChatValue(selectedPage) ? (
                         <img
-                          src={getStrongViewMorningChatValue(selectedPage)}
+                          src={getStrongViewMorningChatSrc(selectedPage)}
                           alt={`${getStrongViewFieldValue(selectedPage, "Ticker") || "Strong View"} Morning Chat`}
                           className="library-strong-view-attachment-image"
                         />
@@ -3553,8 +3890,10 @@ export const LibraryPage = ({
                     key={`${selectedPage.id}-library-content`}
                     content={selectedPage.content}
                     onChange={(content) => updatePage(selectedPage.id, { content })}
-                    onImageInsert={handleImageInsert}
+                    onImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "library-content")}
                     placeholder="Type '/' for commands"
+                    draftStorageKey={getLibraryDraftStorageKey(selectedPage.id, "library-content")}
+                    sourceUpdatedAt={selectedPage.updatedAt}
                   />
                 </>
               )}
@@ -3669,8 +4008,8 @@ export const LibraryPage = ({
               return;
             }
 
-            setPages((current) =>
-              current.map((page) => {
+            persistPages(
+              pagesRef.current.map((page) => {
                 if (page.collectionId !== "strong-views") {
                   return page;
                 }
@@ -3697,8 +4036,8 @@ export const LibraryPage = ({
               return;
             }
 
-            setPages((current) =>
-              current.map((page) => {
+            persistPages(
+              pagesRef.current.map((page) => {
                 if (page.collectionId !== "strong-views") {
                   return page;
                 }

@@ -13,6 +13,10 @@ import {
   pickAndSavePlaybookAttachment,
   resolvePlaybookAttachmentSrc
 } from "../../../lib/playbooks/playbookAttachmentClient";
+import {
+  collectWorkspaceAttachmentPaths,
+  saveWorkspaceInlineImage
+} from "../../../lib/workspace/workspaceAttachmentClient";
 import type { PlaybookExampleRating, PlaybookRecord } from "../../../types/playbook";
 import type { GroupedTrade } from "../../../types/trade";
 
@@ -377,6 +381,14 @@ export const APlusExampleLibrary = ({
     });
   }, [aPlusExamples, exampleDateSort, exampleSearchQuery, tradeById]);
 
+  const createExampleInlineImageInsertHandler = (exampleId: string) => async (file: File) =>
+    saveWorkspaceInlineImage({
+      category: "playbook-aplus-inline-images",
+      recordId: playbook.id,
+      slotKey: exampleId,
+      file
+    });
+
   useEffect(() => {
     if (autoExampleScreenshotsByTrade.size === 0) {
       return;
@@ -631,6 +643,9 @@ export const APlusExampleLibrary = ({
       return;
     }
 
+    const previousRecordingPath =
+      aPlusExamples.find((candidate) => candidate.id === exampleId)?.recordingPath ?? "";
+
     void pickAndSavePlaybookAttachment(playbook.id, exampleId, "recording")
       .then((path) => {
         if (!path) {
@@ -640,6 +655,9 @@ export const APlusExampleLibrary = ({
         setPlaybooks((current) =>
           updatePlaybookAPlusExample(current, playbook.id, exampleId, { recordingPath: path })
         );
+        if (previousRecordingPath && previousRecordingPath !== path) {
+          void deletePlaybookAttachment(previousRecordingPath).catch(() => undefined);
+        }
       })
       .finally(() => setPendingAttachmentExampleId(""));
   };
@@ -678,15 +696,8 @@ export const APlusExampleLibrary = ({
         }
       }
 
-      for (const screenshotPath of entry.screenshotPaths) {
-        if (screenshotPath && !screenshotPath.startsWith("data:")) {
-          void deletePlaybookAttachment(screenshotPath).catch(() => undefined);
-        }
-      }
-      if (entry.recordingPath) {
-        if (!entry.recordingPath.startsWith("data:")) {
-          void deletePlaybookAttachment(entry.recordingPath).catch(() => undefined);
-        }
+      for (const attachmentPath of collectWorkspaceAttachmentPaths(entry)) {
+        void deletePlaybookAttachment(attachmentPath).catch(() => undefined);
       }
 
       dismissTradeIds(Array.from(tradeIdsToDismiss));
@@ -1120,7 +1131,7 @@ export const APlusExampleLibrary = ({
                           updatePlaybookAPlusExample(current, playbook.id, entry.id, { notes: content })
                         )
                       }
-                      onImageInsert={readFileAsDataUrl}
+                      onImageInsert={createExampleInlineImageInsertHandler(entry.id)}
                       placeholder="Add why this is an A+ example, execution notes, and what to repeat."
                     />
                   </div>

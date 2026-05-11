@@ -1,6 +1,7 @@
 import type { JSONContent } from "@tiptap/core";
 import { createEmptyJournalDoc } from "../journal/journalContent";
-import { syncStores } from "../sync/syncStore";
+import { canUseMachineLegacyData, syncStores } from "../sync/syncStore";
+import { loadDesktopStoreBackup, saveDesktopStoreBackup } from "../storage/desktopStoreBackup";
 import type {
   NamedReviewTemplate,
   ReviewChecklistGroupKey,
@@ -110,6 +111,24 @@ export const defaultReviewTemplates = (): ReviewTemplates => ({
   monthlyTemplates: [createDefaultTemplate("monthly")]
 });
 
+const stableStringify = (value: unknown): string => {
+  if (value === null || value === undefined) {
+    return JSON.stringify(value);
+  }
+
+  if (typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
+};
+
 const normalizeTemplate = (value: unknown, fallbackName: string): NamedReviewTemplate | null => {
   if (!value || typeof value !== "object") {
     return null;
@@ -171,6 +190,60 @@ export const loadReviewTemplates = (): ReviewTemplates => {
   }
 };
 
+export const persistReviewTemplates = async (templates: ReviewTemplates): Promise<ReviewTemplates> => {
+  const normalized: ReviewTemplates = {
+    weeklyTemplates: ensureTemplateArray(templates.weeklyTemplates, "weekly"),
+    monthlyTemplates: ensureTemplateArray(templates.monthlyTemplates, "monthly")
+  };
+  const payload = { ...normalized, version: STORAGE_VERSION };
+  const syncPromise = syncStores.reviewTemplates.save(payload);
+  const activeUserId = syncStores.reviewTemplates.getUserId();
+
+  if (canUseMachineLegacyData(activeUserId)) {
+    try {
+      await saveDesktopStoreBackup("review-templates", payload);
+    } catch (error) {
+      console.warn("[review-templates] Failed to save desktop review templates backup.", error);
+    }
+  }
+
+  await syncPromise;
+  return normalized;
+};
+
+export const recoverReviewTemplatesFromDesktopBackup = async (
+  localTemplates = loadReviewTemplates()
+): Promise<ReviewTemplates | null> => {
+  const activeUserId = syncStores.reviewTemplates.getUserId();
+  if (!canUseMachineLegacyData(activeUserId)) {
+    return null;
+  }
+
+  const desktopTemplates = await loadDesktopStoreBackup<Partial<ReviewTemplates> & { version?: number }>("review-templates");
+  if (!desktopTemplates || typeof desktopTemplates !== "object") {
+    return null;
+  }
+
+  const normalizedDesktopTemplates: ReviewTemplates = {
+    weeklyTemplates: ensureTemplateArray(desktopTemplates.weeklyTemplates, "weekly"),
+    monthlyTemplates: ensureTemplateArray(desktopTemplates.monthlyTemplates, "monthly")
+  };
+
+  const localScore = stableStringify(localTemplates);
+  const desktopScore = stableStringify(normalizedDesktopTemplates);
+  const defaultScore = stableStringify(defaultReviewTemplates());
+  if (desktopScore === defaultScore || desktopScore === localScore) {
+    return null;
+  }
+
+  if (localScore !== defaultScore) {
+    return null;
+  }
+
+  await persistReviewTemplates(normalizedDesktopTemplates);
+  return normalizedDesktopTemplates;
+};
+
 export const saveReviewTemplates = (templates: ReviewTemplates): void => {
-  void syncStores.reviewTemplates.save({ ...templates, version: STORAGE_VERSION });
+  void persistReviewTemplates(templates);
 };

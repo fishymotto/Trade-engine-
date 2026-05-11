@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { Settings } from "../../types/trade";
 import { canUseMachineLegacyData, syncStores } from "../sync/syncStore";
+import { readLocalStorageItem, writeLocalStorageItem } from "../storage/localStorage";
 
 const STORAGE_KEY = "trade-engine-settings";
 const MACHINE_SETTINGS_KEY = "trade-engine-machine-settings";
@@ -26,14 +27,20 @@ export const DEFAULT_BRL_TICKER_LIST = [
   "HAPV3"
 ].join(", ");
 
+export const DEFAULT_MPP_LOCK_IN_STEPS = [5, 10, 20, 30, 40, 50] as const;
+
 export const defaultSettings: Settings = {
   notionToken: "",
   notionDatabaseUrl: "",
   exportFolder: "",
+  workspaceExportStartDate: "",
+  workspaceExportEndDate: "",
+  workspaceExportSelectedDates: [],
   twelveDataApiKey: "",
   brlToUsdRate: 0,
   brlTickerList: DEFAULT_BRL_TICKER_LIST,
   dailyShutdownRiskUsd: 0,
+  mppLockInSteps: [...DEFAULT_MPP_LOCK_IN_STEPS],
   desktopBackupIntervalMinutes: 0,
   tradeTagVisibility: {
     status: true,
@@ -46,14 +53,26 @@ export const defaultSettings: Settings = {
   }
 };
 
-export type SyncedSettings = Omit<Settings, "exportFolder">;
+export type SyncedSettings = Omit<
+  Settings,
+  "exportFolder" | "workspaceExportStartDate" | "workspaceExportEndDate" | "workspaceExportSelectedDates"
+>;
 
 interface MachineSettings {
   exportFolder: string;
+  workspaceExportStartDate: string;
+  workspaceExportEndDate: string;
+  workspaceExportSelectedDates: string[];
 }
 
 const toSyncedSettings = (settings: Settings): SyncedSettings => {
-  const { exportFolder: _exportFolder, ...syncedSettings } = settings;
+  const {
+    exportFolder: _exportFolder,
+    workspaceExportStartDate: _workspaceExportStartDate,
+    workspaceExportEndDate: _workspaceExportEndDate,
+    workspaceExportSelectedDates: _workspaceExportSelectedDates,
+    ...syncedSettings
+  } = settings;
   return syncedSettings;
 };
 
@@ -68,23 +87,109 @@ const normalizeBackupIntervalMinutes = (value: unknown): number => {
   return Math.min(60 * 24 * 30, Math.round(parsed));
 };
 
+const normalizeMppLockInSteps = (value: unknown): number[] => {
+  const normalizedSteps: number[] = [];
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const parsed = Number(entry);
+      const normalized = Math.round(Math.abs(parsed));
+      if (!Number.isFinite(normalized) || normalized <= 0 || normalizedSteps.includes(normalized)) {
+        continue;
+      }
+
+      normalizedSteps.push(normalized);
+      if (normalizedSteps.length >= DEFAULT_MPP_LOCK_IN_STEPS.length) {
+        break;
+      }
+    }
+  }
+
+  for (const fallbackStep of DEFAULT_MPP_LOCK_IN_STEPS) {
+    if (normalizedSteps.includes(fallbackStep)) {
+      continue;
+    }
+
+    normalizedSteps.push(fallbackStep);
+    if (normalizedSteps.length >= DEFAULT_MPP_LOCK_IN_STEPS.length) {
+      break;
+    }
+  }
+
+  return normalizedSteps;
+};
+
+const normalizeWorkspaceExportStartDate = (value: unknown): string => {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  const trimmed = value.trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : "";
+};
+
+const normalizeWorkspaceExportEndDate = (value: unknown): string => {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  const trimmed = value.trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : "";
+};
+
+const normalizeWorkspaceExportSelectedDates = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const unique = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const entry of value) {
+    const nextDate = normalizeWorkspaceExportStartDate(entry);
+    if (!nextDate || unique.has(nextDate)) {
+      continue;
+    }
+
+    unique.add(nextDate);
+    normalized.push(nextDate);
+  }
+
+  return normalized.sort();
+};
+
 const loadMachineSettings = (): MachineSettings => {
-  const fallback: MachineSettings = { exportFolder: "" };
+  const fallback: MachineSettings = {
+    exportFolder: "",
+    workspaceExportStartDate: "",
+    workspaceExportEndDate: "",
+    workspaceExportSelectedDates: []
+  };
 
   try {
-    const raw = localStorage.getItem(MACHINE_SETTINGS_KEY);
+    const raw = readLocalStorageItem(MACHINE_SETTINGS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<MachineSettings>;
       return {
-        exportFolder: typeof parsed.exportFolder === "string" ? parsed.exportFolder : ""
+        exportFolder: typeof parsed.exportFolder === "string" ? parsed.exportFolder : "",
+        workspaceExportStartDate: normalizeWorkspaceExportStartDate(parsed.workspaceExportStartDate),
+        workspaceExportEndDate: normalizeWorkspaceExportEndDate(parsed.workspaceExportEndDate),
+        workspaceExportSelectedDates: normalizeWorkspaceExportSelectedDates(
+          parsed.workspaceExportSelectedDates
+        )
       };
     }
 
-    const legacyRaw = localStorage.getItem(STORAGE_KEY);
+    const legacyRaw = readLocalStorageItem(STORAGE_KEY);
     if (legacyRaw) {
       const legacy = JSON.parse(legacyRaw) as Partial<Settings>;
       return {
-        exportFolder: typeof legacy.exportFolder === "string" ? legacy.exportFolder : ""
+        exportFolder: typeof legacy.exportFolder === "string" ? legacy.exportFolder : "",
+        workspaceExportStartDate: normalizeWorkspaceExportStartDate(legacy.workspaceExportStartDate),
+        workspaceExportEndDate: normalizeWorkspaceExportEndDate(legacy.workspaceExportEndDate),
+        workspaceExportSelectedDates: normalizeWorkspaceExportSelectedDates(
+          legacy.workspaceExportSelectedDates
+        )
       };
     }
   } catch {
@@ -95,12 +200,15 @@ const loadMachineSettings = (): MachineSettings => {
 };
 
 const saveMachineSettings = (settings: MachineSettings): void => {
-  localStorage.setItem(MACHINE_SETTINGS_KEY, JSON.stringify(settings));
+  writeLocalStorageItem(MACHINE_SETTINGS_KEY, JSON.stringify(settings), {
+    label: "machine settings",
+    suppressQuotaWarning: isTauri()
+  });
 };
 
 export const migrateSettingsCacheToSyncedShape = (): void => {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = readLocalStorageItem(STORAGE_KEY);
     if (!raw) {
       return;
     }
@@ -111,10 +219,19 @@ export const migrateSettingsCacheToSyncedShape = (): void => {
     }
 
     if (typeof parsed.exportFolder === "string" && parsed.exportFolder.trim()) {
-      saveMachineSettings({ exportFolder: parsed.exportFolder });
+      saveMachineSettings({
+        exportFolder: parsed.exportFolder,
+        workspaceExportStartDate: normalizeWorkspaceExportStartDate(parsed.workspaceExportStartDate),
+        workspaceExportEndDate: normalizeWorkspaceExportEndDate(parsed.workspaceExportEndDate),
+        workspaceExportSelectedDates: normalizeWorkspaceExportSelectedDates(
+          parsed.workspaceExportSelectedDates
+        )
+      });
     }
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSyncedSettings(normalizeSettings(parsed))));
+    writeLocalStorageItem(STORAGE_KEY, JSON.stringify(toSyncedSettings(normalizeSettings(parsed))), {
+      label: "synced settings cache"
+    });
   } catch {
     // Leave the cache alone if it cannot be parsed; normal loading will fall back safely.
   }
@@ -124,7 +241,13 @@ const normalizeSettings = (settings: Partial<Settings>): Settings => ({
   ...defaultSettings,
   ...settings,
   brlTickerList: settings.brlTickerList?.trim() ? settings.brlTickerList : DEFAULT_BRL_TICKER_LIST,
+  workspaceExportStartDate: normalizeWorkspaceExportStartDate(settings.workspaceExportStartDate),
+  workspaceExportEndDate: normalizeWorkspaceExportEndDate(settings.workspaceExportEndDate),
+  workspaceExportSelectedDates: normalizeWorkspaceExportSelectedDates(
+    settings.workspaceExportSelectedDates
+  ),
   dailyShutdownRiskUsd: Number(settings.dailyShutdownRiskUsd) || 0,
+  mppLockInSteps: normalizeMppLockInSteps(settings.mppLockInSteps),
   desktopBackupIntervalMinutes: normalizeBackupIntervalMinutes(settings.desktopBackupIntervalMinutes),
   tradeTagVisibility: {
     ...defaultSettings.tradeTagVisibility,
@@ -133,7 +256,7 @@ const normalizeSettings = (settings: Partial<Settings>): Settings => ({
 });
 
 const loadSettingsFromLocalStorage = (): Settings => {
-  const raw = localStorage.getItem(STORAGE_KEY);
+  const raw = readLocalStorageItem(STORAGE_KEY);
   if (!raw) {
     return defaultSettings;
   }
@@ -153,10 +276,15 @@ const loadSettingsFromDesktopBackup = async (): Promise<Settings | null> => {
   try {
     const settings = await invoke<Partial<Settings>>("load_app_settings");
     const normalized = normalizeSettings(settings);
-    if (normalized.exportFolder) {
-      saveMachineSettings({ exportFolder: normalized.exportFolder });
-    }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSyncedSettings(normalized)));
+    saveMachineSettings({
+      exportFolder: normalized.exportFolder,
+      workspaceExportStartDate: normalized.workspaceExportStartDate,
+      workspaceExportEndDate: normalized.workspaceExportEndDate,
+      workspaceExportSelectedDates: normalized.workspaceExportSelectedDates
+    });
+    writeLocalStorageItem(STORAGE_KEY, JSON.stringify(toSyncedSettings(normalized)), {
+      label: "synced settings cache"
+    });
     return normalized;
   } catch {
     return null;
@@ -164,7 +292,12 @@ const loadSettingsFromDesktopBackup = async (): Promise<Settings | null> => {
 };
 
 const hasMeaningfulLocalSettings = (settings: Settings, machineSettings: MachineSettings): boolean => {
-  if (machineSettings.exportFolder.trim().length > 0) {
+  if (
+    machineSettings.exportFolder.trim().length > 0 ||
+    machineSettings.workspaceExportStartDate.trim().length > 0 ||
+    machineSettings.workspaceExportEndDate.trim().length > 0 ||
+    machineSettings.workspaceExportSelectedDates.length > 0
+  ) {
     return true;
   }
 
@@ -175,28 +308,37 @@ const hasMeaningfulLocalSettings = (settings: Settings, machineSettings: Machine
 export const loadSettings = async (): Promise<Settings> => {
   const machineSettings = loadMachineSettings();
   const localSettings = loadSettingsFromLocalStorage();
-  const localRaw = localStorage.getItem(STORAGE_KEY);
+  const localRaw = readLocalStorageItem(STORAGE_KEY);
   const activeUserId = syncStores.settings.getUserId();
   const allowLegacyDesktopBackup = canUseMachineLegacyData(activeUserId);
 
   if (!isTauri()) {
     return {
       ...localSettings,
-      exportFolder: machineSettings.exportFolder
+      exportFolder: machineSettings.exportFolder,
+      workspaceExportStartDate: machineSettings.workspaceExportStartDate,
+      workspaceExportEndDate: machineSettings.workspaceExportEndDate,
+      workspaceExportSelectedDates: machineSettings.workspaceExportSelectedDates
     };
   }
 
   if (localRaw && hasMeaningfulLocalSettings(localSettings, machineSettings)) {
     return {
       ...localSettings,
-      exportFolder: machineSettings.exportFolder
+      exportFolder: machineSettings.exportFolder,
+      workspaceExportStartDate: machineSettings.workspaceExportStartDate,
+      workspaceExportEndDate: machineSettings.workspaceExportEndDate,
+      workspaceExportSelectedDates: machineSettings.workspaceExportSelectedDates
     };
   }
 
   if (!allowLegacyDesktopBackup) {
     return {
       ...localSettings,
-      exportFolder: machineSettings.exportFolder
+      exportFolder: machineSettings.exportFolder,
+      workspaceExportStartDate: machineSettings.workspaceExportStartDate,
+      workspaceExportEndDate: machineSettings.workspaceExportEndDate,
+      workspaceExportSelectedDates: machineSettings.workspaceExportSelectedDates
     };
   }
 
@@ -204,21 +346,37 @@ export const loadSettings = async (): Promise<Settings> => {
   if (desktopSettings) {
     return {
       ...desktopSettings,
-      exportFolder: desktopSettings.exportFolder || machineSettings.exportFolder
+      exportFolder: desktopSettings.exportFolder || machineSettings.exportFolder,
+      workspaceExportStartDate: desktopSettings.workspaceExportStartDate || machineSettings.workspaceExportStartDate,
+      workspaceExportEndDate: desktopSettings.workspaceExportEndDate || machineSettings.workspaceExportEndDate,
+      workspaceExportSelectedDates:
+        desktopSettings.workspaceExportSelectedDates.length > 0
+          ? desktopSettings.workspaceExportSelectedDates
+          : machineSettings.workspaceExportSelectedDates
     };
   }
 
   return {
     ...localSettings,
-    exportFolder: machineSettings.exportFolder
+    exportFolder: machineSettings.exportFolder,
+    workspaceExportStartDate: machineSettings.workspaceExportStartDate,
+    workspaceExportEndDate: machineSettings.workspaceExportEndDate,
+    workspaceExportSelectedDates: machineSettings.workspaceExportSelectedDates
   };
 };
 
 export const saveSettings = async (settings: Settings): Promise<void> => {
-  saveMachineSettings({ exportFolder: settings.exportFolder });
-  await syncStores.settings.save(toSyncedSettings(settings));
+  saveMachineSettings({
+    exportFolder: settings.exportFolder,
+    workspaceExportStartDate: settings.workspaceExportStartDate,
+    workspaceExportEndDate: settings.workspaceExportEndDate,
+    workspaceExportSelectedDates: settings.workspaceExportSelectedDates
+  });
+  const syncPromise = syncStores.settings.save(toSyncedSettings(settings));
 
   if (isTauri()) {
     await invoke("save_app_settings", { settings });
   }
+
+  await syncPromise;
 };

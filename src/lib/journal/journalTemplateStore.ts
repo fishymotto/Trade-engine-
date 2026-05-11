@@ -5,7 +5,8 @@ import {
   createMorningChecklistDoc,
   hasJournalDocContent
 } from "./journalContent";
-import { syncStores } from "../sync/syncStore";
+import { canUseMachineLegacyData, syncStores } from "../sync/syncStore";
+import { loadDesktopStoreBackup, saveDesktopStoreBackup } from "../storage/desktopStoreBackup";
 
 export interface NamedChecklistTemplate {
   id: string;
@@ -64,6 +65,24 @@ export const defaultJournalChecklistTemplates = (): JournalChecklistTemplates =>
   closingTemplates: [createTemplate("Default Closing", createClosingChecklistDoc())],
   mppTemplates: [createTemplate("Default MPP", createMppPlanDoc())]
 });
+
+const stableStringify = (value: unknown): string => {
+  if (value === null || value === undefined) {
+    return JSON.stringify(value);
+  }
+
+  if (typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
+};
 
 export const getDefaultChecklistContent = (
   templates: JournalChecklistTemplates,
@@ -164,6 +183,63 @@ export const loadJournalChecklistTemplates = (): JournalChecklistTemplates => {
   }
 };
 
+export const persistJournalChecklistTemplates = async (
+  templates: JournalChecklistTemplates
+): Promise<JournalChecklistTemplates> => {
+  const normalized = {
+    morningTemplates: ensureTemplateArray(templates.morningTemplates, "Default Morning", createMorningChecklistDoc),
+    closingTemplates: ensureTemplateArray(templates.closingTemplates, "Default Closing", createClosingChecklistDoc),
+    mppTemplates: ensureTemplateArray(templates.mppTemplates, "Default MPP", createMppPlanDoc)
+  };
+  const syncPromise = syncStores.journalChecklistTemplates.save(normalized);
+  const activeUserId = syncStores.journalChecklistTemplates.getUserId();
+
+  if (canUseMachineLegacyData(activeUserId)) {
+    try {
+      await saveDesktopStoreBackup("journal-checklist-templates", normalized);
+    } catch (error) {
+      console.warn("[journal-templates] Failed to save desktop journal checklist backup.", error);
+    }
+  }
+
+  await syncPromise;
+  return normalized;
+};
+
+export const recoverJournalChecklistTemplatesFromDesktopBackup = async (
+  localTemplates = loadJournalChecklistTemplates()
+): Promise<JournalChecklistTemplates | null> => {
+  const activeUserId = syncStores.journalChecklistTemplates.getUserId();
+  if (!canUseMachineLegacyData(activeUserId)) {
+    return null;
+  }
+
+  const desktopTemplates = await loadDesktopStoreBackup<JournalChecklistTemplates>("journal-checklist-templates");
+  if (!desktopTemplates) {
+    return null;
+  }
+
+  const normalizedDesktopTemplates = {
+    morningTemplates: ensureTemplateArray(desktopTemplates.morningTemplates, "Default Morning", createMorningChecklistDoc),
+    closingTemplates: ensureTemplateArray(desktopTemplates.closingTemplates, "Default Closing", createClosingChecklistDoc),
+    mppTemplates: ensureTemplateArray(desktopTemplates.mppTemplates, "Default MPP", createMppPlanDoc)
+  };
+
+  const localScore = stableStringify(localTemplates);
+  const desktopScore = stableStringify(normalizedDesktopTemplates);
+  const defaultScore = stableStringify(defaultJournalChecklistTemplates());
+  if (desktopScore === defaultScore || (localScore !== defaultScore && localScore === desktopScore)) {
+    return null;
+  }
+
+  if (localScore !== defaultScore && localScore !== desktopScore) {
+    return null;
+  }
+
+  await persistJournalChecklistTemplates(normalizedDesktopTemplates);
+  return normalizedDesktopTemplates;
+};
+
 export const saveJournalChecklistTemplates = (templates: JournalChecklistTemplates): void => {
-  void syncStores.journalChecklistTemplates.save(templates);
+  void persistJournalChecklistTemplates(templates);
 };

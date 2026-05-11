@@ -1,3 +1,4 @@
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { createEmptyJournalDoc } from "../journal/journalContent";
 import { defaultReviewReflectionState } from "../review/reviewTemplateStore";
 import type { JSONContent } from "@tiptap/core";
@@ -7,10 +8,18 @@ import type {
   LibraryPageRecord,
   StrongViewProperties
 } from "../../types/library";
-import { syncStores } from "../sync/syncStore";
+import { canUseMachineLegacyData, syncStores } from "../sync/syncStore";
+import { writeLocalStorageItem } from "../storage/localStorage";
 
 const SEED_VERSION_KEY = "trade-engine-library-seed-version";
 const CURRENT_SEED_VERSION = "notion-book-club-v7";
+
+const persistLibrarySeedVersion = (): void => {
+  writeLocalStorageItem(SEED_VERSION_KEY, CURRENT_SEED_VERSION, {
+    label: "library seed version",
+    suppressQuotaWarning: true
+  });
+};
 
 export const libraryCollections: LibraryCollectionDefinition[] = [
   {
@@ -71,6 +80,8 @@ const TICKER_GROUP_PROPERTY_KEYS = {
 const STRONG_VIEW_PROPERTY_KEYS = {
   ticker: "Ticker",
   date: "Date",
+  keyLevelUp: "Key Level Up",
+  keyLevelDown: "Key Level Down",
   bias: "Bias",
   atr: "ATR",
   rvol: "RVOL",
@@ -910,6 +921,8 @@ const createReviewTemplateProperties = (): NonNullable<LibraryPageRecord["proper
 const createStrongViewProperties = (): StrongViewProperties => ({
   ticker: "",
   date: "",
+  keyLevelUp: "",
+  keyLevelDown: "",
   bias: "",
   atr: "",
   rvol: "",
@@ -1069,6 +1082,14 @@ const normalizeLibraryPage = (page: Partial<LibraryPageRecord>): LibraryPageReco
         typeof normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.date] === "string"
           ? normalizedPage.properties[STRONG_VIEW_PROPERTY_KEYS.date]
           : defaults.date,
+      [STRONG_VIEW_PROPERTY_KEYS.keyLevelUp]:
+        typeof normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.keyLevelUp] === "string"
+          ? normalizedPage.properties[STRONG_VIEW_PROPERTY_KEYS.keyLevelUp]
+          : defaults.keyLevelUp,
+      [STRONG_VIEW_PROPERTY_KEYS.keyLevelDown]:
+        typeof normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.keyLevelDown] === "string"
+          ? normalizedPage.properties[STRONG_VIEW_PROPERTY_KEYS.keyLevelDown]
+          : defaults.keyLevelDown,
       [STRONG_VIEW_PROPERTY_KEYS.bias]:
         typeof normalizedPage.properties?.[STRONG_VIEW_PROPERTY_KEYS.bias] === "string"
           ? normalizedPage.properties[STRONG_VIEW_PROPERTY_KEYS.bias]
@@ -1121,35 +1142,143 @@ const normalizeLibraryPage = (page: Partial<LibraryPageRecord>): LibraryPageReco
   return normalizedPage;
 };
 
+const normalizeLibraryPages = (value: unknown): LibraryPageRecord[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.map((page) => normalizeLibraryPage(page as Partial<LibraryPageRecord>));
+};
+
+const getSerializedSize = (value: unknown): number => {
+  try {
+    return JSON.stringify(value).length;
+  } catch {
+    return 0;
+  }
+};
+
+const stableStringify = (value: unknown): string => {
+  if (value === null || value === undefined) {
+    return JSON.stringify(value);
+  }
+
+  if (typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
+};
+
+const isDefaultLibraryPages = (pages: LibraryPageRecord[]): boolean =>
+  stableStringify(pages) === stableStringify(createDefaultLibraryPages());
+
+const getLatestTimestamp = (pages: LibraryPageRecord[]): number =>
+  pages.reduce((latest, page) => {
+    const parsed = Date.parse(page.updatedAt || page.createdAt || "");
+    return Number.isFinite(parsed) ? Math.max(latest, parsed) : latest;
+  }, 0);
+
+const shouldUseDesktopLibraryPagesForRecovery = (
+  localPages: LibraryPageRecord[],
+  desktopPages: LibraryPageRecord[]
+): boolean => {
+  if (desktopPages.length === 0) {
+    return false;
+  }
+
+  if (isDefaultLibraryPages(localPages)) {
+    return true;
+  }
+
+  if (localPages.length === 0) {
+    return true;
+  }
+
+  if (desktopPages.length > localPages.length) {
+    return true;
+  }
+
+  const localSize = getSerializedSize(localPages);
+  const desktopSize = getSerializedSize(desktopPages);
+  if (desktopSize > localSize) {
+    return true;
+  }
+
+  return getLatestTimestamp(desktopPages) > getLatestTimestamp(localPages) && desktopSize >= localSize;
+};
+
+export const loadLibraryPagesFromDesktopBackup = async (): Promise<LibraryPageRecord[] | null> => {
+  if (!isTauri()) {
+    return null;
+  }
+
+  try {
+    const parsed = await invoke<unknown>("load_library_pages");
+    const normalizedPages = normalizeLibraryPages(parsed);
+    return normalizedPages.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  } catch {
+    return null;
+  }
+};
+
+export const recoverLibraryPagesFromDesktopBackup = async (
+  localPages: LibraryPageRecord[]
+): Promise<LibraryPageRecord[] | null> => {
+  const activeUserId = syncStores.libraryPages.getUserId();
+  if (!canUseMachineLegacyData(activeUserId)) {
+    return null;
+  }
+
+  const desktopPages = await loadLibraryPagesFromDesktopBackup();
+  if (!desktopPages || !shouldUseDesktopLibraryPagesForRecovery(localPages, desktopPages)) {
+    return null;
+  }
+
+  return desktopPages;
+};
+
 export const loadLibraryPages = (): LibraryPageRecord[] => {
   const parsed = syncStores.libraryPages.load<unknown>(null);
   if (!parsed) {
-    localStorage.setItem(SEED_VERSION_KEY, CURRENT_SEED_VERSION);
+    persistLibrarySeedVersion();
     return createDefaultLibraryPages();
   }
 
   try {
-    if (!Array.isArray(parsed)) {
-      return createDefaultLibraryPages();
-    }
-
-    const normalizedPages = parsed.map(normalizeLibraryPage);
-    localStorage.setItem(SEED_VERSION_KEY, CURRENT_SEED_VERSION);
-
+    const normalizedPages = normalizeLibraryPages(parsed);
     if (normalizedPages.length === 0) {
       return createDefaultLibraryPages();
     }
+    persistLibrarySeedVersion();
 
     return normalizedPages.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   } catch {
-    localStorage.setItem(SEED_VERSION_KEY, CURRENT_SEED_VERSION);
+    persistLibrarySeedVersion();
     return createDefaultLibraryPages();
   }
 };
 
-export const saveLibraryPages = (pages: LibraryPageRecord[]): void => {
+export const saveLibraryPages = async (pages: LibraryPageRecord[]): Promise<void> => {
   const sorted = [...pages].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  void syncStores.libraryPages.save(sorted);
+  const syncPromise = syncStores.libraryPages.save(sorted);
+  const activeUserId = syncStores.libraryPages.getUserId();
+
+  if (isTauri() && canUseMachineLegacyData(activeUserId)) {
+    try {
+      await invoke("save_library_pages", { pages: sorted });
+    } catch (error) {
+      console.warn("[library] Failed to save desktop library backup.", error);
+    }
+  }
+
+  await syncPromise;
 
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent("trade-engine-library-pages-updated", { detail: { pages: sorted } }));
@@ -1316,6 +1445,8 @@ export const createLibraryStrongViewRow = (): LibraryPageRecord => {
     properties: {
       [STRONG_VIEW_PROPERTY_KEYS.ticker]: defaults.ticker,
       [STRONG_VIEW_PROPERTY_KEYS.date]: defaults.date,
+      [STRONG_VIEW_PROPERTY_KEYS.keyLevelUp]: defaults.keyLevelUp,
+      [STRONG_VIEW_PROPERTY_KEYS.keyLevelDown]: defaults.keyLevelDown,
       [STRONG_VIEW_PROPERTY_KEYS.bias]: defaults.bias,
       [STRONG_VIEW_PROPERTY_KEYS.atr]: defaults.atr,
       [STRONG_VIEW_PROPERTY_KEYS.rvol]: defaults.rvol,

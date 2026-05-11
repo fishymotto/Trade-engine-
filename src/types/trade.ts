@@ -16,10 +16,14 @@ export interface Settings {
   notionToken: string;
   notionDatabaseUrl: string;
   exportFolder: string;
+  workspaceExportStartDate: string;
+  workspaceExportEndDate: string;
+  workspaceExportSelectedDates: string[];
   twelveDataApiKey: string;
   brlToUsdRate: number;
   brlTickerList: string;
   dailyShutdownRiskUsd: number;
+  mppLockInSteps: number[];
   desktopBackupIntervalMinutes: number;
   tradeTagVisibility: TradeTagVisibilitySettings;
 }

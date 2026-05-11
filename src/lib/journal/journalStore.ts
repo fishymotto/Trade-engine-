@@ -363,6 +363,89 @@ const shouldReplacePage = (existing: JournalPageRecord, candidate: JournalPageRe
   return getTimestamp(candidate.updatedAt) >= getTimestamp(existing.updatedAt);
 };
 
+type LegacyCarryForwardField = "inPlayStocksContent" | "traderReachOutsContent";
+
+const findLegacyCarryForwardSourcePage = (
+  pages: JournalPageRecord[],
+  tradeDate: string,
+  field: LegacyCarryForwardField
+): JournalPageRecord | null => {
+  const priorPages = pages
+    .filter((page) => page.tradeDate < tradeDate)
+    .sort((left, right) => right.tradeDate.localeCompare(left.tradeDate));
+
+  const withContent = priorPages.find((page) => hasJournalDocContent(page[field]));
+  return withContent ?? priorPages[0] ?? null;
+};
+
+const isLikelyUntouchedGeneratedPage = (page: JournalPageRecord): boolean => {
+  const createdAt = getTimestamp(page.createdAt);
+  const updatedAt = getTimestamp(page.updatedAt);
+
+  if (createdAt <= 0 || updatedAt <= 0 || updatedAt > createdAt + 1000) {
+    return false;
+  }
+
+  if (page.screenshotUrls.length > 0) {
+    return false;
+  }
+
+  if (
+    page.dayGrade.trim().length > 0 ||
+    page.marketRegime.trim().length > 0 ||
+    page.mpp.trim().length > 0 ||
+    page.sleepHours.trim().length > 0 ||
+    page.sleepScore.trim().length > 0 ||
+    page.morningMood.trim().length > 0 ||
+    page.openMood.trim().length > 0 ||
+    page.afternoonMood.trim().length > 0 ||
+    page.closeMood.trim().length > 0
+  ) {
+    return false;
+  }
+
+  return (
+    isEmptyJournalDoc(page.morningContent) &&
+    isEmptyJournalDoc(page.closingContent) &&
+    isEmptyJournalDoc(page.notesContent)
+  );
+};
+
+const stripLegacyCarriedForwardSections = (pages: JournalPageRecord[]): JournalPageRecord[] => {
+  const pagesAsc = [...pages].sort((left, right) => left.tradeDate.localeCompare(right.tradeDate));
+  let changed = false;
+
+  const nextPages = pagesAsc.map((page, index) => {
+    if (!isLikelyUntouchedGeneratedPage(page)) {
+      return page;
+    }
+
+    const priorPages = pagesAsc.slice(0, index);
+    let nextPage = page;
+
+    for (const field of ["inPlayStocksContent", "traderReachOutsContent"] as const) {
+      const sourcePage = findLegacyCarryForwardSourcePage(priorPages, page.tradeDate, field);
+      if (!sourcePage || !hasJournalDocContent(sourcePage[field]) || !hasJournalDocContent(page[field])) {
+        continue;
+      }
+
+      if (stableStringify(sourcePage[field]) !== stableStringify(page[field])) {
+        continue;
+      }
+
+      nextPage = {
+        ...nextPage,
+        [field]: createEmptyJournalDoc()
+      };
+      changed = true;
+    }
+
+    return nextPage;
+  });
+
+  return changed ? nextPages : pages;
+};
+
 const normalizeJournalPage = (
   page: JournalPageRecord & {
     content?: string;
@@ -486,7 +569,7 @@ export const dedupeJournalPages = (pages: JournalPageRecord[]): JournalPageRecor
     }
   }
 
-  return Array.from(dedupedByDate.values()).sort((left, right) =>
+  return stripLegacyCarriedForwardSections(Array.from(dedupedByDate.values())).sort((left, right) =>
     right.tradeDate.localeCompare(left.tradeDate)
   );
 };
@@ -512,10 +595,11 @@ export const loadJournalPages = async (): Promise<JournalPageRecord[]> => {
 
 export const saveJournalPages = async (pages: JournalPageRecord[]): Promise<void> => {
   const dedupedPages = dedupeJournalPages(pages);
-  await syncStores.journalPages.save(dedupedPages);
+  const syncPromise = syncStores.journalPages.save(dedupedPages);
 
   const activeUserId = syncStores.journalPages.getUserId();
   if (!canUseMachineLegacyData(activeUserId)) {
+    await syncPromise;
     return;
   }
 
@@ -532,4 +616,6 @@ export const saveJournalPages = async (pages: JournalPageRecord[]): Promise<void
       console.warn("[journal] Failed to save desktop journal backup.", error);
     }
   }
+
+  await syncPromise;
 };

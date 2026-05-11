@@ -34,6 +34,8 @@ export interface LibraryPageRecord {
 export interface StrongViewProperties {
   ticker: string;
   date: string;
+  keyLevelUp: string;
+  keyLevelDown: string;
   bias: string;
   atr: string;
   rvol: string;

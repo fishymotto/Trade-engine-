@@ -54,9 +54,15 @@ const insertDefaultTable = (editor: Editor) => {
 
 export const JournalBlockActionsMenu = ({ editor, appearance = "default" }: JournalBlockActionsMenuProps) => {
   const [isOpen, setIsOpen] = useState(false);
+  const [isTableSelectionActive, setIsTableSelectionActive] = useState(() => editor.isActive("table"));
   const [query, setQuery] = useState("");
   const rootRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  const closeMenu = useCallback(() => {
+    setIsOpen(false);
+    setQuery("");
+  }, []);
 
   const duplicateCurrentBlock = useCallback((nextEditor: Editor) => {
     const range = getCurrentBlockRange(nextEditor);
@@ -88,6 +94,10 @@ export const JournalBlockActionsMenu = ({ editor, appearance = "default" }: Jour
     }
 
     void navigator.clipboard.writeText(copiedText);
+  }, []);
+
+  const deleteCurrentTable = useCallback((nextEditor: Editor) => {
+    nextEditor.chain().focus().deleteTable().run();
   }, []);
 
   const blockActions = useMemo<BlockActionItem[]>(
@@ -221,9 +231,7 @@ export const JournalBlockActionsMenu = ({ editor, appearance = "default" }: Jour
         label: "Table: Delete Table",
         description: "Remove the entire current table",
         keywords: ["table", "delete", "remove"],
-        run: (nextEditor) => {
-          nextEditor.chain().focus().deleteTable().run();
-        }
+        run: deleteCurrentTable
       },
       {
         key: "color-blue",
@@ -265,7 +273,7 @@ export const JournalBlockActionsMenu = ({ editor, appearance = "default" }: Jour
         run: deleteCurrentBlock
       }
     ],
-    [copyCurrentBlockText, deleteCurrentBlock, duplicateCurrentBlock]
+    [copyCurrentBlockText, deleteCurrentBlock, deleteCurrentTable, duplicateCurrentBlock]
   );
 
   const filteredActions = useMemo(() => {
@@ -315,20 +323,56 @@ export const JournalBlockActionsMenu = ({ editor, appearance = "default" }: Jour
     };
   }, [isOpen]);
 
+  useEffect(() => {
+    const syncTableSelectionState = () => {
+      setIsTableSelectionActive(editor.isActive("table"));
+    };
+
+    syncTableSelectionState();
+    editor.on("selectionUpdate", syncTableSelectionState);
+    editor.on("transaction", syncTableSelectionState);
+    editor.on("focus", syncTableSelectionState);
+    editor.on("blur", syncTableSelectionState);
+
+    return () => {
+      editor.off("selectionUpdate", syncTableSelectionState);
+      editor.off("transaction", syncTableSelectionState);
+      editor.off("focus", syncTableSelectionState);
+      editor.off("blur", syncTableSelectionState);
+    };
+  }, [editor]);
+
   return (
     <div
       ref={rootRef}
       className={`journal-block-actions${appearance === "notion" ? " journal-block-actions-notion" : ""}`}
     >
-      <button
-        type="button"
-        className="journal-block-actions-trigger"
-        aria-label="Block actions"
-        aria-expanded={isOpen}
-        onClick={() => setIsOpen((current) => !current)}
-      >
-        + Actions
-      </button>
+      <div className="journal-block-actions-bar">
+        {isTableSelectionActive ? (
+          <button
+            type="button"
+            className="journal-block-actions-trigger journal-block-actions-trigger-danger"
+            aria-label="Remove current table"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => {
+              deleteCurrentTable(editor);
+              closeMenu();
+            }}
+          >
+            Remove Table
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="journal-block-actions-trigger"
+          aria-label="Block actions"
+          aria-expanded={isOpen}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => setIsOpen((current) => !current)}
+        >
+          + Actions
+        </button>
+      </div>
       {isOpen ? (
         <div className="journal-block-actions-menu">
           <input
@@ -348,10 +392,10 @@ export const JournalBlockActionsMenu = ({ editor, appearance = "default" }: Jour
                   type="button"
                   role="menuitem"
                   className="journal-block-actions-item"
+                  onMouseDown={(event) => event.preventDefault()}
                   onClick={() => {
                     item.run(editor);
-                    setQuery("");
-                    setIsOpen(false);
+                    closeMenu();
                   }}
                 >
                   <strong>{item.label}</strong>

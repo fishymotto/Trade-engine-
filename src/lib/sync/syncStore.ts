@@ -191,12 +191,16 @@ const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
 
 const LOSSY_MERGE_GUARDED_TABLES = new Set([
   'user_journal_pages',
+  'user_library_pages',
+  'user_playbooks',
   'user_trade_reviews',
   'user_trade_tag_overrides',
 ]);
 
 const LOSSY_REMOTE_WRITE_GUARDED_TABLES = new Set([
   'user_journal_pages',
+  'user_library_pages',
+  'user_playbooks',
   'user_trade_reviews',
   'user_trade_tag_overrides',
 ]);
@@ -486,6 +490,10 @@ export class HybridSyncStore {
   private clearMemoryValue(): void {
     this.memoryValue = undefined;
     this.hasMemoryValue = false;
+  }
+
+  resetMemory(): void {
+    this.clearMemoryValue();
   }
 
   setUserId(userId?: string): void {
@@ -1160,4 +1168,10 @@ export const syncStores = {
     tableName: 'user_review_templates',
     storageKey: 'trade-engine-review-templates',
   }),
+};
+
+export const resetAllSyncStoreMemory = (): void => {
+  Object.values(syncStores).forEach((store) => {
+    store.resetMemory();
+  });
 };

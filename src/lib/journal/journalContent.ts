@@ -135,33 +135,24 @@ export const hasJournalDocContent = (content?: JSONContent | null): boolean => {
     return false;
   }
 
-  return content.content.some((node) => {
-    if (node.type === "horizontalRule") {
+  const nodeHasMeaningfulContent = (node: JSONContent): boolean => {
+    if ("text" in node && typeof node.text === "string" && node.text.trim().length > 0) {
       return true;
     }
 
-    const textContent = Array.isArray(node.content)
-      ? node.content
-          .flatMap((child) => ("text" in child && typeof child.text === "string" ? [child.text] : []))
-          .join("")
-          .trim()
-      : "";
-
-    if (textContent) {
+    if (node.type === "horizontalRule" || node.type === "image") {
       return true;
     }
 
-    if (Array.isArray(node.content)) {
-      return node.content.some((child) => {
-        if (child.type === "taskItem" || child.type === "listItem") {
-          return true;
-        }
-        return false;
-      });
+    if (node.type === "taskItem" || node.type === "listItem") {
+      return true;
     }
 
-    return false;
-  });
+    const children = Array.isArray(node.content) ? node.content : [];
+    return children.some((child) => nodeHasMeaningfulContent(child));
+  };
+
+  return content.content.some((node) => nodeHasMeaningfulContent(node));
 };
 
 export const journalBlocksToDoc = (blocks: JournalBlock[]): JSONContent => {

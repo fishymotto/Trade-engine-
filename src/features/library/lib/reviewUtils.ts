@@ -294,6 +294,35 @@ export const getReviewRangesFromTrades = (
   });
 };
 
+export const getPreviousReviewRange = (
+  period: ReviewPeriod,
+  rangeStart: string,
+  rangeEnd: string
+): { start: string; end: string } | null => {
+  const startDate = parseIsoLocalDate(rangeStart);
+  const endDate = parseIsoLocalDate(rangeEnd);
+  if (!startDate || !endDate) {
+    return null;
+  }
+
+  if (period === "weekly") {
+    return {
+      start: formatIsoDate(addDays(startDate, -7)),
+      end: formatIsoDate(addDays(endDate, -7))
+    };
+  }
+
+  const previousMonthStart = new Date(startDate.getFullYear(), startDate.getMonth() - 1, 1);
+  previousMonthStart.setHours(0, 0, 0, 0);
+  const previousMonthEnd = new Date(startDate.getFullYear(), startDate.getMonth(), 0);
+  previousMonthEnd.setHours(0, 0, 0, 0);
+
+  return {
+    start: formatIsoDate(previousMonthStart),
+    end: formatIsoDate(previousMonthEnd)
+  };
+};
+
 export const getReviewTitleForRange = (period: ReviewPeriod, rangeStart: string, rangeEnd: string): string => {
   const startDate = parseIsoLocalDate(rangeStart);
 

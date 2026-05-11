@@ -1,7 +1,8 @@
-﻿import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DateFilterPopover } from "../../../components/DateFilterPopover";
 import { FilterSelect } from "../../../components/FilterSelect";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
+import { resolveWorkspaceAttachmentSrc } from "../../../lib/workspace/workspaceAttachmentClient";
 import type { JournalPageRecord, JournalScreenshotTagRecord, JournalScreenshotTradeLink } from "../../../types/journal";
 import type { GroupedTrade } from "../../../types/trade";
 
@@ -24,6 +25,11 @@ type ChartLibraryEntry = {
   linkedTrades: GroupedTrade[];
   primaryTrade: GroupedTrade | null;
   status: ChartEntryStatus;
+};
+
+type ExpandedChartScreenshot = {
+  screenshotUrl: string;
+  title: string;
 };
 
 const TRADE_LINK_SEPARATOR = "::";
@@ -232,8 +238,29 @@ export const ChartLibraryPanel = ({
   const [startDateFilter, setStartDateFilter] = useState("");
   const [endDateFilter, setEndDateFilter] = useState("");
   const [sortDirection, setSortDirection] = useState<"desc" | "asc">("desc");
+  const [expandedScreenshot, setExpandedScreenshot] = useState<ExpandedChartScreenshot | null>(null);
+  const [isExpandedScreenshotZoomed, setIsExpandedScreenshotZoomed] = useState(false);
 
   const entries = useMemo(() => buildChartEntries(journalPages, trades), [journalPages, trades]);
+
+  useEffect(() => {
+    if (!expandedScreenshot) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setExpandedScreenshot(null);
+        setIsExpandedScreenshotZoomed(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [expandedScreenshot]);
 
   const availableDates = useMemo(
     () =>
@@ -307,6 +334,11 @@ export const ChartLibraryPanel = ({
     statusFilter !== "all" ||
     startDateFilter.length > 0 ||
     endDateFilter.length > 0;
+
+  const closeExpandedScreenshot = () => {
+    setExpandedScreenshot(null);
+    setIsExpandedScreenshotZoomed(false);
+  };
 
   return (
     <div className="chart-library-panel">
@@ -406,6 +438,7 @@ export const ChartLibraryPanel = ({
             const entryDate = entry.taggedDate || entry.journalTradeDate;
             const titleTicker = entry.tickers[0] ?? entry.primaryTrade?.symbol ?? "Chart";
             const linkedTradeCount = entry.linkedTrades.length;
+            const screenshotSrc = resolveWorkspaceAttachmentSrc(entry.screenshotUrl);
 
             return (
               <article key={entry.id} className="chart-library-card">
@@ -424,9 +457,16 @@ export const ChartLibraryPanel = ({
                 <button
                   type="button"
                   className="chart-library-preview"
-                  onClick={() => window.open(entry.screenshotUrl, "_blank", "noopener,noreferrer")}
+                  onClick={() => {
+                    setExpandedScreenshot({
+                      screenshotUrl: entry.screenshotUrl,
+                      title: titleTicker
+                    });
+                    setIsExpandedScreenshotZoomed(false);
+                  }}
+                  aria-label={`Open full ${titleTicker} chart screenshot`}
                 >
-                  <img src={entry.screenshotUrl} alt={`${titleTicker} chart screenshot`} loading="lazy" />
+                  <img src={screenshotSrc} alt={`${titleTicker} chart screenshot`} loading="lazy" />
                 </button>
 
                 <div className="chart-library-chip-group">
@@ -467,6 +507,41 @@ export const ChartLibraryPanel = ({
           })}
         </div>
       )}
+
+      {expandedScreenshot ? (
+        <div
+          className="journal-lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`${expandedScreenshot.title} chart screenshot`}
+          onClick={closeExpandedScreenshot}
+        >
+          <div className="journal-lightbox-content" onClick={(event) => event.stopPropagation()}>
+            <button type="button" className="mini-action mini-action-soft" onClick={closeExpandedScreenshot} autoFocus>
+              Close
+            </button>
+            <span className="journal-lightbox-hint">
+              {isExpandedScreenshotZoomed ? "Click image to reset zoom." : "Click image to zoom in."}
+            </span>
+            <div className="journal-lightbox-image-frame">
+              <img
+                className={`journal-lightbox-image${isExpandedScreenshotZoomed ? " is-zoomed" : ""}`}
+                src={resolveWorkspaceAttachmentSrc(expandedScreenshot.screenshotUrl)}
+                alt={`Expanded ${expandedScreenshot.title} chart screenshot`}
+                role="button"
+                tabIndex={0}
+                onClick={() => setIsExpandedScreenshotZoomed((current) => !current)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setIsExpandedScreenshotZoomed((current) => !current);
+                  }
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };

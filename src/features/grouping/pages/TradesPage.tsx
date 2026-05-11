@@ -11,6 +11,7 @@ import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
 import { TradeExecutionsTable } from "../components/TradeExecutionsTable";
 import { tradeTagFieldLabels, tradeTagFields, tradeTagOptionsByField as defaultTradeTagOptionsByField } from "../../../lib/trades/tradeTagCatalog";
 import { createEmptyJournalDoc } from "../../../lib/journal/journalContent";
+import { saveWorkspaceInlineImage } from "../../../lib/workspace/workspaceAttachmentClient";
 import type { ChartInterval, HistoricalBarSet } from "../../../types/chart";
 import type { JSONContent } from "@tiptap/core";
 import type { TradeReviewRecord } from "../../../types/review";
@@ -18,7 +19,6 @@ import type { GroupedTrade } from "../../../types/trade";
 import type { EditableTradeRow, EditableTradeTagField } from "../../../types/tradeTags";
 
 interface TradesPageProps {
-  fileName: string;
   trades: EditableTradeRow[];
   databaseTrades: EditableTradeRow[];
   externalTradeDateFilterStart?: string;
@@ -32,6 +32,7 @@ interface TradesPageProps {
   externalSelectedTradeRequestId?: number;
   reviews: TradeReviewRecord[];
   historicalBarSets: HistoricalBarSet[];
+  historicalBarSetsLoaded: boolean;
   reviewChartInterval: ChartInterval;
   dayChartInterval: ChartInterval;
   tagOptionsByField: Record<EditableTradeTagField, string[]>;
@@ -66,7 +67,23 @@ const formatActiveDateRange = (startValue: string, endValue: string): string => 
   return "All saved sessions";
 };
 
-const intradayChartIntervals: ChartInterval[] = ["1m", "5m", "15m", "1h"];
+const buildTradeBarKey = (trade: Pick<GroupedTrade, "symbol" | "tradeDate">): string =>
+  `${trade.symbol}__${trade.tradeDate}`;
+
+const formatSignedMoney = (value: number): string => `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`;
+
+const formatSignedDecimal = (value: number, digits = 4): string =>
+  `${value >= 0 ? "+" : "-"}${Math.abs(value).toFixed(digits)}`;
+
+const summarizeTaggedValues = (values: string[], emptyLabel = "None"): string => {
+  const normalizedValues = values.map((value) => value.trim()).filter((value) => value.length > 0);
+  if (normalizedValues.length === 0) {
+    return emptyLabel;
+  }
+
+  return `${normalizedValues[0]}${normalizedValues.length > 1 ? ` +${normalizedValues.length - 1}` : ""}`;
+};
+
 const secondaryChartIntervals: ChartInterval[] = ["1m", "5m", "15m", "1h", "1D", "1W"];
 const defaultChartLayerVisibility: TradeChartLayerVisibility = {
   entry: true,
@@ -125,7 +142,6 @@ const getReviewNotesContent = (review: TradeReviewRecord | null | undefined): JS
 };
 
 export const TradesPage = ({
-  fileName,
   trades,
   databaseTrades,
   externalTradeDateFilterStart = "",
@@ -139,6 +155,7 @@ export const TradesPage = ({
   externalSelectedTradeRequestId = 0,
   reviews,
   historicalBarSets,
+  historicalBarSetsLoaded,
   reviewChartInterval,
   dayChartInterval,
   tagOptionsByField,
@@ -167,6 +184,7 @@ export const TradesPage = ({
   const [selectedGameFilter, setSelectedGameFilter] = useState(externalGameFilter);
   const [selectedExecutionFilter, setSelectedExecutionFilter] = useState(externalExecutionFilter);
   const [chartLayerVisibility, setChartLayerVisibility] = useState<TradeChartLayerVisibility>(defaultChartLayerVisibility);
+  const [showAllTickerDayTrades, setShowAllTickerDayTrades] = useState(false);
   const [showUntaggedPlaybookOnly, setShowUntaggedPlaybookOnly] = useState(false);
   const [showUntaggedMistakesOnly, setShowUntaggedMistakesOnly] = useState(false);
   const [bulkField, setBulkField] = useState<EditableTradeTagField>("playbook");
@@ -174,7 +192,9 @@ export const TradesPage = ({
   const [bulkEditorSearchQuery, setBulkEditorSearchQuery] = useState("");
   const [quickTagEditorField, setQuickTagEditorField] = useState<EditableTradeTagField | null>(null);
   const [quickTagEditorSearchQuery, setQuickTagEditorSearchQuery] = useState("");
+  const [autoFetchingTradeKey, setAutoFetchingTradeKey] = useState<string | null>(null);
   const barsInputRef = useRef<HTMLInputElement | null>(null);
+  const autoFetchAttemptedKeysRef = useRef<Set<string>>(new Set());
   const activeTagFields = useMemo(
     () => tradeTagFields.filter((field) => tagOptionsByField[field].length > 0),
     [tagOptionsByField]
@@ -190,12 +210,20 @@ export const TradesPage = ({
     }),
     []
   );
+  const createTradeReviewImageInsertHandler = (tradeId: string) => async (file: File) =>
+    saveWorkspaceInlineImage({
+      category: "trade-review-inline-images",
+      recordId: tradeId,
+      slotKey: "review-notes",
+      file
+    });
 
   useEffect(() => {
     if (activeTagFields.length > 0 && !activeTagFields.includes(bulkField)) {
       setBulkField(activeTagFields[0]);
     }
   }, [activeTagFields, bulkField]);
+
   const lastHandledExternalSelectionRef = useRef<number | null>(null);
 
   const getQuickTagValue = (trade: EditableTradeRow, field: EditableTradeTagField): string | string[] => {
@@ -463,6 +491,11 @@ export const TradesPage = ({
     [reviews, selectedTradeId]
   );
 
+  const selectedTradeBarKey = useMemo(
+    () => (selectedTrade ? buildTradeBarKey(selectedTrade) : ""),
+    [selectedTrade]
+  );
+
   const selectedBarSet = useMemo(() => {
     if (!selectedTrade) {
       return null;
@@ -477,10 +510,101 @@ export const TradesPage = ({
     );
   }, [historicalBarSets, selectedTrade]);
 
-  const workspaceHint =
-    trades.length > 0
-      ? `Current staged file: ${fileName || "Unsaved workspace"}`
-      : `Saved trade library: ${databaseTrades.length} grouped trades`;
+  useEffect(() => {
+    if (!selectedBarSet) {
+      return;
+    }
+
+    autoFetchAttemptedKeysRef.current.add(selectedBarSet.key);
+  }, [selectedBarSet]);
+
+  useEffect(() => {
+    if (
+      !historicalBarSetsLoaded ||
+      !selectedTrade ||
+      !hasTwelveDataApiKey ||
+      busy ||
+      selectedBarSet ||
+      autoFetchAttemptedKeysRef.current.has(selectedTradeBarKey)
+    ) {
+      return;
+    }
+
+    autoFetchAttemptedKeysRef.current.add(selectedTradeBarKey);
+    let isCancelled = false;
+
+    const autoFetchBars = async () => {
+      setAutoFetchingTradeKey(selectedTradeBarKey);
+
+      try {
+        await onFetchHistoricalBars(selectedTrade);
+      } finally {
+        if (!isCancelled) {
+          setAutoFetchingTradeKey((current) => (current === selectedTradeBarKey ? null : current));
+        }
+      }
+    };
+
+    void autoFetchBars();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [
+    busy,
+    hasTwelveDataApiKey,
+    historicalBarSetsLoaded,
+    onFetchHistoricalBars,
+    selectedBarSet,
+    selectedTrade,
+    selectedTradeBarKey
+  ]);
+  const sameTickerDayTrades = useMemo(() => {
+    if (!selectedTrade) {
+      return [];
+    }
+
+    const matchingTrades = databaseTrades.filter(
+      (trade) => trade.tradeDate === selectedTrade.tradeDate && trade.symbol === selectedTrade.symbol
+    );
+
+    if (!matchingTrades.some((trade) => trade.id === selectedTrade.id)) {
+      matchingTrades.push(selectedTrade);
+    }
+
+    return matchingTrades.sort(
+      (left, right) =>
+        left.openTime.localeCompare(right.openTime) ||
+        left.closeTime.localeCompare(right.closeTime) ||
+        left.name.localeCompare(right.name)
+    );
+  }, [databaseTrades, selectedTrade]);
+  const hasMultipleTickerDayTrades = sameTickerDayTrades.length > 1;
+  const hasAttemptedAutoFetch =
+    selectedTradeBarKey.length > 0 && autoFetchAttemptedKeysRef.current.has(selectedTradeBarKey);
+  const isAutoFetchingBars = autoFetchingTradeKey === selectedTradeBarKey;
+  const reviewChartBars = useMemo(() => {
+    if (!selectedBarSet) {
+      return [];
+    }
+
+    return reviewChartInterval === "1D" || reviewChartInterval === "1W"
+      ? (selectedBarSet.dailyBars ?? selectedBarSet.bars)
+      : selectedBarSet.bars;
+  }, [reviewChartInterval, selectedBarSet]);
+  const chartMarkerTrades = useMemo(() => {
+    if (!selectedTrade) {
+      return [];
+    }
+
+    return showAllTickerDayTrades ? sameTickerDayTrades : [selectedTrade];
+  }, [sameTickerDayTrades, selectedTrade, showAllTickerDayTrades]);
+
+  useEffect(() => {
+    if (!hasMultipleTickerDayTrades && showAllTickerDayTrades) {
+      setShowAllTickerDayTrades(false);
+    }
+  }, [hasMultipleTickerDayTrades, showAllTickerDayTrades]);
 
   const filteredSymbolCount = useMemo(
     () => new Set(filteredTrades.map((trade) => trade.symbol)).size,
@@ -577,6 +701,14 @@ export const TradesPage = ({
           : selectedSymbolFilter !== "all"
             ? `Other trades for ${selectedSymbolFilter} in the current slice.`
             : "";
+  const selectedTradeGatewaySummary = selectedTrade ? summarizeTaggedValues(selectedTrade.gateways) : "None";
+  const selectedTradeMistakeDetails =
+    selectedTrade && selectedTrade.mistakes.length > 0
+      ? selectedTrade.mistakes.join(", ")
+      : "No mistakes tagged";
+  const selectedTradeFillCount = selectedTrade
+    ? selectedTrade.openingExecutions.length + selectedTrade.closingExecutions.length
+    : 0;
 
   return (
     <main className="page-shell">
@@ -710,67 +842,38 @@ export const TradesPage = ({
       </PageHero>
       <section className="trades-review-grid trades-review-grid-advanced">
         <article className="placeholder-panel chart-panel chart-panel-wide">
+          <input
+            ref={barsInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            className="drop-zone-input"
+            onChange={(event) => {
+              const file = event.target.files?.item(0);
+              if (file && selectedTrade) {
+                void onImportHistoricalBars(selectedTrade, file);
+              }
+
+              event.currentTarget.value = "";
+            }}
+          />
           <div className="chart-panel-header">
             <div className="panel-header">
               <WorkspaceIcon icon="trades" alt="Chart area icon" className="panel-header-icon" />
-              <h2>Chart Area</h2>
-            </div>
-            <div className="chart-panel-actions">
-              <input
-                ref={barsInputRef}
-                type="file"
-                accept=".csv,text/csv"
-                className="drop-zone-input"
-                onChange={(event) => {
-                  const file = event.target.files?.item(0);
-                  if (file && selectedTrade) {
-                    void onImportHistoricalBars(selectedTrade, file);
-                  }
-
-                  event.currentTarget.value = "";
-                }}
-              />
-              <button
-                type="button"
-                className="mini-action"
-                disabled={!selectedTrade || busy || !hasTwelveDataApiKey}
-                onClick={() => selectedTrade && void onFetchHistoricalBars(selectedTrade)}
-              >
-                <WorkspaceIcon icon="reports" alt="Fetch bars icon" className="mini-action-icon" />
-                Fetch Bars
-              </button>
-              <button
-                type="button"
-                className="mini-action"
-                disabled={!selectedTrade || busy}
-                onClick={() => barsInputRef.current?.click()}
-              >
-                <WorkspaceIcon icon="import" alt="Import bars icon" className="mini-action-icon" />
-                Import Bars
-              </button>
-              <button
-                type="button"
-                className="mini-action"
-                disabled={!selectedBarSet || busy || !selectedTrade}
-                onClick={() => selectedTrade && onClearHistoricalBars(selectedTrade)}
-              >
-                <WorkspaceIcon icon="data" alt="Clear bars icon" className="mini-action-icon" />
-                Clear Bars
-              </button>
+              <h2>Review Workspace</h2>
             </div>
           </div>
-          <p>{selectedTrade ? selectedTrade.symbol : "No trade selected yet"}</p>
-          <span>{workspaceHint}</span>
           {selectedTrade ? (
             <>
-              <div className="trade-quick-tags" aria-label="Trade tag summary">
+              <div className="trade-quick-tags" aria-label="Trade review overview">
                 <div className="trade-quick-tag">
                   <span className="trade-quick-tag-label">Symbol</span>
                   <strong className="trade-quick-tag-value">{selectedTrade.symbol}</strong>
                 </div>
                 <button
                   type="button"
-                  className={`trade-quick-tag trade-quick-tag-button ${selectedTrade.game ? "" : "trade-quick-tag-empty"}`}
+                  className={`trade-quick-tag trade-quick-tag-button ${
+                    selectedTrade.game ? "" : "trade-quick-tag-empty"
+                  }`}
                   onClick={() => {
                     setQuickTagEditorField("game");
                     setQuickTagEditorSearchQuery("");
@@ -781,7 +884,9 @@ export const TradesPage = ({
                 </button>
                 <button
                   type="button"
-                  className={`trade-quick-tag trade-quick-tag-button ${selectedTrade.setups[0] ? "" : "trade-quick-tag-empty"}`}
+                  className={`trade-quick-tag trade-quick-tag-button ${
+                    selectedTrade.setups[0] ? "" : "trade-quick-tag-empty"
+                  }`}
                   onClick={() => {
                     setQuickTagEditorField("playbook");
                     setQuickTagEditorSearchQuery("");
@@ -792,26 +897,28 @@ export const TradesPage = ({
                 </button>
                 <button
                   type="button"
-                  className={`trade-quick-tag trade-quick-tag-button ${selectedTrade.mistakes.length > 0 ? "" : "trade-quick-tag-empty"}`}
+                  className={`trade-quick-tag trade-quick-tag-button ${
+                    selectedTrade.mistakes.length > 0 ? "" : "trade-quick-tag-empty"
+                  }`}
                   onClick={() => {
                     setQuickTagEditorField("mistake");
                     setQuickTagEditorSearchQuery(selectedTrade.mistakes.length === 1 ? selectedTrade.mistakes[0] ?? "" : "");
                   }}
                 >
                   <span className="trade-quick-tag-label">Mistakes</span>
-                  <strong className="trade-quick-tag-value">
-                    {selectedTrade.mistakes.length > 0
-                      ? `${selectedTrade.mistakes[0]}${selectedTrade.mistakes.length > 1 ? ` +${selectedTrade.mistakes.length - 1}` : ""}`
-                      : "None"}
-                  </strong>
+                  <strong className="trade-quick-tag-value">{selectedTradeMistakeDetails}</strong>
                 </button>
-                <div className={`trade-quick-tag ${selectedTrade.gateways.length > 0 ? "" : "trade-quick-tag-empty"}`}>
+                <div
+                  className={`trade-quick-tag ${
+                    selectedTrade.gateways.length > 0 ? "" : "trade-quick-tag-empty"
+                  }`}
+                >
                   <span className="trade-quick-tag-label">Gateways</span>
-                  <strong className="trade-quick-tag-value">{selectedTrade.gateways.join(", ") || "None"}</strong>
+                  <strong className="trade-quick-tag-value">{selectedTradeGatewaySummary}</strong>
                 </div>
                 <div
                   className={`trade-quick-tag trade-quick-tag-status ${
-                    selectedTrade.status === "Win" ? "trade-quick-tag-status-win" : "trade-quick-tag-status-loss"
+                    selectedTrade.netPnlUsd >= 0 ? "trade-quick-tag-status-win" : "trade-quick-tag-status-loss"
                   }`}
                 >
                   <span className="trade-quick-tag-label">Win / Loss</span>
@@ -819,7 +926,9 @@ export const TradesPage = ({
                 </div>
                 <button
                   type="button"
-                  className={`trade-quick-tag trade-quick-tag-button ${selectedTrade.outTag[0] ? "" : "trade-quick-tag-empty"}`}
+                  className={`trade-quick-tag trade-quick-tag-button ${
+                    selectedTrade.outTag[0] ? "" : "trade-quick-tag-empty"
+                  }`}
                   onClick={() => {
                     setQuickTagEditorField("outTag");
                     setQuickTagEditorSearchQuery("");
@@ -828,83 +937,95 @@ export const TradesPage = ({
                   <span className="trade-quick-tag-label">Out Tags</span>
                   <strong className="trade-quick-tag-value">{selectedTrade.outTag[0] || "None"}</strong>
                 </button>
-                <div className={`trade-quick-tag ${selectedTrade.feesUsd ? "" : "trade-quick-tag-empty"}`}>
+                <div
+                  className={`trade-quick-tag ${selectedTrade.feesUsd ? "" : "trade-quick-tag-empty"}`}
+                >
                   <span className="trade-quick-tag-label">Fees</span>
                   <strong className="trade-quick-tag-value">${selectedTrade.feesUsd.toFixed(2)}</strong>
                 </div>
               </div>
-              <div className="trade-mini-stats">
-                <div>
-                  <strong>Date &amp; Time Range</strong>
-                  <span>{selectedTrade.tradeDate}</span>
-                  <span>{selectedTrade.openTime} to {selectedTrade.closeTime}</span>
+              <div className="trade-mini-stats" aria-label="Trade execution stats">
+                <div className="trade-mini-stat-card">
+                  <span className="trade-mini-stat-label">Date &amp; Time Range</span>
+                  <strong className="trade-mini-stat-value">{selectedTrade.tradeDate}</strong>
+                  <small className="trade-mini-stat-meta">
+                    {selectedTrade.openTime} to {selectedTrade.closeTime}
+                  </small>
                 </div>
-                <div>
-                  <strong>Hold Time</strong>
-                  <span>{selectedTrade.holdTime}</span>
+                <div className="trade-mini-stat-card">
+                  <span className="trade-mini-stat-label">Hold Time</span>
+                  <strong className="trade-mini-stat-value">{selectedTrade.holdTime}</strong>
+                  <small className="trade-mini-stat-meta">
+                    {selectedTradeFillCount} fill{selectedTradeFillCount === 1 ? "" : "s"}
+                  </small>
                 </div>
-                <div>
-                  <strong>Short / Long</strong>
-                  <span>{selectedTrade.side}</span>
+                <div className="trade-mini-stat-card">
+                  <span className="trade-mini-stat-label">Short / Long</span>
+                  <strong className="trade-mini-stat-value">{selectedTrade.side}</strong>
                 </div>
-                <div>
-                  <strong>Size</strong>
-                  <span>{selectedTrade.size.toLocaleString()}</span>
+                <div className="trade-mini-stat-card">
+                  <span className="trade-mini-stat-label">Size</span>
+                  <strong className="trade-mini-stat-value">{selectedTrade.size.toLocaleString()}</strong>
                 </div>
-                <div>
-                  <strong>Average Entry Price</strong>
-                  <span>{selectedTrade.entryPrice.toFixed(4)}</span>
+                <div className="trade-mini-stat-card">
+                  <span className="trade-mini-stat-label">Average Entry Price</span>
+                  <strong className="trade-mini-stat-value">{selectedTrade.entryPrice.toFixed(4)}</strong>
                 </div>
-                <div>
-                  <strong>Average Exit Price</strong>
-                  <span>{selectedTrade.exitPrice.toFixed(4)}</span>
+                <div className="trade-mini-stat-card">
+                  <span className="trade-mini-stat-label">Average Exit Price</span>
+                  <strong className="trade-mini-stat-value">{selectedTrade.exitPrice.toFixed(4)}</strong>
                 </div>
-                <div>
-                  <strong>Return / Share</strong>
-                  <span>{selectedTrade.returnPerShare.toFixed(4)}</span>
+                <div className="trade-mini-stat-card">
+                  <span className="trade-mini-stat-label">Return / Share</span>
+                  <strong className="trade-mini-stat-value">{formatSignedDecimal(selectedTrade.returnPerShare)}</strong>
                 </div>
-                <div>
-                  <strong>Total Return</strong>
-                  <span>{selectedTrade.netPnlUsd >= 0 ? "+" : ""}${selectedTrade.netPnlUsd.toFixed(2)}</span>
-                </div>
-              </div>
-              <TradeExecutionsTable trade={selectedTrade} />
-              <div className="chart-toolbar-stack">
-                <div className="chart-toolbar-row">
-                  <div className="chart-toolbar-group chart-toolbar-group-meta">
-                    <span className="chart-toolbar-label">Data</span>
-                    <div className="chart-toolbar-chip-row">
-                      {selectedBarSet ? (
-                        <>
-                          <span className="chart-meta-badge">{selectedBarSet.bars.length} bars loaded</span>
-                          <span className="chart-meta-badge">{selectedBarSet.sourceFileName}</span>
-                          <span className="chart-meta-badge">
-                            Updated {new Date(selectedBarSet.updatedAt).toLocaleString()}
-                          </span>
-                        </>
-                      ) : (
-                        <>
-                          <span className="chart-meta-badge">No bar data loaded yet</span>
-                          <span className="chart-meta-badge">{selectedTrade.symbol}</span>
-                          <span className="chart-meta-badge">{selectedTrade.tradeDate}</span>
-                        </>
-                      )}
-                    </div>
-                  </div>
+                <div className="trade-mini-stat-card">
+                  <span className="trade-mini-stat-label">Total Return</span>
+                  <strong className="trade-mini-stat-value">{formatSignedMoney(selectedTrade.netPnlUsd)}</strong>
                 </div>
               </div>
-              <div className="trade-chart-grid">
+              <div className="trade-chart-meta-strip" aria-label="Chart data">
+                {selectedBarSet ? (
+                  <>
+                    <span className="chart-meta-badge">{selectedBarSet.bars.length} bars</span>
+                    <span className="chart-meta-badge">{selectedBarSet.sourceFileName}</span>
+                    <span className="chart-meta-badge">
+                      Updated {new Date(selectedBarSet.updatedAt).toLocaleString()}
+                    </span>
+                    <button
+                      type="button"
+                      className="chart-quick-chip"
+                      disabled={busy}
+                      onClick={() => selectedTrade && onClearHistoricalBars(selectedTrade)}
+                    >
+                      Clear Bars
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span className="chart-meta-badge">No bars loaded</span>
+                    <span className="chart-meta-badge">{selectedTrade.symbol}</span>
+                    <span className="chart-meta-badge">{selectedTrade.tradeDate}</span>
+                  </>
+                )}
+                {hasMultipleTickerDayTrades ? (
+                  <button
+                    type="button"
+                    className={`chart-quick-chip${showAllTickerDayTrades ? " is-active" : ""}`}
+                    onClick={() => setShowAllTickerDayTrades((current) => !current)}
+                    aria-pressed={showAllTickerDayTrades}
+                    title={`Show all ${sameTickerDayTrades.length} ${selectedTrade.symbol} trades from ${selectedTrade.tradeDate}`}
+                  >
+                    Day Trades ({sameTickerDayTrades.length})
+                  </button>
+                ) : null}
+              </div>
+              <div className="trade-chart-grid trade-chart-grid-single">
                 <div className="trade-chart-pane trade-chart-pane-main">
-                  <div className="trade-chart-pane-header">
-                    <div>
-                      <span className="trade-chart-pane-eyebrow">Trade Review</span>
-                      <strong>Main Chart</strong>
-                    </div>
-                    <span>{selectedTrade.symbol} · {reviewChartInterval}</span>
-                  </div>
                   <TradeChart
-                    bars={selectedBarSet?.bars ?? []}
+                    bars={reviewChartBars}
                     trade={selectedTrade}
+                    markerTrades={chartMarkerTrades}
                     interval={reviewChartInterval}
                     fillHeight
                     layerVisibility={chartLayerVisibility}
@@ -917,26 +1038,26 @@ export const TradesPage = ({
                     drawings={selectedReview?.drawings ?? []}
                     onDrawingsChange={(drawings) => selectedTrade && onUpdateReview(selectedTrade.id, { drawings })}
                     showDrawingTools
-                    availableIntervals={intradayChartIntervals}
+                    availableIntervals={secondaryChartIntervals}
                     onChangeInterval={onChangeReviewChartInterval}
                   />
                 </div>
-                {selectedTrade && selectedBarSet ? (
+                {selectedTrade && selectedBarSet && false ? (
                   <div className="trade-chart-pane trade-chart-pane-secondary day-view-chart-card">
                     <div className="trade-chart-pane-header">
                       <div>
                         <span className="trade-chart-pane-eyebrow">Context</span>
                         <strong>Day View</strong>
                       </div>
-                      <span>{selectedTrade.symbol} · {dayChartInterval}</span>
+                      <span>{selectedTrade!.symbol} · {dayChartInterval}</span>
                     </div>
                     <TradeChart
                       bars={
                         dayChartInterval === "1D" || dayChartInterval === "1W"
-                          ? (selectedBarSet.dailyBars ?? selectedBarSet.bars)
-                          : selectedBarSet.bars
+                          ? (selectedBarSet!.dailyBars ?? selectedBarSet!.bars)
+                          : selectedBarSet!.bars
                       }
-                      trade={selectedTrade}
+                      trade={selectedTrade!}
                       height={500}
                       fillHeight
                       showMarkers={false}
@@ -961,11 +1082,47 @@ export const TradesPage = ({
                   <strong>No historical bars loaded yet.</strong>
                   <span>
                     {hasTwelveDataApiKey
-                      ? `Click Fetch Bars to pull 1-minute candles for ${selectedTrade.symbol} on ${selectedTrade.tradeDate}, or import a bar CSV manually.`
-                      : `Add your Twelve Data API key in Settings, then click Fetch Bars for ${selectedTrade.symbol} on ${selectedTrade.tradeDate}, or import a bar CSV manually.`}
+                      ? isAutoFetchingBars
+                        ? `Fetching 1-minute bars for ${selectedTrade.symbol} on ${selectedTrade.tradeDate} automatically.`
+                        : hasAttemptedAutoFetch
+                          ? `Bars auto-fetch when you select a trade. If this one still needs data, retry the fetch or import a bar CSV manually.`
+                          : `Bars will auto-fetch as soon as this trade is ready. You can also import a bar CSV manually.`
+                      : `Add your Twelve Data API key in Settings to auto-fetch bars for ${selectedTrade.symbol} on ${selectedTrade.tradeDate}, or import a bar CSV manually.`}
                   </span>
+                  <div className="empty-chart-state-actions">
+                    <button
+                      type="button"
+                      className="mini-action"
+                      disabled={busy}
+                      onClick={() => barsInputRef.current?.click()}
+                    >
+                      <WorkspaceIcon icon="import" alt="Import bars icon" className="mini-action-icon" />
+                      Import Bars
+                    </button>
+                    {hasTwelveDataApiKey && !isAutoFetchingBars && hasAttemptedAutoFetch ? (
+                      <button
+                        type="button"
+                        className="mini-action"
+                        disabled={busy}
+                        onClick={() => selectedTrade && void onFetchHistoricalBars(selectedTrade)}
+                      >
+                        <WorkspaceIcon icon="reports" alt="Retry fetch icon" className="mini-action-icon" />
+                        Retry Fetch
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               ) : null}
+              <details className="trade-execution-details">
+                <summary>
+                  <div className="trade-execution-details-copy">
+                    <strong>Execution Blotter</strong>
+                    <span>Open the full fill-by-fill trail only when you need the audit detail.</span>
+                  </div>
+                  <span className="trade-execution-details-meta">{selectedTradeFillCount} fills</span>
+                </summary>
+                <TradeExecutionsTable trade={selectedTrade} />
+              </details>
             </>
           ) : null}
         </article>
@@ -1027,7 +1184,7 @@ export const TradesPage = ({
         <article className="placeholder-panel trade-review-dock trade-review-bottom">
           <div className="panel-header">
             <WorkspaceIcon icon="journal" alt="Trade review icon" className="panel-header-icon" />
-            <h2>Trade Review</h2>
+            <h2>Review Notes</h2>
           </div>
           {selectedTrade ? (
             <div className="trade-review-form">
@@ -1037,6 +1194,7 @@ export const TradesPage = ({
                   key={`${selectedTrade.id}-trade-review-notes`}
                   content={getReviewNotesContent(selectedReview)}
                   onChange={(content) => onUpdateReview(selectedTrade.id, { notes: content })}
+                  onImageInsert={createTradeReviewImageInsertHandler(selectedTrade.id)}
                   placeholder="Capture execution notes, emotions, and what to improve next time."
                   compact
                 />
@@ -1051,90 +1209,6 @@ export const TradesPage = ({
             <PlaceholderPanel
               title="No Review Loaded"
               description="Choose a trade to add review notes."
-            />
-          )}
-        </article>
-        <article className="placeholder-panel trade-inspector trade-inspector-bottom">
-          <div className="panel-header">
-            <WorkspaceIcon icon="journal" alt="Trade inspector icon" className="panel-header-icon" />
-            <h2>Trade Inspector</h2>
-          </div>
-          {selectedTrade ? (
-            <div className="trade-inspector-grid">
-              <div className="inspector-card">
-                <WorkspaceIcon icon="text" alt="Name icon" className="inspector-card-icon" />
-                <strong>Name</strong>
-                <span>{selectedTrade.name}</span>
-              </div>
-              <div className="inspector-card">
-                <WorkspaceIcon icon="tags" alt="Game icon" className="inspector-card-icon" />
-                <strong>Game</strong>
-                <span>{selectedTrade.game || "Unrated"}</span>
-              </div>
-              <div className="inspector-card">
-                <WorkspaceIcon icon="execution" alt="Execution icon" className="inspector-card-icon" />
-                <strong>Execution</strong>
-                <span>{selectedTrade.execution.join(", ") || "None"}</span>
-              </div>
-              <div className="inspector-card">
-                <WorkspaceIcon icon="filter" alt="Out tag icon" className="inspector-card-icon" />
-                <strong>Out Tag</strong>
-                <span>{selectedTrade.outTag.join(", ") || "None"}</span>
-              </div>
-              <div className="inspector-card">
-                <WorkspaceIcon icon="plan" alt="Gateways icon" className="inspector-card-icon" />
-                <strong>Gateways</strong>
-                <span>{selectedTrade.gateways.join(", ") || "None"}</span>
-              </div>
-              <div className="inspector-card">
-                <WorkspaceIcon icon="money" alt="Fees icon" className="inspector-card-icon" />
-                <strong>Fees</strong>
-                <span>${selectedTrade.feesUsd.toFixed(2)}</span>
-              </div>
-              <div className="inspector-card">
-                <WorkspaceIcon icon="journal" alt="Setups icon" className="inspector-card-icon" />
-                <strong>Setups</strong>
-                <span>{selectedTrade.setups.join(", ") || "None"}</span>
-              </div>
-              <div className="inspector-card">
-                <WorkspaceIcon icon="checklist" alt="Mistakes icon" className="inspector-card-icon" />
-                <strong>Mistakes</strong>
-                {selectedTrade.mistakes.length > 0 ? (
-                  <div className="inspector-tag-row">
-                    {selectedTrade.mistakes.map((mistake) => (
-                      <button
-                        key={mistake}
-                        type="button"
-                        className="inspector-tag-pill"
-                        onClick={() => {
-                          setQuickTagEditorField("mistake");
-                          setQuickTagEditorSearchQuery(mistake);
-                        }}
-                      >
-                        <span className={`tag-option-pill tag-option-pill-${getToneIndex(mistake)}`}>
-                          {mistake}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    className="inspector-tag-empty-link"
-                    onClick={() => {
-                      setQuickTagEditorField("mistake");
-                      setQuickTagEditorSearchQuery("");
-                    }}
-                  >
-                    Add mistake
-                  </button>
-                )}
-              </div>
-            </div>
-          ) : (
-            <PlaceholderPanel
-              title="No Trade Selected"
-              description="Choose a grouped trade from the grid to inspect the tags, fees, and execution details."
             />
           )}
         </article>

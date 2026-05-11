@@ -137,6 +137,27 @@ if (Test-Path $nodeModulesPath) {
   Add-CheckResult "error" "Project dependencies are missing. Run npm install in $projectPath."
 }
 
+$offlineValue = $env:CARGO_NET_OFFLINE
+if ($offlineValue) {
+  $normalizedOffline = $offlineValue.Trim().ToLowerInvariant()
+  if ($normalizedOffline -in @("1", "true", "yes", "on")) {
+    Add-CheckResult "warning" "CARGO_NET_OFFLINE is enabled in this shell, which can block Cargo dependency resolution."
+  }
+}
+
+$proxyVars = @("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "GIT_HTTP_PROXY", "GIT_HTTPS_PROXY")
+foreach ($proxyVar in $proxyVars) {
+  $proxyValue = (Get-Item "Env:$proxyVar" -ErrorAction SilentlyContinue).Value
+  if (-not $proxyValue) {
+    continue
+  }
+
+  $normalizedProxy = $proxyValue.Trim().ToLowerInvariant().TrimEnd("/")
+  if ($normalizedProxy -in @("http://127.0.0.1:9", "https://127.0.0.1:9", "http://localhost:9", "https://localhost:9")) {
+    Add-CheckResult "warning" "$proxyVar points to $proxyValue, which is usually an unavailable local proxy."
+  }
+}
+
 $hasErrors = $results.Level -contains "error"
 
 if (-not $Quiet) {

@@ -6,13 +6,19 @@ import { SymbolPills } from "../../../components/SymbolPills";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
 import { APlusExampleLibrary } from "../components/APlusExampleLibrary";
 import { getTradeSummary } from "../../../lib/analytics/tradeAnalytics";
+import { useDebouncedSave } from "../../../lib/hooks/useDebouncedSave";
 import {
   addPlaybookRecord,
   loadPlaybooks,
+  recoverPlaybooksFromDesktopBackup,
   savePlaybooks,
   updatePlaybookSectionContent
 } from "../../../lib/playbooks/playbookStore";
 import { SYNC_HYDRATED_EVENT } from "../../../lib/sync/syncStore";
+import {
+  resolveWorkspaceAttachmentSrc,
+  saveWorkspaceInlineImage
+} from "../../../lib/workspace/workspaceAttachmentClient";
 import type {
   JournalPageRecord,
   JournalScreenshotTagRecord,
@@ -204,22 +210,6 @@ const getScreenshotTradeLinks = (
 
   return dedupeTradeLinks([...normalizedLinkedTrades, ...legacyLinkedTrade]);
 };
-
-const readFileAsDataUrl = (file: File): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        resolve(reader.result);
-        return;
-      }
-
-      reject(new Error("The screenshot file could not be read."));
-    };
-    reader.onerror = () =>
-      reject(reader.error ?? new Error("The screenshot file could not be read."));
-    reader.readAsDataURL(file);
-  });
 
 const getPlaybookScreenshotSlotMeta = (index: number) => {
   const rowNumber = Math.floor(index / 3) + 1;
@@ -494,25 +484,61 @@ export const PlaybooksPage = ({
   const [activePlaybookPage, setActivePlaybookPage] = useState<PlaybookDetailPage>("playbook");
   const [expandedScreenshotUrl, setExpandedScreenshotUrl] = useState("");
   const [isScreenshotZoomed, setIsScreenshotZoomed] = useState(false);
-  const skipNextSaveRef = useRef(true);
+  const hasRetriedDesktopRecoveryRef = useRef(false);
+  const playbooksRef = useRef<PlaybookRecord[]>([]);
+  playbooksRef.current = playbooks;
 
-  const handleImageInsert = async (file: File): Promise<string> => {
-    return readFileAsDataUrl(file);
+  const persistPlaybooks = (nextPlaybooks: PlaybookRecord[]) => {
+    playbooksRef.current = nextPlaybooks;
+    setPlaybooks(nextPlaybooks);
   };
 
+  const createPlaybookInlineImageInsertHandler = (playbookId: string, sectionId: string) => async (file: File) =>
+    saveWorkspaceInlineImage({
+      category: "playbook-inline-images",
+      recordId: playbookId,
+      slotKey: sectionId,
+      file
+    });
+
+  useDebouncedSave(
+    playbooks,
+    900,
+    (nextPlaybooks) => {
+      savePlaybooks(nextPlaybooks);
+    },
+    true,
+    { skipInitialSave: true }
+  );
+
   useEffect(() => {
-    if (skipNextSaveRef.current) {
-      skipNextSaveRef.current = false;
+    if (hasRetriedDesktopRecoveryRef.current) {
       return;
     }
 
-    savePlaybooks(playbooks);
-  }, [playbooks]);
+    hasRetriedDesktopRecoveryRef.current = true;
+    void (async () => {
+      const recoveredPlaybooks = await recoverPlaybooksFromDesktopBackup(playbooksRef.current);
+      if (!recoveredPlaybooks) {
+        return;
+      }
+
+      persistPlaybooks(recoveredPlaybooks);
+    })();
+  }, []);
 
   useEffect(() => {
     const handleHydrated = () => {
-      skipNextSaveRef.current = true;
-      setPlaybooks(loadPlaybooks());
+      const nextPlaybooks = loadPlaybooks();
+      setPlaybooks(nextPlaybooks);
+      void (async () => {
+        const recoveredPlaybooks = await recoverPlaybooksFromDesktopBackup(nextPlaybooks);
+        if (!recoveredPlaybooks) {
+          return;
+        }
+
+        persistPlaybooks(recoveredPlaybooks);
+      })();
     };
 
     window.addEventListener(SYNC_HYDRATED_EVENT, handleHydrated);
@@ -913,7 +939,7 @@ export const PlaybooksPage = ({
       return;
     }
 
-    setPlaybooks(result.playbooks);
+    persistPlaybooks(result.playbooks);
     handleOpenPlaybook(result.playbookId);
   };
 
@@ -1434,16 +1460,16 @@ export const PlaybooksPage = ({
                 <JournalRichTextEditor
                   content={section.content}
                   onChange={(content) =>
-                    setPlaybooks((current) =>
+                    persistPlaybooks(
                       updatePlaybookSectionContent(
-                        current,
+                        playbooksRef.current,
                         selectedPlaybook.playbook.id,
                         section.id,
                         content
                       )
                     )
                   }
-                  onImageInsert={handleImageInsert}
+                  onImageInsert={createPlaybookInlineImageInsertHandler(selectedPlaybook.playbook.id, section.id)}
                   placeholder="Type '/' for commands"
                 />
               </article>
@@ -1466,6 +1492,7 @@ export const PlaybooksPage = ({
               {taggedCharts.length > 0 ? (
                 <div className="playbook-tagged-chart-grid">
                   {taggedCharts.map((entry, index) => {
+                    const screenshotSrc = resolveWorkspaceAttachmentSrc(entry.screenshotUrl);
                     const linkedTradePreview = entry.linkedTrades
                       .slice(0, 2)
                       .map((trade) => formatLinkedTradeLabel(trade))
@@ -1495,7 +1522,7 @@ export const PlaybooksPage = ({
                         >
                           <img
                             className="journal-screenshot-image"
-                            src={entry.screenshotUrl}
+                            src={screenshotSrc}
                             alt={`${selectedPlaybook.playbook.name} tagged chart ${index + 1}`}
                           />
                         </button>
@@ -1531,7 +1558,7 @@ export const PlaybooksPage = ({
                           ) : null}
                           <a
                             className="mini-action mini-action-soft"
-                            href={entry.screenshotUrl}
+                            href={screenshotSrc}
                             target="_blank"
                             rel="noreferrer"
                           >
@@ -1741,7 +1768,7 @@ export const PlaybooksPage = ({
             <div className="journal-lightbox-image-frame">
               <img
                 className={`journal-lightbox-image${isScreenshotZoomed ? " is-zoomed" : ""}`}
-                src={expandedScreenshotUrl}
+                src={resolveWorkspaceAttachmentSrc(expandedScreenshotUrl)}
                 alt="Expanded playbook screenshot"
                 role="button"
                 tabIndex={0}

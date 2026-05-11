@@ -110,6 +110,31 @@ function Stop-ListenersOnPort {
   Start-Sleep -Milliseconds 250
 }
 
+function Clear-ProblematicDesktopEnv {
+  $offlineValue = $env:CARGO_NET_OFFLINE
+  if ($offlineValue) {
+    $normalizedOffline = $offlineValue.Trim().ToLowerInvariant()
+    if ($normalizedOffline -in @("1", "true", "yes", "on")) {
+      Remove-Item Env:CARGO_NET_OFFLINE -ErrorAction SilentlyContinue
+      Write-Host "Ignoring CARGO_NET_OFFLINE for desktop dev so Cargo can resolve dependencies." -ForegroundColor Yellow
+    }
+  }
+
+  $proxyVars = @("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "GIT_HTTP_PROXY", "GIT_HTTPS_PROXY")
+  foreach ($proxyVar in $proxyVars) {
+    $proxyValue = (Get-Item "Env:$proxyVar" -ErrorAction SilentlyContinue).Value
+    if (-not $proxyValue) {
+      continue
+    }
+
+    $normalizedProxy = $proxyValue.Trim().ToLowerInvariant().TrimEnd("/")
+    if ($normalizedProxy -in @("http://127.0.0.1:9", "https://127.0.0.1:9", "http://localhost:9", "https://localhost:9")) {
+      Remove-Item "Env:$proxyVar" -ErrorAction SilentlyContinue
+      Write-Host "Ignoring $proxyVar=$proxyValue for desktop dev because it points to an unavailable local proxy." -ForegroundColor Yellow
+    }
+  }
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectPath = Split-Path -Parent $scriptDir
 
@@ -159,12 +184,18 @@ if (-not $cargoBinaryPath) {
 $nodePath = Split-Path -Parent $npmPath
 $cargoPath = Split-Path -Parent $cargoBinaryPath
 
+Clear-ProblematicDesktopEnv
+
 Stop-ListenersOnPort -Port 1420
 
-$command = "`"$vcvarsPath`" && set `"PATH=$nodePath;$cargoPath;%PATH%`" && cd /d `"$projectPath`" && npm.cmd run tauri -- dev --no-watch"
+$command = "`"$vcvarsPath`" && set `"PATH=$nodePath;$cargoPath;%PATH%`" && cd /d `"$projectPath`" && `"$npmPath`" run tauri -- dev --no-watch"
 
 cmd /c $command
 
 if ($LASTEXITCODE -ne 0) {
+  Write-Host ""
+  Write-Host "desktop:dev failed. If you see 'Access is denied. (os error 5)', retry in a fresh PowerShell session and run:" -ForegroundColor Yellow
+  Write-Host "  Remove-Item Env:CARGO_NET_OFFLINE -ErrorAction SilentlyContinue" -ForegroundColor Yellow
+  Write-Host "  Remove-Item Env:HTTP_PROXY,Env:HTTPS_PROXY,Env:ALL_PROXY,Env:GIT_HTTP_PROXY,Env:GIT_HTTPS_PROXY -ErrorAction SilentlyContinue" -ForegroundColor Yellow
   exit $LASTEXITCODE
 }

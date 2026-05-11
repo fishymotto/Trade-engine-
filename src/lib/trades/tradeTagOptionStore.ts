@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { EditableTradeTagField, TradeTagOptionsRecord } from "../../types/tradeTags";
 import { canUseMachineLegacyData, syncStores } from "../sync/syncStore";
+import { readLocalStorageItem, writeLocalStorageItem } from "../storage/localStorage";
 
 const STORAGE_KEY = "trade-engine-trade-tag-options";
 
@@ -29,7 +30,7 @@ const normalizeTradeTagOptions = (value: unknown): TradeTagOptionsRecord => {
 };
 
 const loadTradeTagOptionsFromLocalStorage = (): TradeTagOptionsRecord => {
-  const raw = localStorage.getItem(STORAGE_KEY);
+  const raw = readLocalStorageItem(STORAGE_KEY);
   if (!raw) {
     return {};
   }
@@ -52,7 +53,10 @@ const loadTradeTagOptionsFromDesktopBackup = async (): Promise<TradeTagOptionsRe
   try {
     const options = await invoke<TradeTagOptionsRecord>("load_trade_tag_options");
     const normalized = normalizeTradeTagOptions(options);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+    writeLocalStorageItem(STORAGE_KEY, JSON.stringify(normalized), {
+      label: "trade tag options cache",
+      suppressQuotaWarning: true
+    });
     return normalized;
   } catch {
     return null;
@@ -68,7 +72,7 @@ export const loadTradeTagOptions = async (): Promise<TradeTagOptionsRecord> => {
     return localOptions;
   }
 
-  const localRaw = localStorage.getItem(STORAGE_KEY);
+  const localRaw = readLocalStorageItem(STORAGE_KEY);
   if (allowLegacyDesktopBackup && (!localRaw || !hasTradeTagOptions(localOptions))) {
     const desktopOptions = await loadTradeTagOptionsFromDesktopBackup();
     if (desktopOptions && hasTradeTagOptions(desktopOptions)) {
@@ -80,9 +84,11 @@ export const loadTradeTagOptions = async (): Promise<TradeTagOptionsRecord> => {
 };
 
 export const saveTradeTagOptions = async (options: TradeTagOptionsRecord): Promise<void> => {
-  await syncStores.tradeTagOptions.save(options);
+  const syncPromise = syncStores.tradeTagOptions.save(options);
 
   if (isTauri()) {
     await invoke("save_trade_tag_options", { options });
   }
+
+  await syncPromise;
 };

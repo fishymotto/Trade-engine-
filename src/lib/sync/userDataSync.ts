@@ -11,6 +11,7 @@ import type { ReviewTemplates } from '../../types/libraryReview';
 import { defaultJournalChecklistTemplates, type JournalChecklistTemplates } from '../../lib/journal/journalTemplateStore';
 import { defaultReviewTemplates } from '../review/reviewTemplateStore';
 import { defaultSyncedSettings, migrateSettingsCacheToSyncedShape, type SyncedSettings } from '../settings/settingsStore';
+import { readLocalStorageItem, removeLocalStorageItem, writeLocalStorageItem } from '../storage/localStorage';
 import { defaultWorkspaceState, type WorkspaceState } from '../workspace/workspaceStore';
 
 const FORCE_LOCAL_TO_CLOUD_KEY = 'trade-engine-force-cloud-seed';
@@ -40,8 +41,7 @@ const dispatchHydrationEvent = (summary: UserDataSyncSummary): void => {
 export const syncUserDataOnLogin = async (userId: string): Promise<UserDataSyncSummary> => {
   setUserIdForSync(userId);
   migrateSettingsCacheToSyncedShape();
-  const forcePushLocal =
-    typeof window !== 'undefined' && window.localStorage.getItem(FORCE_LOCAL_TO_CLOUD_KEY) === '1';
+  const forcePushLocal = readLocalStorageItem(FORCE_LOCAL_TO_CLOUD_KEY) === '1';
   const emptySummary: UserDataSyncSummary = {
     userId,
     forcePushLocal,
@@ -82,8 +82,8 @@ export const syncUserDataOnLogin = async (userId: string): Promise<UserDataSyncS
       results: hydrated.map((entry) => entry.result),
     };
 
-    if (forcePushLocal && typeof window !== 'undefined') {
-      window.localStorage.removeItem(FORCE_LOCAL_TO_CLOUD_KEY);
+    if (forcePushLocal) {
+      removeLocalStorageItem(FORCE_LOCAL_TO_CLOUD_KEY, { label: 'cloud seed flag' });
     }
 
     console.log('[sync] User data hydrated successfully', summary.results);
@@ -98,9 +98,10 @@ export const syncUserDataOnLogin = async (userId: string): Promise<UserDataSyncS
 };
 
 export const forcePushLocalDataToCloud = async (userId: string): Promise<void> => {
-  if (typeof window !== 'undefined') {
-    window.localStorage.setItem(FORCE_LOCAL_TO_CLOUD_KEY, '1');
-  }
+  writeLocalStorageItem(FORCE_LOCAL_TO_CLOUD_KEY, '1', {
+    label: 'cloud seed flag',
+    suppressQuotaWarning: true
+  });
 
   const summary = await syncUserDataOnLogin(userId);
   const syncErrors = getSyncErrors(summary);

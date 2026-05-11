@@ -16,24 +16,32 @@ const REQUIRED_COLUMNS = [
   "PRICE"
 ] as const;
 
-const COLUMN_ALIASES: Record<string, string[]> = {
+const COLUMN_ALIASES = {
   // TODO: Replace aliases with the exact sample-file header names once a real PPro8 export is confirmed.
   DATE: ["DATE", "Trade Date", "TRADE_DATE"],
   TIME: ["TIME", "Trade Time", "TRADE_TIME"],
   SYMBOL: ["SYMBOL", "Ticker", "SYMBOL_NAME"],
-  ORDER_SIDE: ["ORDER_SIDE", "SIDE"],
-  QTY: ["QTY", "Qty", "SHARES", "Shares", "FILL_AMOUNT"],
+  ORDER_SIDE: ["ORDER_SIDE", "Order Side", "SIDE"],
+  QTY: ["QTY", "Qty", "Quantity", "SHARES", "Shares", "FILL_AMOUNT"],
   PRICE: ["PRICE", "Price", "SHARE_PRICE"],
-  GROSS_PNL: ["GROSS_PNL", "Gross PnL", "GROSS", "REALIZED"],
-  NET_PNL: ["NET_PNL", "Net PnL", "NET", "TRADING_TOTAL"],
+  GROSS_PNL: ["GROSS_PNL", "Gross PnL", "Gross P&L", "GROSS", "REALIZED"],
+  NET_PNL: ["NET_PNL", "Net PnL", "Net P&L", "NET", "TRADING_TOTAL"],
   ECN_FEE: ["ECN_FEE", "Gateway Fee", "ROUTE_FEE", "GATEWAY_FEE"],
   COMMISSION: ["COMMISSION", "Commission"],
   SEC: ["SEC", "SEC_FEE"],
   TAF: ["TAF", "TAF_FEE", "ACTIVITY_FEE"],
   NSCC: ["NSCC", "NSCC_FEE", "CLEARING_FEE"]
-};
+} as const;
+
+type ColumnKey = keyof typeof COLUMN_ALIASES;
+type ColumnLookup = Record<ColumnKey, string | undefined>;
 
 const normalizeHeader = (header: string): string => header.trim().replace(/\uFEFF/g, "");
+const canonicalizeHeader = (header: string): string =>
+  normalizeHeader(header)
+    .replace(/p\s*&\s*l/gi, "PNL")
+    .replace(/[^a-z0-9]+/gi, "")
+    .toUpperCase();
 
 const parseNumber = (value: string | undefined): number => {
   if (!value) {
@@ -63,17 +71,53 @@ const normalizeTime = (value: string | undefined): string => {
   return match ? match[1] : trimmed;
 };
 
-const getFirstMatchingColumn = (headers: string[], names: string[]): string | undefined =>
-  headers.find((header) => names.includes(header));
+const getColumnAliasNames = (key: ColumnKey): readonly string[] => COLUMN_ALIASES[key];
 
-const requireColumns = (headers: string[]) => {
-  const missing = REQUIRED_COLUMNS.filter((required) =>
-    !getFirstMatchingColumn(headers, COLUMN_ALIASES[required] ?? [required])
-  );
+const resolveColumnLookup = (headers: string[]): ColumnLookup => {
+  const lookup = {} as ColumnLookup;
+  const headerByCanonical = new Map<string, string>();
+
+  for (const header of headers) {
+    const canonicalHeader = canonicalizeHeader(header);
+    if (!canonicalHeader || headerByCanonical.has(canonicalHeader)) {
+      continue;
+    }
+
+    headerByCanonical.set(canonicalHeader, header);
+  }
+
+  for (const key of Object.keys(COLUMN_ALIASES) as ColumnKey[]) {
+    const resolvedHeader = getColumnAliasNames(key)
+      .map(canonicalizeHeader)
+      .map((canonicalHeader) => headerByCanonical.get(canonicalHeader))
+      .find((header): header is string => Boolean(header));
+
+    lookup[key] = resolvedHeader;
+  }
+
+  return lookup;
+};
+
+const formatHeaderList = (headers: string[]): string => {
+  if (headers.length === 0) {
+    return "none";
+  }
+
+  const preview = headers.slice(0, 12).join(", ");
+  return headers.length > 12 ? `${preview}, ... (+${headers.length - 12} more)` : preview;
+};
+
+const describeRequiredColumn = (key: (typeof REQUIRED_COLUMNS)[number]): string =>
+  `${key} (${getColumnAliasNames(key).join(" / ")})`;
+
+const requireColumns = (headers: string[], columnLookup: ColumnLookup) => {
+  const missing = REQUIRED_COLUMNS.filter((required) => !columnLookup[required]);
 
   if (missing.length > 0) {
     throw new Error(
-      `This file is missing required PPro columns: ${missing.join(", ")}. Use a PPro8 Trade Detail CSV export.`
+      `This file is missing required PPro columns: ${missing
+        .map(describeRequiredColumn)
+        .join(", ")}. Found headers: ${formatHeaderList(headers)}. Use a PPro8 Trade Detail CSV export.`
     );
   }
 };
@@ -106,15 +150,16 @@ export const parseTradeDetailCsvWithOptions = async (
       complete: (results) => {
         try {
           const headers = (results.meta.fields ?? []).map(normalizeHeader);
-          requireColumns(headers);
+          const columnLookup = resolveColumnLookup(headers);
+          requireColumns(headers, columnLookup);
           const matchedBrlSymbols = new Set<string>();
           let convertedBrlRows = 0;
           let skippedBrlRowsWithoutRate = 0;
 
           const rows = results.data
             .map((row, index) => {
-              const read = (key: keyof typeof COLUMN_ALIASES): string | undefined => {
-                const column = getFirstMatchingColumn(headers, COLUMN_ALIASES[key]);
+              const read = (key: ColumnKey): string | undefined => {
+                const column = columnLookup[key];
                 return column ? row[column] : undefined;
               };
 

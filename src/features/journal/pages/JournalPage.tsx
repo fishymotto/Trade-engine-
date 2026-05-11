@@ -7,6 +7,13 @@ import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
 import { MPP_FORMULA_TOOLTIP, calculateMPPWindow } from "../../../lib/analytics/mppAnalytics";
 import { getDatabaseStats, getTradeSummary } from "../../../lib/analytics/tradeAnalytics";
 import type { JournalChecklistTemplates, NamedChecklistTemplate } from "../../../lib/journal/journalTemplateStore";
+import {
+  JOURNAL_PAGES_STORAGE_KEY,
+  deleteWorkspaceAttachmentIfUnused,
+  resolveWorkspaceAttachmentSrc,
+  saveWorkspaceInlineImage,
+  saveUploadedWorkspaceAttachment
+} from "../../../lib/workspace/workspaceAttachmentClient";
 import { getTickerIcon as getTickerIconSrc, getTickerSector } from "../../../lib/tickers/tickerIcons";
 import { useEditableSelectOptions } from "../../../lib/select/useEditableSelectOptions";
 import { tradeTagOptionsByField as defaultTradeTagOptionsByField } from "../../../lib/trades/tradeTagCatalog";
@@ -16,6 +23,7 @@ import type {
   JournalScreenshotTagRecord,
   JournalScreenshotTradeLink
 } from "../../../types/journal";
+import type { Settings } from "../../../types/trade";
 import type { EditableTradeRow, EditableTradeTagField } from "../../../types/tradeTags";
 import { HeadlinesBar } from "../../headlines/components/HeadlinesBar";
 
@@ -23,6 +31,7 @@ interface JournalPageProps {
   pages: JournalPageRecord[];
   selectedPageId: string;
   trades: EditableTradeRow[];
+  settings: Settings;
   tagOptionsByField: Record<EditableTradeTagField, string[]>;
   checklistTemplates: JournalChecklistTemplates;
   externalSelectedTradeDate: string;
@@ -326,21 +335,6 @@ const getScreenshotSlotMeta = (index: number) => {
   };
 };
 
-const readFileAsDataUrl = (file: File): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        resolve(reader.result);
-        return;
-      }
-
-      reject(new Error("The screenshot file could not be read."));
-    };
-    reader.onerror = () => reject(reader.error ?? new Error("The screenshot file could not be read."));
-    reader.readAsDataURL(file);
-  });
-
 const formatJournalDate = (tradeDate: string) => {
   if (!tradeDate) {
     return "No Date";
@@ -428,6 +422,7 @@ export const JournalPage = ({
   pages,
   selectedPageId,
   trades,
+  settings,
   tagOptionsByField,
   checklistTemplates,
   externalSelectedTradeDate,
@@ -468,8 +463,116 @@ export const JournalPage = ({
   const expandedMonthsInitializedRef = useRef(false);
   const screenshotInputRef = useRef<HTMLInputElement | null>(null);
 
-  const handleImageInsert = async (file: File): Promise<string> => {
-    return readFileAsDataUrl(file);
+  const createJournalInlineImageInsertHandler = (pageId: string, fieldKey: string) => async (file: File) =>
+    saveWorkspaceInlineImage({
+      category: "journal-inline-images",
+      recordId: pageId,
+      slotKey: fieldKey,
+      file
+    });
+
+  const saveJournalScreenshotFiles = async (
+    page: JournalPageRecord,
+    files: File[],
+    startIndex: number
+  ): Promise<string[]> =>
+    Promise.all(
+      files.map((file, index) =>
+        saveUploadedWorkspaceAttachment({
+          category: "journal-screenshots",
+          recordId: page.id,
+          slotKey: `slot-${startIndex + index + 1}`,
+          file
+        })
+      )
+    );
+
+  const buildNextPagesWithUpdatedScreenshots = (
+    pageId: string,
+    screenshotUrls: string[],
+    screenshotTags: JournalScreenshotTagRecord[]
+  ): JournalPageRecord[] =>
+    pages.map((currentPage) =>
+      currentPage.id === pageId
+        ? {
+            ...currentPage,
+            screenshotUrls,
+            screenshotTags
+          }
+        : currentPage
+    );
+
+  const discardScreenshotAttachment = (path: string, nextPages: JournalPageRecord[]) => {
+    void deleteWorkspaceAttachmentIfUnused(path, {
+      delayMs: 0,
+      storageOverrides: {
+        [JOURNAL_PAGES_STORAGE_KEY]: nextPages
+      }
+    }).catch(() => undefined);
+  };
+
+  const handleScreenshotFileSelection = (page: JournalPageRecord, files: File[]) => {
+    if (files.length === 0) {
+      setPendingScreenshotSlotIndex(null);
+      return;
+    }
+
+    const replacementIndex = pendingScreenshotSlotIndex;
+    const startIndex = replacementIndex ?? page.screenshotUrls.length;
+    setPendingScreenshotSlotIndex(null);
+
+    void saveJournalScreenshotFiles(page, files, startIndex)
+      .then((savedPaths) => {
+        if (savedPaths.length === 0) {
+          return;
+        }
+
+        const currentTags = getAlignedScreenshotTags(page);
+        if (replacementIndex !== null) {
+          const nextScreenshotUrls = [...page.screenshotUrls];
+          const nextScreenshotTags = [...currentTags];
+          const replacedScreenshotUrl = nextScreenshotUrls[replacementIndex] ?? "";
+
+          nextScreenshotUrls[replacementIndex] = savedPaths[0];
+          nextScreenshotTags[replacementIndex] =
+            nextScreenshotTags[replacementIndex] ?? createDefaultScreenshotTag(page.tradeDate);
+
+          if (savedPaths.length > 1) {
+            nextScreenshotUrls.splice(replacementIndex + 1, 0, ...savedPaths.slice(1));
+            nextScreenshotTags.splice(
+              replacementIndex + 1,
+              0,
+              ...savedPaths.slice(1).map(() => createDefaultScreenshotTag(page.tradeDate))
+            );
+          }
+
+          const nextPages = buildNextPagesWithUpdatedScreenshots(
+            page.id,
+            nextScreenshotUrls,
+            nextScreenshotTags
+          );
+          updateSelectedPageScreenshots(nextScreenshotUrls, nextScreenshotTags);
+          attachScreenshotIfLinked(savedPaths[0], nextScreenshotTags[replacementIndex]);
+          setVisibleScreenshotRows((current) =>
+            Math.max(current, Math.ceil(Math.max(nextScreenshotUrls.length, 3) / 3))
+          );
+
+          if (replacedScreenshotUrl && replacedScreenshotUrl !== savedPaths[0]) {
+            discardScreenshotAttachment(replacedScreenshotUrl, nextPages);
+          }
+          return;
+        }
+
+        const nextScreenshotUrls = [...page.screenshotUrls, ...savedPaths];
+        const nextScreenshotTags = [
+          ...currentTags,
+          ...savedPaths.map(() => createDefaultScreenshotTag(page.tradeDate))
+        ];
+        updateSelectedPageScreenshots(nextScreenshotUrls, nextScreenshotTags);
+      })
+      .catch(() => {
+        window.alert("The screenshot files could not be saved.");
+      });
   };
 
   const selectedPage = useMemo(
@@ -711,7 +814,7 @@ export const JournalPage = ({
         selectedPageMPP.formulaBreakdown.excludedDaysRemoved === 1 ? "" : "s"
       } removed`;
   const mppProjectionDays = selectedPageMPP.formulaBreakdown.projectionDays;
-  const mppLockInSteps = [5, 10, 20, 30] as const;
+  const mppLockInSteps = settings.mppLockInSteps;
   const mppLockInProjectionRows = useMemo(() => {
     const anchorTradeDate = selectedPage?.tradeDate?.trim() ?? "";
     const {
@@ -1045,11 +1148,11 @@ export const JournalPage = ({
     });
   };
 
-  const attachScreenshotIfLinked = (
+  const syncLinkedTradeScreenshot = (
     screenshotUrl: string,
     screenshotTag: JournalScreenshotTagRecord | undefined
   ) => {
-    if (!screenshotTag || !screenshotUrl) {
+    if (!screenshotTag) {
       return;
     }
 
@@ -1063,6 +1166,21 @@ export const JournalPage = ({
     for (const tradeId of tradeIds) {
       onAttachScreenshotToTrade(tradeId, screenshotUrl);
     }
+  };
+
+  const attachScreenshotIfLinked = (
+    screenshotUrl: string,
+    screenshotTag: JournalScreenshotTagRecord | undefined
+  ) => {
+    if (!screenshotUrl) {
+      return;
+    }
+
+    syncLinkedTradeScreenshot(screenshotUrl, screenshotTag);
+  };
+
+  const clearScreenshotIfLinked = (screenshotTag: JournalScreenshotTagRecord | undefined) => {
+    syncLinkedTradeScreenshot("", screenshotTag);
   };
 
   const handleScreenshotTagUpdate = (
@@ -1716,7 +1834,9 @@ export const JournalPage = ({
                       key={`${selectedPage.id}-morning-checklist`}
                       content={selectedPage.morningChecklistContent}
                       onChange={(content) => onUpdateContent(selectedPage.id, "morningChecklistContent", content)}
-                      onImageInsert={handleImageInsert}
+                      onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "morningChecklistContent")}
+                      draftStorageKey={`${selectedPage.id}:morningChecklistContent`}
+                      sourceUpdatedAt={selectedPage.updatedAt}
                       placeholder="Type '/' for commands"
                       appearance="notion"
                       taskListColumns={2}
@@ -1736,7 +1856,9 @@ export const JournalPage = ({
                       key={`${selectedPage.id}-morning`}
                       content={selectedPage.morningContent}
                       onChange={(content) => onUpdateContent(selectedPage.id, "morningContent", content)}
-                      onImageInsert={handleImageInsert}
+                      onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "morningContent")}
+                      draftStorageKey={`${selectedPage.id}:morningContent`}
+                      sourceUpdatedAt={selectedPage.updatedAt}
                       placeholder=""
                       appearance="notion"
                       compact
@@ -1855,7 +1977,9 @@ export const JournalPage = ({
                       key={`${selectedPage.id}-closing-checklist`}
                       content={selectedPage.closingChecklistContent}
                       onChange={(content) => onUpdateContent(selectedPage.id, "closingChecklistContent", content)}
-                      onImageInsert={handleImageInsert}
+                      onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "closingChecklistContent")}
+                      draftStorageKey={`${selectedPage.id}:closingChecklistContent`}
+                      sourceUpdatedAt={selectedPage.updatedAt}
                       placeholder="Type '/' for commands"
                       appearance="notion"
                       taskListColumns={2}
@@ -1875,7 +1999,9 @@ export const JournalPage = ({
                       key={`${selectedPage.id}-closing`}
                       content={selectedPage.closingContent}
                       onChange={(content) => onUpdateContent(selectedPage.id, "closingContent", content)}
-                      onImageInsert={handleImageInsert}
+                      onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "closingContent")}
+                      draftStorageKey={`${selectedPage.id}:closingContent`}
+                      sourceUpdatedAt={selectedPage.updatedAt}
                       placeholder="Type '/' for commands"
                       appearance="notion"
                       compact
@@ -1976,6 +2102,9 @@ export const JournalPage = ({
                     key={`${selectedPage.id}-mpp`}
                     content={selectedPage.mppPlanContent}
                     onChange={(content) => onUpdateContent(selectedPage.id, "mppPlanContent", content)}
+                    onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "mppPlanContent")}
+                    draftStorageKey={`${selectedPage.id}:mppPlanContent`}
+                    sourceUpdatedAt={selectedPage.updatedAt}
                     placeholder="Type '/' for commands"
                     appearance="notion"
                     autosize
@@ -1993,9 +2122,13 @@ export const JournalPage = ({
                     key={`${selectedPage.id}-in-play-stocks`}
                     content={selectedPage.inPlayStocksContent}
                     onChange={(content) => onUpdateContent(selectedPage.id, "inPlayStocksContent", content)}
+                    onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "inPlayStocksContent")}
+                    draftStorageKey={`${selectedPage.id}:inPlayStocksContent`}
+                    sourceUpdatedAt={selectedPage.updatedAt}
                     placeholder="Type '/' for commands"
                     appearance="notion"
                     autosize
+                    heightPreset="short"
                   />
                 </section>
               </section>
@@ -2012,6 +2145,9 @@ export const JournalPage = ({
                     key={`${selectedPage.id}-trader-reach-outs`}
                     content={selectedPage.traderReachOutsContent}
                     onChange={(content) => onUpdateContent(selectedPage.id, "traderReachOutsContent", content)}
+                    onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "traderReachOutsContent")}
+                    draftStorageKey={`${selectedPage.id}:traderReachOutsContent`}
+                    sourceUpdatedAt={selectedPage.updatedAt}
                     placeholder="Type '/' for commands"
                     appearance="notion"
                     autosize
@@ -2029,6 +2165,9 @@ export const JournalPage = ({
                     key={`${selectedPage.id}-day-notes`}
                     content={selectedPage.notesContent}
                     onChange={(content) => onUpdateContent(selectedPage.id, "notesContent", content)}
+                    onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "notesContent")}
+                    draftStorageKey={`${selectedPage.id}:notesContent`}
+                    sourceUpdatedAt={selectedPage.updatedAt}
                     placeholder="Type '/' for commands"
                     appearance="notion"
                     autosize
@@ -2059,48 +2198,7 @@ export const JournalPage = ({
                           return;
                         }
 
-                        void Promise.all(files.map((file) => readFileAsDataUrl(file)))
-                          .then((dataUrls) => {
-                            const currentTags = getAlignedScreenshotTags(selectedPage);
-                            if (pendingScreenshotSlotIndex !== null) {
-                              const nextScreenshotUrls = [...selectedPage.screenshotUrls];
-                              const nextScreenshotTags = [...currentTags];
-                              nextScreenshotUrls[pendingScreenshotSlotIndex] = dataUrls[0];
-                              nextScreenshotTags[pendingScreenshotSlotIndex] =
-                                nextScreenshotTags[pendingScreenshotSlotIndex] ??
-                                createDefaultScreenshotTag(selectedPage.tradeDate);
-                              if (dataUrls.length > 1) {
-                                nextScreenshotUrls.splice(pendingScreenshotSlotIndex + 1, 0, ...dataUrls.slice(1));
-                                nextScreenshotTags.splice(
-                                  pendingScreenshotSlotIndex + 1,
-                                  0,
-                                  ...dataUrls.slice(1).map(() =>
-                                    createDefaultScreenshotTag(selectedPage.tradeDate)
-                                  )
-                                );
-                              }
-                              updateSelectedPageScreenshots(nextScreenshotUrls, nextScreenshotTags);
-                              attachScreenshotIfLinked(
-                                dataUrls[0],
-                                nextScreenshotTags[pendingScreenshotSlotIndex]
-                              );
-                              setVisibleScreenshotRows((current) =>
-                                Math.max(current, Math.ceil(Math.max(nextScreenshotUrls.length, 3) / 3))
-                              );
-                              setPendingScreenshotSlotIndex(null);
-                              return;
-                            }
-
-                            const nextScreenshotUrls = [...selectedPage.screenshotUrls, ...dataUrls];
-                            const nextScreenshotTags = [
-                              ...currentTags,
-                              ...dataUrls.map(() => createDefaultScreenshotTag(selectedPage.tradeDate))
-                            ];
-                            updateSelectedPageScreenshots(nextScreenshotUrls, nextScreenshotTags);
-                          })
-                          .catch(() => undefined);
-
-                        setPendingScreenshotSlotIndex(null);
+                        handleScreenshotFileSelection(selectedPage, files);
                         event.currentTarget.value = "";
                       }}
                     />
@@ -2127,18 +2225,22 @@ export const JournalPage = ({
                       type="button"
                       className="mini-action"
                       disabled={selectedPage.screenshotUrls.length === 0}
-                      onClick={() =>
-                        onUpdatePage(selectedPage.id, { screenshotUrls: [], screenshotTags: [] })
-                      }
+                      onClick={() => {
+                        const nextPages = buildNextPagesWithUpdatedScreenshots(selectedPage.id, [], []);
+                        selectedPage.screenshotUrls.forEach((path) => discardScreenshotAttachment(path, nextPages));
+                        journalScreenshotTags.forEach((tag) => clearScreenshotIfLinked(tag));
+                        onUpdatePage(selectedPage.id, { screenshotUrls: [], screenshotTags: [] });
+                      }}
                     >
                       <WorkspaceIcon icon="data" alt="Clear screenshots icon" className="mini-action-icon" />
                       Clear All
-                      </button>
+                    </button>
                     </div>
                   </div>
                   <div className="journal-screenshot-gallery">
                     {Array.from({ length: visibleScreenshotSlots }).map((_, index) => {
                       const screenshotUrl = selectedPage.screenshotUrls[index];
+                      const screenshotSrc = resolveWorkspaceAttachmentSrc(screenshotUrl ?? "");
                       const slotMeta = getScreenshotSlotMeta(index);
 
                       if (!screenshotUrl) {
@@ -2181,7 +2283,7 @@ export const JournalPage = ({
                           >
                             <img
                               className="journal-screenshot-image"
-                              src={screenshotUrl}
+                              src={screenshotSrc}
                               alt={`${formatJournalDate(selectedPage.tradeDate)} screenshot ${index + 1}`}
                             />
                           </button>
@@ -2415,7 +2517,7 @@ export const JournalPage = ({
                             </button>
                             <a
                               className="review-link"
-                              href={screenshotUrl}
+                              href={screenshotSrc}
                               target="_blank"
                               rel="noreferrer"
                             >
@@ -2431,7 +2533,14 @@ export const JournalPage = ({
                                 const nextScreenshotTags = journalScreenshotTags.filter(
                                   (_, screenshotIndex) => screenshotIndex !== index
                                 );
+                                const nextPages = buildNextPagesWithUpdatedScreenshots(
+                                  selectedPage.id,
+                                  nextScreenshotUrls,
+                                  nextScreenshotTags
+                                );
+                                clearScreenshotIfLinked(journalScreenshotTags[index]);
                                 updateSelectedPageScreenshots(nextScreenshotUrls, nextScreenshotTags);
+                                discardScreenshotAttachment(screenshotUrl, nextPages);
                               }}
                             >
                               Remove
@@ -2678,7 +2787,7 @@ export const JournalPage = ({
             <div className="journal-lightbox-image-frame">
               <img
                 className={`journal-lightbox-image${isScreenshotZoomed ? " is-zoomed" : ""}`}
-                src={expandedScreenshotUrl}
+                src={resolveWorkspaceAttachmentSrc(expandedScreenshotUrl)}
                 alt="Expanded journal screenshot"
                 role="button"
                 tabIndex={0}

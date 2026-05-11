@@ -36,6 +36,29 @@ const summarizeSession = (session: TradeSessionRecord): SessionLibraryRow => ({
 
 const formatMoney = (value: number) => `${value >= 0 ? "+" : ""}$${value.toFixed(2)}`;
 
+const tradeDateLabelFormatter = new Intl.DateTimeFormat("en-US", {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  timeZone: "UTC"
+});
+
+const tradeDateMetaFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  timeZone: "UTC"
+});
+
+const formatTradeDate = (value: string, formatter: Intl.DateTimeFormat = tradeDateLabelFormatter) => {
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) {
+    return value;
+  }
+
+  return formatter.format(new Date(Date.UTC(year, month - 1, day)));
+};
+
 const formatDateTime = (value: string) => {
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
@@ -69,14 +92,52 @@ export const DataPage = ({ settings, sessions, onLoadSession, onDeleteSession }:
   const totalExecutions = sessionRows.reduce((sum, session) => sum + session.executions, 0);
   const totalSymbols = new Set(sessions.flatMap((session) => session.trades.map((trade) => trade.symbol))).size;
   const totalNetPnl = sessionRows.reduce((sum, session) => sum + session.netPnl, 0);
+  const latestSession = sessionRows[0] ?? null;
+  const selectedTradeDateLabel = selectedSummary ? formatTradeDate(selectedSummary.tradeDate) : "No import selected";
 
   return (
     <main className="page-shell data-storage-page">
       <PageHero
         eyebrow="Data"
         title="Storage Manager"
-        description="A quiet cleanup page for saved CSV imports. Use it when a day was imported wrong and you need to load or remove that stored session."
-      />
+        description="Review saved CSV imports, load a stored day back into the workspace, or remove a bad import without touching the rest of your data."
+        className="page-hero-data-storage"
+        content={
+          <div className="data-storage-hero-tags">
+            <span className="data-storage-hero-tag">{sessionRows.length} saved days</span>
+            <span className="data-storage-hero-tag">
+              {latestSession ? `Latest ${formatTradeDate(latestSession.tradeDate, tradeDateMetaFormatter)}` : "No saved sessions"}
+            </span>
+            <span className="data-storage-hero-tag">
+              {settings.exportFolder ? "Export folder connected" : "Export folder not set"}
+            </span>
+          </div>
+        }
+      >
+        <div className="data-storage-hero-focus">
+          <span>Current Selection</span>
+          <strong>{selectedTradeDateLabel}</strong>
+          <p>
+            {selectedSummary
+              ? `${selectedSummary.trades} trades across ${selectedSummary.symbols} symbols and ${selectedSummary.executions} executions.`
+              : "Choose a saved import from the list to inspect its file, stats, and trade preview."}
+          </p>
+          {selectedSummary ? (
+            <div className="data-storage-hero-focus-stats">
+              <div>
+                <small>Net P&amp;L</small>
+                <strong className={selectedSummary.netPnl >= 0 ? "positive" : "negative"}>
+                  {formatMoney(selectedSummary.netPnl)}
+                </strong>
+              </div>
+              <div>
+                <small>Source</small>
+                <strong title={selectedSummary.sourceFileName}>{selectedSummary.sourceFileName}</strong>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </PageHero>
 
       <section className="data-storage-summary" aria-label="Storage summary">
         <div>
@@ -104,9 +165,12 @@ export const DataPage = ({ settings, sessions, onLoadSession, onDeleteSession }:
       <section className="data-storage-layout">
         <article className="placeholder-panel data-storage-panel">
           <div className="panel-header data-storage-panel-header">
-            <div>
+            <div className="data-storage-panel-heading">
               <WorkspaceIcon icon="data" alt="Saved imports icon" className="panel-header-icon" />
-              <h2>Saved Imports</h2>
+              <div className="data-storage-panel-heading-copy">
+                <h2>Saved Imports</h2>
+                <p>Pick a saved day, then load it or remove it.</p>
+              </div>
             </div>
             <span>{sessionRows.length} saved</span>
           </div>
@@ -122,17 +186,27 @@ export const DataPage = ({ settings, sessions, onLoadSession, onDeleteSession }:
                       className="data-session-row-main"
                       onClick={() => setSelectedTradeDate(session.tradeDate)}
                     >
-                      <span className="data-session-date">{session.tradeDate}</span>
-                      <span>{session.trades} trades</span>
-                      <span>{session.symbols} symbols</span>
-                      <span>{session.executions} executions</span>
-                      <strong className={session.netPnl >= 0 ? "positive" : "negative"}>
-                        {formatMoney(session.netPnl)}
-                      </strong>
+                      <div className="data-session-row-top">
+                        <div className="data-session-heading">
+                          <span className="data-session-date">{formatTradeDate(session.tradeDate)}</span>
+                          <span className="data-session-date-meta">{session.tradeDate}</span>
+                        </div>
+                        <strong className={session.netPnl >= 0 ? "positive" : "negative"}>
+                          {formatMoney(session.netPnl)}
+                        </strong>
+                      </div>
+
+                      <div className="data-session-metrics">
+                        <span className="data-session-chip">{session.trades} trades</span>
+                        <span className="data-session-chip">{session.symbols} symbols</span>
+                        <span className="data-session-chip">{session.executions} executions</span>
+                      </div>
+
                       <span className="data-session-file" title={session.sourceFileName}>
                         {session.sourceFileName}
                       </span>
                     </button>
+
                     <div className="data-session-actions">
                       <button
                         type="button"
@@ -163,17 +237,41 @@ export const DataPage = ({ settings, sessions, onLoadSession, onDeleteSession }:
 
         <aside className="placeholder-panel data-storage-panel data-storage-inspector">
           <div className="panel-header data-storage-panel-header">
-            <div>
+            <div className="data-storage-panel-heading">
               <WorkspaceIcon icon="journal" alt="Selected import icon" className="panel-header-icon" />
-              <h2>{selectedTradeDate || "Selected Import"}</h2>
+              <div className="data-storage-panel-heading-copy">
+                <h2>Selected Import</h2>
+              </div>
             </div>
+            {selectedSummary ? <span>{selectedSummary.tradeDate}</span> : null}
           </div>
 
           {selectedSession && selectedSummary ? (
             <>
+              <div className="data-inspector-lead">
+                <span>Trade Date</span>
+                <h3>{formatTradeDate(selectedSummary.tradeDate, tradeDateMetaFormatter)}</h3>
+                <p>
+                  {selectedSummary.trades} trades, {selectedSummary.symbols} symbols, {selectedSummary.executions} executions.
+                </p>
+              </div>
+
+              <div className="data-inspector-actions">
+                <button type="button" className="mini-action" onClick={() => onLoadSession(selectedSession.tradeDate)}>
+                  Load This Day
+                </button>
+                <button
+                  type="button"
+                  className="mini-action mini-action-danger"
+                  onClick={() => onDeleteSession(selectedSession.tradeDate)}
+                >
+                  Delete This Import
+                </button>
+              </div>
+
               <div className="data-inspector-stats">
                 <div>
-                  <span>Net P&L</span>
+                  <span>Net P&amp;L</span>
                   <strong className={selectedSummary.netPnl >= 0 ? "positive" : "negative"}>
                     {formatMoney(selectedSummary.netPnl)}
                   </strong>
@@ -195,7 +293,7 @@ export const DataPage = ({ settings, sessions, onLoadSession, onDeleteSession }:
               <div className="data-inspector-meta">
                 <div>
                   <span>Source File</span>
-                  <strong>{selectedSession.sourceFileName}</strong>
+                  <strong title={selectedSession.sourceFileName}>{selectedSession.sourceFileName}</strong>
                 </div>
                 <div>
                   <span>Imported</span>
@@ -208,33 +306,37 @@ export const DataPage = ({ settings, sessions, onLoadSession, onDeleteSession }:
                 {settings.exportFolder ? (
                   <div>
                     <span>Export Folder</span>
-                    <strong>{settings.exportFolder}</strong>
+                    <strong title={settings.exportFolder}>{settings.exportFolder}</strong>
                   </div>
                 ) : null}
               </div>
 
-              <div className="data-inspector-actions">
-                <button type="button" className="mini-action" onClick={() => onLoadSession(selectedSession.tradeDate)}>
-                  Load This Day
-                </button>
-                <button
-                  type="button"
-                  className="mini-action mini-action-danger"
-                  onClick={() => onDeleteSession(selectedSession.tradeDate)}
-                >
-                  Delete This Import
-                </button>
-              </div>
-
               <div className="data-inspector-preview">
-                <span>Trade Preview</span>
-                {selectedTrades.map((trade) => (
-                  <div key={trade.id} className="data-inspector-trade">
-                    <strong>{trade.name}</strong>
-                    <span>{trade.symbol} · {trade.openTime} to {trade.closeTime}</span>
-                    <span className={trade.netPnlUsd >= 0 ? "positive" : "negative"}>{formatMoney(trade.netPnlUsd)}</span>
+                <div className="data-inspector-preview-header">
+                  <span>Trade Preview</span>
+                  <small>
+                    Showing {selectedTrades.length} of {selectedSummary.trades}
+                  </small>
+                </div>
+                {selectedTrades.length > 0 ? (
+                  selectedTrades.map((trade) => (
+                    <div key={trade.id} className="data-inspector-trade">
+                      <div className="data-inspector-trade-copy">
+                        <strong>{trade.name.trim() || trade.symbol}</strong>
+                        <span>
+                          {trade.symbol} | {trade.openTime} to {trade.closeTime}
+                        </span>
+                      </div>
+                      <span className={trade.netPnlUsd >= 0 ? "positive" : "negative"}>
+                        {formatMoney(trade.netPnlUsd)}
+                      </span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="empty-state data-storage-empty-state-compact">
+                    No trades were stored in this session.
                   </div>
-                ))}
+                )}
               </div>
             </>
           ) : (

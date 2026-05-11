@@ -7,6 +7,7 @@ import {
   HistogramSeries,
   LineStyle,
   LineSeries,
+  PriceScaleMode,
   type MouseEventParams,
   type IChartApi,
   type IPriceLine,
@@ -50,6 +51,7 @@ export interface TradeChartLayerVisibility {
 interface TradeChartProps {
   bars: HistoricalBar[];
   trade: GroupedTrade | null;
+  markerTrades?: GroupedTrade[];
   height?: number;
   fillHeight?: boolean;
   showMarkers?: boolean;
@@ -67,6 +69,8 @@ interface TradeChartProps {
 }
 
 type DrawingTool = "cursor" | "trendline" | "horizontal" | "vertical" | "fibonacci" | "pitchfork" | "channel";
+type ChartPriceScaleMode = "normal" | "log" | "percent";
+type ChartSessionMode = "extended" | "regular";
 
 const drawingToolOptions: Array<{
   key: DrawingTool;
@@ -151,8 +155,20 @@ interface ExecutionMarkerPoint {
 type DrawingDragTarget =
   | { id: string; type: "trendline-start" }
   | { id: string; type: "trendline-end" }
+  | { id: string; type: "trendline-move"; origin: DrawingPoint; snapshot: Extract<TradeChartDrawing, { type: "trendline" }> }
+  | { id: string; type: "fibonacci-start" }
+  | { id: string; type: "fibonacci-end" }
+  | { id: string; type: "fibonacci-move"; origin: DrawingPoint; snapshot: Extract<TradeChartDrawing, { type: "fibonacci" }> }
   | { id: string; type: "horizontal" }
-  | { id: string; type: "vertical" };
+  | { id: string; type: "vertical" }
+  | { id: string; type: "pitchfork-pivot" }
+  | { id: string; type: "pitchfork-left" }
+  | { id: string; type: "pitchfork-right" }
+  | { id: string; type: "pitchfork-move"; origin: DrawingPoint; snapshot: Extract<TradeChartDrawing, { type: "pitchfork" }> }
+  | { id: string; type: "channel-start" }
+  | { id: string; type: "channel-end" }
+  | { id: string; type: "channel-parallel" }
+  | { id: string; type: "channel-move"; origin: DrawingPoint; snapshot: Extract<TradeChartDrawing, { type: "channel" }> };
 
 interface IndicatorItem {
   key: keyof TradeChartLayerVisibility;
@@ -368,6 +384,102 @@ const formatVolume = (value?: number) => {
   }
 
   return value.toLocaleString();
+};
+
+const formatSignedMoney = (value: number) => `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`;
+
+const intervalFallbackSeconds: Record<ChartInterval, number> = {
+  "1m": 60,
+  "5m": 5 * 60,
+  "15m": 15 * 60,
+  "1h": 60 * 60,
+  "1D": 24 * 60 * 60,
+  "1W": 7 * 24 * 60 * 60
+};
+
+const getDefaultDrawingTimeOffset = (bars: HistoricalBar[], interval: ChartInterval): number => {
+  for (let index = bars.length - 1; index > 0; index -= 1) {
+    const delta = bars[index].time - bars[index - 1].time;
+    if (delta > 0) {
+      return delta;
+    }
+  }
+
+  return intervalFallbackSeconds[interval];
+};
+
+const getDefaultDrawingPriceOffset = (bars: HistoricalBar[]): number => {
+  if (bars.length === 0) {
+    return 0.1;
+  }
+
+  const sample = bars.slice(-Math.min(bars.length, 24));
+  const averageRange = sample.reduce((sum, bar) => sum + Math.max(bar.high - bar.low, 0), 0) / sample.length;
+
+  if (averageRange > 0) {
+    return Number((averageRange * 0.35).toFixed(4));
+  }
+
+  const high = Math.max(...sample.map((bar) => bar.high));
+  const low = Math.min(...sample.map((bar) => bar.low));
+  return Number((Math.max(high - low, 0.1) * 0.02).toFixed(4));
+};
+
+const offsetTradeDrawing = (
+  drawing: TradeChartDrawing,
+  timeOffset: number,
+  priceOffset: number
+): TradeChartDrawing => {
+  switch (drawing.type) {
+    case "trendline":
+      return {
+        ...drawing,
+        startTime: drawing.startTime + timeOffset,
+        startPrice: drawing.startPrice + priceOffset,
+        endTime: drawing.endTime + timeOffset,
+        endPrice: drawing.endPrice + priceOffset
+      };
+    case "horizontal":
+      return {
+        ...drawing,
+        price: drawing.price + priceOffset
+      };
+    case "vertical":
+      return {
+        ...drawing,
+        time: drawing.time + timeOffset
+      };
+    case "fibonacci":
+      return {
+        ...drawing,
+        startTime: drawing.startTime + timeOffset,
+        startPrice: drawing.startPrice + priceOffset,
+        endTime: drawing.endTime + timeOffset,
+        endPrice: drawing.endPrice + priceOffset
+      };
+    case "pitchfork":
+      return {
+        ...drawing,
+        pivotTime: drawing.pivotTime + timeOffset,
+        pivotPrice: drawing.pivotPrice + priceOffset,
+        leftTime: drawing.leftTime + timeOffset,
+        leftPrice: drawing.leftPrice + priceOffset,
+        rightTime: drawing.rightTime + timeOffset,
+        rightPrice: drawing.rightPrice + priceOffset
+      };
+    case "channel":
+      return {
+        ...drawing,
+        startTime: drawing.startTime + timeOffset,
+        startPrice: drawing.startPrice + priceOffset,
+        endTime: drawing.endTime + timeOffset,
+        endPrice: drawing.endPrice + priceOffset,
+        parallelTime: drawing.parallelTime + timeOffset,
+        parallelPrice: drawing.parallelPrice + priceOffset
+      };
+    default:
+      return drawing;
+  }
 };
 
 const formatTimestampLabel = (timestamp: number, interval: ChartInterval) => {
@@ -624,59 +736,61 @@ const aggregateBars = (bars: HistoricalBar[], interval: ChartInterval): Historic
 
 const buildExecutionMarkers = (
   bars: HistoricalBar[],
-  trade: GroupedTrade | null,
+  trades: GroupedTrade[],
   layerVisibility: TradeChartLayerVisibility
 ): ExecutionMarkerPoint[] => {
-  if (!trade || bars.length === 0) {
+  if (trades.length === 0 || bars.length === 0) {
     return [];
   }
 
   const markers: ExecutionMarkerPoint[] = [];
 
-  if (layerVisibility.entry) {
-    for (const [index, execution] of trade.openingExecutions.slice(0, 1).entries()) {
+  for (const trade of trades) {
+    if (layerVisibility.entry) {
+      for (const [index, execution] of trade.openingExecutions.slice(0, 1).entries()) {
+        markers.push({
+          id: `${trade.id}-entry-${execution.sourceIndex}-${index}`,
+          time: getNearestBarTime(bars, toTradeTimestamp(execution.tradeDate, execution.time)),
+          price: execution.price,
+          kind: "entry",
+          executionSide: execution.side
+        });
+      }
+    }
+
+    trade.addSignals.forEach((signal, index) => {
+      const execution = trade.openingExecutions[index + 1];
+      if (!execution) {
+        return;
+      }
+
+      if (signal.addedToWinner && !layerVisibility.addToWinner) {
+        return;
+      }
+
+      if (!signal.addedToWinner && !layerVisibility.averageDown) {
+        return;
+      }
+
       markers.push({
-        id: `entry-${execution.sourceIndex}-${index}`,
+        id: `${trade.id}-${signal.addedToWinner ? "add-to-winner" : "average-down"}-${execution.sourceIndex}-${index}`,
         time: getNearestBarTime(bars, toTradeTimestamp(execution.tradeDate, execution.time)),
         price: execution.price,
-        kind: "entry",
+        kind: signal.addedToWinner ? "addToWinner" : "averageDown",
         executionSide: execution.side
       });
-    }
-  }
-
-  trade.addSignals.forEach((signal, index) => {
-    const execution = trade.openingExecutions[index + 1];
-    if (!execution) {
-      return;
-    }
-
-    if (signal.addedToWinner && !layerVisibility.addToWinner) {
-      return;
-    }
-
-    if (!signal.addedToWinner && !layerVisibility.averageDown) {
-      return;
-    }
-
-    markers.push({
-      id: `${signal.addedToWinner ? "add-to-winner" : "average-down"}-${execution.sourceIndex}-${index}`,
-      time: getNearestBarTime(bars, toTradeTimestamp(execution.tradeDate, execution.time)),
-      price: execution.price,
-      kind: signal.addedToWinner ? "addToWinner" : "averageDown",
-      executionSide: execution.side
     });
-  });
 
-  if (layerVisibility.exit) {
-    for (const [index, execution] of trade.closingExecutions.entries()) {
-      markers.push({
-        id: `exit-${execution.sourceIndex}-${index}`,
-        time: getNearestBarTime(bars, toTradeTimestamp(execution.tradeDate, execution.time)),
-        price: execution.price,
-        kind: "exit",
-        executionSide: execution.side
-      });
+    if (layerVisibility.exit) {
+      for (const [index, execution] of trade.closingExecutions.entries()) {
+        markers.push({
+          id: `${trade.id}-exit-${execution.sourceIndex}-${index}`,
+          time: getNearestBarTime(bars, toTradeTimestamp(execution.tradeDate, execution.time)),
+          price: execution.price,
+          kind: "exit",
+          executionSide: execution.side
+        });
+      }
     }
   }
 
@@ -686,6 +800,7 @@ const buildExecutionMarkers = (
 export const TradeChart = ({
   bars,
   trade,
+  markerTrades,
   height = 500,
   fillHeight = false,
   showMarkers = true,
@@ -701,6 +816,7 @@ export const TradeChart = ({
   availableIntervals,
   onChangeInterval
 }: TradeChartProps) => {
+  const shellRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -738,16 +854,41 @@ export const TradeChart = ({
   const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
   const [drawingDragTarget, setDrawingDragTarget] = useState<DrawingDragTarget | null>(null);
   const [drawingContextMenu, setDrawingContextMenu] = useState<DrawingContextMenu | null>(null);
-  const [showIndicatorStrip, setShowIndicatorStrip] = useState(true);
+  const [showIndicatorStrip, setShowIndicatorStrip] = useState(false);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
   const [showDrawingMenu, setShowDrawingMenu] = useState(false);
   const [overlayVersion, setOverlayVersion] = useState(0);
   const [overlaySize, setOverlaySize] = useState({ width: 0, height: 0 });
+  const [priceScaleMode, setPriceScaleMode] = useState<ChartPriceScaleMode>("normal");
+  const [sessionMode, setSessionMode] = useState<ChartSessionMode>(regularSessionOnly ? "regular" : "extended");
+
+  const closeChartMenus = useCallback(() => {
+    setShowIndicatorMenu(false);
+    setShowDrawingMenu(false);
+    setDrawingContextMenu(null);
+  }, []);
+
+  const effectiveRegularSessionOnly = regularSessionOnly || sessionMode === "regular";
 
   const sourceBars = useMemo(() => {
     const normalizedBars = normalizeBars(bars);
-    return regularSessionOnly ? normalizedBars.filter(isRegularSessionBar) : normalizedBars;
-  }, [bars, regularSessionOnly]);
+    return effectiveRegularSessionOnly ? normalizedBars.filter(isRegularSessionBar) : normalizedBars;
+  }, [bars, effectiveRegularSessionOnly]);
+  const hasIntradayBars = useMemo(
+    () =>
+      bars.some((bar) => {
+        const date = new Date(bar.time * 1000);
+        return date.getHours() !== 0 || date.getMinutes() !== 0;
+      }),
+    [bars]
+  );
+  const markerTradeSet = useMemo(() => {
+    if (markerTrades && markerTrades.length > 0) {
+      return markerTrades;
+    }
+
+    return trade ? [trade] : [];
+  }, [markerTrades, trade]);
   const displayBars = useMemo(() => aggregateBars(sourceBars, interval), [interval, sourceBars]);
   const vwapData = useMemo(() => buildVwapSeries(displayBars), [displayBars]);
   const fastEmaData = useMemo(() => buildEmaSeries(displayBars, FAST_EMA_PERIOD), [displayBars]);
@@ -793,6 +934,12 @@ export const TradeChart = ({
   useEffect(() => {
     drawingsRef.current = drawings;
   }, [drawings]);
+
+  useEffect(() => {
+    if (regularSessionOnly) {
+      setSessionMode("regular");
+    }
+  }, [regularSessionOnly]);
 
   useEffect(() => {
     if (!shouldUseDrawingAdapter || !onDrawingsChange) {
@@ -875,6 +1022,23 @@ export const TradeChart = ({
     drawingAdapterRef.current.clearActiveTool();
   }, [drawingTool, shouldUseDrawingAdapter]);
 
+  useEffect(() => {
+    const priceScale = seriesRef.current?.priceScale();
+    if (!priceScale) {
+      return;
+    }
+
+    priceScale.applyOptions({
+      mode:
+        priceScaleMode === "log"
+          ? PriceScaleMode.Logarithmic
+          : priceScaleMode === "percent"
+            ? PriceScaleMode.Percentage
+            : PriceScaleMode.Normal
+    });
+    requestAnimationFrame(refreshOverlay);
+  }, [priceScaleMode, refreshOverlay]);
+
   const fitTradeRange = useCallback(() => {
     if (!chartRef.current || displayBarsRef.current.length === 0) {
       return;
@@ -900,7 +1064,7 @@ export const TradeChart = ({
   }, [refreshOverlay]);
 
   const resetChartView = useCallback(() => {
-    chartRef.current?.timeScale().fitContent();
+    chartRef.current?.timeScale().resetTimeScale();
     requestAnimationFrame(refreshOverlay);
   }, [refreshOverlay]);
 
@@ -1179,16 +1343,17 @@ export const TradeChart = ({
       setDrawingTool(tool);
       setSelectedDrawingId(null);
       setDrawingDragTarget(null);
+      closeChartMenus();
       resetDrawingDraft();
     },
-    [resetDrawingDraft]
+    [closeChartMenus, resetDrawingDraft]
   );
 
   useEffect(() => {
     resetDrawingDraft();
     setSelectedDrawingId(null);
-    setDrawingContextMenu(null);
-  }, [interval, resetDrawingDraft, trade?.id]);
+    closeChartMenus();
+  }, [closeChartMenus, interval, resetDrawingDraft, trade?.id]);
 
   useEffect(() => {
     if (!selectedDrawingId) {
@@ -1201,6 +1366,41 @@ export const TradeChart = ({
       setDrawingDragTarget(null);
     }
   }, [drawings, selectedDrawingId]);
+
+  const selectedDrawing = useMemo(
+    () => drawings.find((drawing) => drawing.id === selectedDrawingId) ?? null,
+    [drawings, selectedDrawingId]
+  );
+  const selectedDrawingLabel = useMemo(() => {
+    if (!selectedDrawing) {
+      return "";
+    }
+
+    switch (selectedDrawing.type) {
+      case "trendline":
+        return "Trend line";
+      case "horizontal":
+        return "Horizontal line";
+      case "vertical":
+        return "Vertical line";
+      case "fibonacci":
+        return "Fibonacci retracement";
+      case "pitchfork":
+        return "Andrews Pitchfork";
+      case "channel":
+        return "Parallel channel";
+      default:
+        return "Drawing";
+    }
+  }, [selectedDrawing]);
+  const duplicateTimeOffset = useMemo(
+    () => getDefaultDrawingTimeOffset(displayBars, interval),
+    [displayBars, interval]
+  );
+  const duplicatePriceOffset = useMemo(
+    () => getDefaultDrawingPriceOffset(displayBars),
+    [displayBars]
+  );
 
   const handleDeleteDrawing = useCallback(
     (drawingId: string) => {
@@ -1237,6 +1437,29 @@ export const TradeChart = ({
 
     handleDeleteDrawing(selectedDrawingId);
   }, [drawings, handleDeleteDrawing, resetDrawingDraft, selectedDrawingId, shouldUseDrawingAdapter]);
+
+  const handleDuplicateSelectedDrawing = useCallback(() => {
+    if (!onDrawingsChange || !selectedDrawing) {
+      return;
+    }
+
+    const duplicatedDrawing = {
+      ...offsetTradeDrawing(selectedDrawing, duplicateTimeOffset, duplicatePriceOffset),
+      id: createDrawingId()
+    };
+
+    onDrawingsChange([...drawings, duplicatedDrawing]);
+    setSelectedDrawingId(duplicatedDrawing.id);
+    setDrawingContextMenu(null);
+    resetDrawingDraft();
+  }, [
+    drawings,
+    duplicatePriceOffset,
+    duplicateTimeOffset,
+    onDrawingsChange,
+    resetDrawingDraft,
+    selectedDrawing
+  ]);
 
   useEffect(() => {
     if (!canDraw) {
@@ -1280,6 +1503,12 @@ export const TradeChart = ({
           handleDeleteSelectedDrawing();
           return;
         }
+
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "d" && selectedDrawingId) {
+          event.preventDefault();
+          handleDuplicateSelectedDrawing();
+          return;
+        }
       }
 
       if (event.key !== "Escape") {
@@ -1304,12 +1533,24 @@ export const TradeChart = ({
     draftPoint,
     drawingContextMenu,
     drawingTool,
+    handleDuplicateSelectedDrawing,
     handleDeleteSelectedDrawing,
     handleSelectDrawingTool,
     hoverPoint,
     resetDrawingDraft,
     selectedDrawingId
   ]);
+
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!shellRef.current?.contains(event.target as Node)) {
+        closeChartMenus();
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [closeChartMenus]);
 
   useEffect(() => {
     if (!overlayRef.current) {
@@ -1366,6 +1607,25 @@ export const TradeChart = ({
     [displayBars]
   );
 
+  const resolveTimeAtClientX = useCallback(
+    (clientX: number): number | null => {
+      if (!overlayRef.current || !chartRef.current || displayBars.length === 0) {
+        return null;
+      }
+
+      const rect = overlayRef.current.getBoundingClientRect();
+      const x = clientX - rect.left;
+      if (x < 0 || x > rect.width) {
+        return null;
+      }
+
+      const rawTime = chartRef.current.timeScale().coordinateToTime(x) ?? undefined;
+      const time = toUtcTimestamp(rawTime);
+      return time === null ? null : getNearestBarTime(displayBars, time);
+    },
+    [displayBars]
+  );
+
   const handleOverlayPointerMove = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       if (!canDraw) {
@@ -1373,8 +1633,10 @@ export const TradeChart = ({
       }
 
       const point = resolveDrawingPoint(event.clientX, event.clientY);
+      const resolvedTime = drawingDragTarget?.type === "vertical" ? resolveTimeAtClientX(event.clientX) : null;
+      const dragPoint = point;
 
-      if (drawingDragTarget && point && onDrawingsChange) {
+      if (drawingDragTarget && onDrawingsChange && (point || (drawingDragTarget.type === "vertical" && resolvedTime !== null))) {
         event.preventDefault();
         onDrawingsChange(
           drawings.map((drawing) => {
@@ -1387,31 +1649,127 @@ export const TradeChart = ({
                 return drawing.type === "trendline"
                   ? {
                       ...drawing,
-                      startTime: point.time,
-                      startPrice: point.price
+                      startTime: dragPoint!.time,
+                      startPrice: dragPoint!.price
                     }
                   : drawing;
               case "trendline-end":
                 return drawing.type === "trendline"
                   ? {
                       ...drawing,
-                      endTime: point.time,
-                      endPrice: point.price
+                      endTime: dragPoint!.time,
+                      endPrice: dragPoint!.price
                     }
+                  : drawing;
+              case "trendline-move":
+                return drawing.type === "trendline"
+                  ? offsetTradeDrawing(
+                      drawingDragTarget.snapshot,
+                      dragPoint!.time - drawingDragTarget.origin.time,
+                      dragPoint!.price - drawingDragTarget.origin.price
+                    )
+                  : drawing;
+              case "fibonacci-start":
+                return drawing.type === "fibonacci"
+                  ? {
+                      ...drawing,
+                      startTime: dragPoint!.time,
+                      startPrice: dragPoint!.price
+                    }
+                  : drawing;
+              case "fibonacci-end":
+                return drawing.type === "fibonacci"
+                  ? {
+                      ...drawing,
+                      endTime: dragPoint!.time,
+                      endPrice: dragPoint!.price
+                    }
+                  : drawing;
+              case "fibonacci-move":
+                return drawing.type === "fibonacci"
+                  ? offsetTradeDrawing(
+                      drawingDragTarget.snapshot,
+                      dragPoint!.time - drawingDragTarget.origin.time,
+                      dragPoint!.price - drawingDragTarget.origin.price
+                    )
                   : drawing;
               case "horizontal":
                 return drawing.type === "horizontal"
                   ? {
                       ...drawing,
-                      price: point.price
+                      price: dragPoint!.price
                     }
                   : drawing;
               case "vertical":
                 return drawing.type === "vertical"
                   ? {
                       ...drawing,
-                      time: point.time
+                      time: resolvedTime ?? point?.time ?? drawing.time
                     }
+                  : drawing;
+              case "pitchfork-pivot":
+                return drawing.type === "pitchfork"
+                  ? {
+                      ...drawing,
+                      pivotTime: dragPoint!.time,
+                      pivotPrice: dragPoint!.price
+                    }
+                  : drawing;
+              case "pitchfork-left":
+                return drawing.type === "pitchfork"
+                  ? {
+                      ...drawing,
+                      leftTime: dragPoint!.time,
+                      leftPrice: dragPoint!.price
+                    }
+                  : drawing;
+              case "pitchfork-right":
+                return drawing.type === "pitchfork"
+                  ? {
+                      ...drawing,
+                      rightTime: dragPoint!.time,
+                      rightPrice: dragPoint!.price
+                    }
+                  : drawing;
+              case "pitchfork-move":
+                return drawing.type === "pitchfork"
+                  ? offsetTradeDrawing(
+                      drawingDragTarget.snapshot,
+                      dragPoint!.time - drawingDragTarget.origin.time,
+                      dragPoint!.price - drawingDragTarget.origin.price
+                    )
+                  : drawing;
+              case "channel-start":
+                return drawing.type === "channel"
+                  ? {
+                      ...drawing,
+                      startTime: dragPoint!.time,
+                      startPrice: dragPoint!.price
+                    }
+                  : drawing;
+              case "channel-end":
+                return drawing.type === "channel"
+                  ? {
+                      ...drawing,
+                      endTime: dragPoint!.time,
+                      endPrice: dragPoint!.price
+                    }
+                  : drawing;
+              case "channel-parallel":
+                return drawing.type === "channel"
+                  ? {
+                      ...drawing,
+                      parallelTime: dragPoint!.time,
+                      parallelPrice: dragPoint!.price
+                    }
+                  : drawing;
+              case "channel-move":
+                return drawing.type === "channel"
+                  ? offsetTradeDrawing(
+                      drawingDragTarget.snapshot,
+                      dragPoint!.time - drawingDragTarget.origin.time,
+                      dragPoint!.price - drawingDragTarget.origin.price
+                    )
                   : drawing;
               default:
                 return drawing;
@@ -1427,11 +1785,10 @@ export const TradeChart = ({
 
       setHoverPoint(point);
     },
-    [canDraw, drawingDragTarget, drawingTool, drawings, onDrawingsChange, resolveDrawingPoint]
+    [canDraw, drawingDragTarget, drawingTool, drawings, onDrawingsChange, resolveDrawingPoint, resolveTimeAtClientX]
   );
 
   const handleOverlayPointerLeave = useCallback(() => {
-    setDrawingDragTarget(null);
     setHoverPoint(null);
   }, []);
 
@@ -1444,6 +1801,9 @@ export const TradeChart = ({
       if (!canDraw || !onDrawingsChange) {
         return;
       }
+
+      setShowIndicatorMenu(false);
+      setShowDrawingMenu(false);
 
       if (drawingTool === "cursor") {
         if (!shouldUseDrawingAdapter || !drawingAdapterRef.current || !overlayRef.current) {
@@ -1755,6 +2115,60 @@ export const TradeChart = ({
       resetDrawingDraft();
     },
     [canDraw, resetDrawingDraft]
+  );
+
+  const handleStartWholeDrawingDrag = useCallback(
+    (
+      event: React.PointerEvent<SVGElement>,
+      drawingId: string,
+      moveType: "trendline-move" | "fibonacci-move" | "pitchfork-move" | "channel-move"
+    ) => {
+      if (!canDraw) {
+        return;
+      }
+
+      const point = resolveDrawingPoint(event.clientX, event.clientY);
+      if (!point) {
+        return;
+      }
+
+      const drawing = drawings.find((candidate) => candidate.id === drawingId);
+      if (!drawing) {
+        return;
+      }
+
+      let target: DrawingDragTarget | null = null;
+      switch (moveType) {
+        case "trendline-move":
+          target = drawing.type === "trendline" ? { id: drawingId, type: moveType, origin: point, snapshot: drawing } : null;
+          break;
+        case "fibonacci-move":
+          target = drawing.type === "fibonacci" ? { id: drawingId, type: moveType, origin: point, snapshot: drawing } : null;
+          break;
+        case "pitchfork-move":
+          target = drawing.type === "pitchfork" ? { id: drawingId, type: moveType, origin: point, snapshot: drawing } : null;
+          break;
+        case "channel-move":
+          target = drawing.type === "channel" ? { id: drawingId, type: moveType, origin: point, snapshot: drawing } : null;
+          break;
+        default:
+          target = null;
+      }
+
+      if (!target) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      setDrawingTool("cursor");
+      setSelectedDrawingId(drawingId);
+      setDrawingDragTarget(target);
+      setDrawingContextMenu(null);
+      resetDrawingDraft();
+    },
+    [canDraw, drawings, resetDrawingDraft, resolveDrawingPoint]
   );
 
   useEffect(() => {
@@ -2107,6 +2521,8 @@ export const TradeChart = ({
       return;
     }
 
+    seriesRef.current?.priceScale().setAutoScale(true);
+
     if (!trade || focusMode === "day") {
       fitDayRange();
       return;
@@ -2147,6 +2563,19 @@ export const TradeChart = ({
 
   const change = headerBar && previousBar ? headerBar.close - previousBar.close : 0;
   const changePct = headerBar && previousBar && previousBar.close !== 0 ? (change / previousBar.close) * 100 : 0;
+  const readoutItems = headerBar
+    ? [
+        { label: "Bar", value: formatTimestampLabel(headerBar.time, interval), emphasis: "lead" as const },
+        { label: "O", value: headerBar.open.toFixed(2) },
+        { label: "H", value: headerBar.high.toFixed(2) },
+        { label: "L", value: headerBar.low.toFixed(2) },
+        { label: "C", value: headerBar.close.toFixed(2) },
+        { label: "V", value: formatVolume(headerBar.volume) },
+        hoveredVwap !== null ? { label: "VWAP", value: hoveredVwap.toFixed(2) } : null,
+        dayHigh !== null ? { label: "HOD", value: dayHigh.toFixed(2) } : null,
+        dayLow !== null ? { label: "LOD", value: dayLow.toFixed(2) } : null
+      ].filter((item): item is { label: string; value: string; emphasis?: "lead" } => Boolean(item))
+    : [];
   const indicatorItems = useMemo(() => {
     if (!onToggleLayerVisibility) {
       return [];
@@ -2498,7 +2927,7 @@ export const TradeChart = ({
   const projectedExecutionMarkers = useMemo(() => {
     if (
       !showMarkers ||
-      !trade ||
+      markerTradeSet.length === 0 ||
       !chartRef.current ||
       !seriesRef.current ||
       overlaySize.width === 0 ||
@@ -2507,7 +2936,7 @@ export const TradeChart = ({
       return [];
     }
 
-    return buildExecutionMarkers(displayBars, trade, layerVisibility)
+    return buildExecutionMarkers(displayBars, markerTradeSet, layerVisibility)
       .map((marker) => {
         const x = chartRef.current?.timeScale().timeToCoordinate(marker.time as UTCTimestamp);
         const y = seriesRef.current?.priceToCoordinate(marker.price);
@@ -2523,7 +2952,128 @@ export const TradeChart = ({
         };
       })
       .filter((marker): marker is NonNullable<typeof marker> => marker !== null);
-  }, [displayBars, layerVisibility, overlaySize.height, overlaySize.width, overlayVersion, showMarkers, trade]);
+  }, [displayBars, layerVisibility, markerTradeSet, overlaySize.height, overlaySize.width, overlayVersion, showMarkers]);
+
+  const projectedTradeWindow = useMemo(() => {
+    if (!trade || !chartRef.current || displayBars.length === 0 || overlaySize.width === 0 || overlaySize.height === 0) {
+      return null;
+    }
+
+    const startTime = getNearestBarTime(displayBars, toTradeTimestamp(trade.tradeDate, trade.openTime));
+    const endTime = getNearestBarTime(displayBars, toTradeTimestamp(trade.tradeDate, trade.closeTime));
+    const startXRaw = chartRef.current.timeScale().timeToCoordinate(startTime as UTCTimestamp);
+    const endXRaw = chartRef.current.timeScale().timeToCoordinate(endTime as UTCTimestamp);
+
+    if (typeof startXRaw !== "number" || typeof endXRaw !== "number") {
+      return null;
+    }
+
+    const leftRaw = Math.min(startXRaw, endXRaw);
+    const rightRaw = Math.max(startXRaw, endXRaw);
+    if (rightRaw < 0 || leftRaw > overlaySize.width) {
+      return null;
+    }
+
+    const startX = Math.max(0, Math.min(leftRaw, overlaySize.width));
+    const endX = Math.max(0, Math.min(rightRaw, overlaySize.width));
+    return {
+      startX,
+      endX,
+      width: Math.max(endX - startX, 2),
+      label: trade.holdTime ? `Trade Window - ${trade.holdTime}` : `Trade Window - ${trade.openTime} - ${trade.closeTime}`
+    };
+  }, [
+    displayBars,
+    overlaySize.height,
+    overlaySize.width,
+    overlayVersion,
+    trade?.closeTime,
+    trade?.holdTime,
+    trade?.id,
+    trade?.openTime,
+    trade?.tradeDate
+  ]);
+
+  const projectedTradePosition = useMemo(() => {
+    if (!trade || !chartRef.current || !seriesRef.current || !projectedTradeWindow) {
+      return null;
+    }
+
+    const entryY = seriesRef.current.priceToCoordinate(trade.entryPrice);
+    const exitY = seriesRef.current.priceToCoordinate(trade.exitPrice);
+    const pricePaneHeight = chartRef.current.paneSize(0).height;
+
+    if (typeof entryY !== "number" || typeof exitY !== "number" || pricePaneHeight <= 0) {
+      return null;
+    }
+
+    const topY = Math.max(0, Math.min(entryY, exitY));
+    const bottomY = Math.min(pricePaneHeight, Math.max(entryY, exitY));
+    const labelFitsOutside = projectedTradeWindow.endX < overlaySize.width - 112;
+
+    return {
+      ...projectedTradeWindow,
+      entryY,
+      exitY,
+      topY,
+      height: Math.max(bottomY - topY, 2),
+      isProfit: trade.netPnlUsd >= 0,
+      label: `${trade.side} ${formatSignedMoney(trade.netPnlUsd)}`,
+      labelX: labelFitsOutside ? projectedTradeWindow.endX + 8 : Math.max(projectedTradeWindow.startX + 10, projectedTradeWindow.endX - 8),
+      labelAnchor: labelFitsOutside ? ("start" as const) : ("end" as const)
+    };
+  }, [
+    overlaySize.width,
+    overlayVersion,
+    projectedTradeWindow,
+    trade?.entryPrice,
+    trade?.exitPrice,
+    trade?.netPnlUsd,
+    trade?.side
+  ]);
+
+  const resetPriceScaleAuto = useCallback(() => {
+    seriesRef.current?.priceScale().setAutoScale(true);
+    requestAnimationFrame(refreshOverlay);
+  }, [refreshOverlay]);
+
+  const handleFitTradeCommand = useCallback(() => {
+    closeChartMenus();
+    resetPriceScaleAuto();
+    fitTradeRange();
+  }, [closeChartMenus, fitTradeRange, resetPriceScaleAuto]);
+
+  const handleFitDayCommand = useCallback(() => {
+    closeChartMenus();
+    resetPriceScaleAuto();
+    fitDayRange();
+  }, [closeChartMenus, fitDayRange, resetPriceScaleAuto]);
+
+  const handleResetChartCommand = useCallback(() => {
+    closeChartMenus();
+    resetPriceScaleAuto();
+    resetChartView();
+  }, [closeChartMenus, resetChartView, resetPriceScaleAuto]);
+
+  const handleAutoScaleCommand = useCallback(() => {
+    closeChartMenus();
+    resetPriceScaleAuto();
+  }, [closeChartMenus, resetPriceScaleAuto]);
+
+  const handleTogglePriceScaleMode = useCallback(
+    (mode: Exclude<ChartPriceScaleMode, "normal">) => {
+      closeChartMenus();
+      setPriceScaleMode((current) => (current === mode ? "normal" : mode));
+      resetPriceScaleAuto();
+    },
+    [closeChartMenus, resetPriceScaleAuto]
+  );
+
+  const handleToggleSessionMode = useCallback(() => {
+    closeChartMenus();
+    setSessionMode((current) => (current === "regular" ? "extended" : "regular"));
+    resetPriceScaleAuto();
+  }, [closeChartMenus, resetPriceScaleAuto]);
 
   const getExecutionMarkerFill = useCallback((marker: ExecutionMarkerPoint) => {
     if (marker.executionSide === "Buy") {
@@ -2779,6 +3329,7 @@ export const TradeChart = ({
       : canDraw && drawings.length > 0
         ? " trade-chart-overlay-editing"
         : "";
+  const showDrawingStatus = showDrawingTools && drawingTool !== "cursor";
 
   const intervalToolbar = availableIntervals && onChangeInterval ? (
     <div className="trade-chart-command-group trade-chart-command-group-intervals" aria-label="Chart timeframe">
@@ -2789,26 +3340,69 @@ export const TradeChart = ({
           className={`trade-chart-command-chip trade-chart-timeframe-chip${interval === intervalOption ? " is-active" : ""}`}
           onClick={() => onChangeInterval(intervalOption)}
         >
-          {intervalOption}
+          {intervalLabels[intervalOption]}
         </button>
       ))}
     </div>
   ) : null;
 
+  const chartModeToolbar = (
+    <div className="trade-chart-command-group trade-chart-command-group-modes" aria-label="Chart modes">
+      <button
+        type="button"
+        className="trade-chart-command-chip"
+        onClick={handleAutoScaleCommand}
+        title="Reset the price axis back to auto scale"
+      >
+        Auto
+      </button>
+      <button
+        type="button"
+        className={`trade-chart-command-chip${effectiveRegularSessionOnly ? " is-active" : ""}`}
+        onClick={handleToggleSessionMode}
+        disabled={regularSessionOnly || !hasIntradayBars}
+        title={
+          regularSessionOnly
+            ? "Regular session mode is locked for this chart"
+            : !hasIntradayBars
+              ? "Regular session filtering is only available on intraday bars"
+              : "Toggle regular session only bars"
+        }
+      >
+        RTH
+      </button>
+      <button
+        type="button"
+        className={`trade-chart-command-chip${priceScaleMode === "log" ? " is-active" : ""}`}
+        onClick={() => handleTogglePriceScaleMode("log")}
+        title="Toggle logarithmic price scale"
+      >
+        Log
+      </button>
+      <button
+        type="button"
+        className={`trade-chart-command-chip${priceScaleMode === "percent" ? " is-active" : ""}`}
+        onClick={() => handleTogglePriceScaleMode("percent")}
+        title="Toggle percentage price scale"
+      >
+        %
+      </button>
+    </div>
+  );
+
   return (
-    <div className={`trade-chart-shell${fillHeight ? " is-fill" : ""}`} data-drawing-engine={drawingEngine}>
+    <div ref={shellRef} className={`trade-chart-shell${fillHeight ? " is-fill" : ""}`} data-drawing-engine={drawingEngine}>
       <div className="trade-chart-command-bar" role="toolbar" aria-label="Chart controls">
         <div className="trade-chart-command-group trade-chart-command-group-main">
           <button type="button" className="trade-chart-symbol-pill">
             <span className="trade-chart-symbol-avatar">{(trade?.symbol ?? "C").slice(0, 1)}</span>
             <strong>{trade?.symbol ?? "Chart"}</strong>
           </button>
-          <button type="button" className="trade-chart-command-chip trade-chart-command-chip-icon" title="Add comparison" disabled>
-            +
-          </button>
-          <span className="trade-chart-command-separator" />
+          {intervalToolbar ? <span className="trade-chart-command-separator" /> : null}
           {intervalToolbar}
           <span className="trade-chart-command-separator" />
+          {chartModeToolbar}
+          {onToggleLayerVisibility || showDrawingTools ? <span className="trade-chart-command-separator" /> : null}
           {onToggleLayerVisibility ? (
             <button
               type="button"
@@ -2839,13 +3433,13 @@ export const TradeChart = ({
           ) : null}
         </div>
         <div className="trade-chart-command-group trade-chart-command-group-actions">
-          <button type="button" className="trade-chart-command-chip trade-chart-command-chip-muted" disabled>
-            Alert
+          <button type="button" className="trade-chart-command-chip trade-chart-command-chip-menu" onClick={handleFitTradeCommand} disabled={!trade || focusMode === "day"}>
+            Fit Trade
           </button>
-          <button type="button" className="trade-chart-command-chip trade-chart-command-chip-muted" disabled>
-            Replay
+          <button type="button" className="trade-chart-command-chip trade-chart-command-chip-menu" onClick={handleFitDayCommand}>
+            Fit Day
           </button>
-          <button type="button" className="trade-chart-command-chip trade-chart-command-chip-menu" onClick={resetChartView}>
+          <button type="button" className="trade-chart-command-chip trade-chart-command-chip-menu" onClick={handleResetChartCommand}>
             Reset
           </button>
         </div>
@@ -2918,9 +3512,16 @@ export const TradeChart = ({
                   </button>
                 ))}
               </div>
+              <div className="trade-chart-shortcut-hint">
+                <strong>Shortcuts</strong>
+                <span>`V` cursor, `1` trend, `2` horizontal, `3` vertical, `4` fib, `5` fork, `6` channel, `Del` delete, `Esc` cancel.</span>
+              </div>
               <div className="trade-chart-popover-actions">
                 <button type="button" onClick={handleUndoDrawing} disabled={drawings.length === 0}>
                   Undo
+                </button>
+                <button type="button" onClick={handleDuplicateSelectedDrawing} disabled={!selectedDrawingId}>
+                  Duplicate
                 </button>
                 <button type="button" onClick={handleDeleteSelectedDrawing} disabled={!selectedDrawingId}>
                   Delete selected
@@ -2933,55 +3534,56 @@ export const TradeChart = ({
           ) : null}
         </div>
       ) : null}
-      {showDrawingTools ? (
-        <div className={`trade-chart-tool-status${drawingTool !== "cursor" ? " is-active" : ""}`} role="status">
+      {showDrawingStatus ? (
+        <div className="trade-chart-tool-status is-active" role="status">
           <strong>{activeDrawingTool.label}</strong>
           <span>{drawingInstruction}</span>
         </div>
       ) : null}
-      <div className="trade-chart-header">
-        <div className="trade-chart-title-group">
-          <strong>{trade?.symbol ?? "Chart"}</strong>
-          <span>{trade ? `${trade.tradeDate} - ${intervalLabels[interval]}` : intervalLabels[interval]}</span>
+      {showDrawingTools && selectedDrawing && drawingTool === "cursor" ? (
+        <div className="trade-chart-selection-status" role="status">
+          <strong>{selectedDrawingLabel}</strong>
+          <span>Drag the line body to move it, drag anchors to reshape it, or use duplicate/delete.</span>
+          <div className="trade-chart-selection-actions">
+            <button type="button" onClick={handleDuplicateSelectedDrawing}>
+              Duplicate
+            </button>
+            <button type="button" onClick={handleDeleteSelectedDrawing}>
+              Delete
+            </button>
+          </div>
         </div>
+      ) : null}
+      <div className="trade-chart-header">
         <div className="trade-chart-readout">
           {headerBar ? (
-            <>
-              <span>{formatTimestampLabel(headerBar.time, interval)}</span>
-              <span>O {headerBar.open.toFixed(2)}</span>
-              <span>H {headerBar.high.toFixed(2)}</span>
-              <span>L {headerBar.low.toFixed(2)}</span>
-              <span>C {headerBar.close.toFixed(2)}</span>
-              <span>V {formatVolume(headerBar.volume)}</span>
-              {hoveredVwap !== null ? <span>VWAP {hoveredVwap.toFixed(2)}</span> : null}
-              {dayOpen !== null ? <span>Open {dayOpen.toFixed(2)}</span> : null}
-              {dayHigh !== null ? <span>HOD {dayHigh.toFixed(2)}</span> : null}
-              {dayLow !== null ? <span>LOD {dayLow.toFixed(2)}</span> : null}
-              <span className={change >= 0 ? "trade-chart-positive" : "trade-chart-negative"}>
-                {change >= 0 ? "+" : ""}
-                {change.toFixed(2)} ({changePct >= 0 ? "+" : ""}
-                {changePct.toFixed(2)}%)
+            <div className="trade-chart-readout-row">
+              {readoutItems.map((item) => (
+                <span
+                  key={item.label}
+                  className={`trade-chart-readout-item${item.emphasis === "lead" ? " trade-chart-readout-item-lead" : ""}`}
+                >
+                  <small>{item.label}</small>
+                  <strong>{item.value}</strong>
+                </span>
+              ))}
+              <span className={`trade-chart-readout-item trade-chart-readout-change ${change >= 0 ? "trade-chart-positive" : "trade-chart-negative"}`}>
+                <small>Chg</small>
+                <strong>
+                  {change >= 0 ? "+" : ""}
+                  {change.toFixed(2)} ({changePct >= 0 ? "+" : ""}
+                  {changePct.toFixed(2)}%)
+                </strong>
               </span>
-            </>
+            </div>
           ) : (
-            <span>No bars loaded</span>
+            <span className="trade-chart-readout-empty">No bars loaded</span>
           )}
-        </div>
-        <div className="trade-chart-quick-actions">
-          <button type="button" className="chart-quick-chip" onClick={fitTradeRange} disabled={!trade || focusMode === "day"}>
-            Fit Trade
-          </button>
-          <button type="button" className="chart-quick-chip" onClick={fitDayRange}>
-            Fit Day
-          </button>
-          <button type="button" className="chart-quick-chip" onClick={resetChartView}>
-            Reset
-          </button>
         </div>
       </div>
       {showIndicatorStrip && activeIndicatorItems.length > 0 ? (
         <div className="trade-chart-indicator-strip">
-          <span className="trade-chart-indicator-strip-label">Active</span>
+          <span className="trade-chart-indicator-strip-label">Layers</span>
           {activeIndicatorItems.map((item) => (
             <button
               key={item.key}
@@ -3029,6 +3631,15 @@ export const TradeChart = ({
             <button
               type="button"
               className="trade-chart-tool-button trade-chart-tool-button-muted"
+              onClick={handleDuplicateSelectedDrawing}
+              disabled={!selectedDrawingId}
+              title="Duplicate selected"
+            >
+              <span className="trade-chart-tool-glyph trade-chart-tool-glyph-text">Dup</span>
+            </button>
+            <button
+              type="button"
+              className="trade-chart-tool-button trade-chart-tool-button-muted"
               onClick={handleDeleteSelectedDrawing}
               disabled={!selectedDrawingId}
               title="Delete selected"
@@ -3068,6 +3679,75 @@ export const TradeChart = ({
             onPointerCancel={handleOverlayPointerUp}
           >
             <svg className="trade-chart-drawings" width="100%" height="100%">
+            {projectedTradePosition ? (
+              <g className={`trade-chart-position-tool${projectedTradePosition.isProfit ? " is-profit" : " is-loss"}`}>
+                <rect
+                  x={projectedTradePosition.startX}
+                  y={projectedTradePosition.topY}
+                  width={projectedTradePosition.width}
+                  height={projectedTradePosition.height}
+                  className="trade-chart-position-band"
+                />
+                <line
+                  x1={projectedTradePosition.startX}
+                  y1={projectedTradePosition.entryY}
+                  x2={projectedTradePosition.endX}
+                  y2={projectedTradePosition.entryY}
+                  className="trade-chart-position-line trade-chart-position-line-entry"
+                />
+                <line
+                  x1={projectedTradePosition.startX}
+                  y1={projectedTradePosition.exitY}
+                  x2={projectedTradePosition.endX}
+                  y2={projectedTradePosition.exitY}
+                  className="trade-chart-position-line trade-chart-position-line-exit"
+                />
+                {projectedTradePosition.width >= 72 ? (
+                  <text
+                    x={projectedTradePosition.labelX}
+                    y={projectedTradePosition.topY > 14 ? projectedTradePosition.topY - 6 : projectedTradePosition.topY + 14}
+                    textAnchor={projectedTradePosition.labelAnchor}
+                    className="trade-chart-position-label"
+                  >
+                    {projectedTradePosition.label}
+                  </text>
+                ) : null}
+              </g>
+            ) : null}
+            {projectedTradeWindow ? (
+              <g className="trade-chart-trade-window">
+                <rect
+                  x={projectedTradeWindow.startX}
+                  y={0}
+                  width={projectedTradeWindow.width}
+                  height={overlaySize.height}
+                  className="trade-chart-trade-window-band"
+                />
+                <line
+                  x1={projectedTradeWindow.startX}
+                  y1={0}
+                  x2={projectedTradeWindow.startX}
+                  y2={overlaySize.height}
+                  className="trade-chart-trade-window-line"
+                />
+                <line
+                  x1={projectedTradeWindow.endX}
+                  y1={0}
+                  x2={projectedTradeWindow.endX}
+                  y2={overlaySize.height}
+                  className="trade-chart-trade-window-line"
+                />
+                {projectedTradeWindow.width >= 84 ? (
+                  <text
+                    x={Math.min(projectedTradeWindow.startX + 10, Math.max(10, overlaySize.width - 14))}
+                    y={16}
+                    className="trade-chart-trade-window-label"
+                  >
+                    {projectedTradeWindow.label}
+                  </text>
+                ) : null}
+              </g>
+            ) : null}
             {projectedExecutionMarkers.map((marker) => (
               <g key={marker.id}>
                 <polygon
@@ -3089,7 +3769,11 @@ export const TradeChart = ({
                       x2={drawing.x2}
                       y2={drawing.y2}
                       className="trade-chart-drawing-hit-area"
-                      onPointerDown={(event) => handleSelectDrawing(event, drawing.id)}
+                      onPointerDown={(event) =>
+                        isSelected
+                          ? handleStartWholeDrawingDrag(event, drawing.id, "fibonacci-move")
+                          : handleSelectDrawing(event, drawing.id)
+                      }
                       onContextMenu={(event) => handleOpenDrawingContextMenu(event, drawing.id)}
                     />
                     <line
@@ -3134,7 +3818,11 @@ export const TradeChart = ({
                       x2={drawing.x2}
                       y2={drawing.y2}
                       className="trade-chart-drawing-hit-area"
-                      onPointerDown={(event) => handleSelectDrawing(event, drawing.id)}
+                      onPointerDown={(event) =>
+                        isSelected
+                          ? handleStartWholeDrawingDrag(event, drawing.id, "trendline-move")
+                          : handleSelectDrawing(event, drawing.id)
+                      }
                       onContextMenu={(event) => handleOpenDrawingContextMenu(event, drawing.id)}
                     />
                     <line
@@ -3162,6 +3850,28 @@ export const TradeChart = ({
                         </text>
                       </g>
                     ))}
+                    {isSelected ? (
+                      <>
+                        <circle
+                          cx={drawing.x1}
+                          cy={drawing.y1}
+                          r={4}
+                          className="trade-chart-drawing-handle"
+                          onPointerDown={(event) =>
+                            handleStartDrawingDrag(event, { id: drawing.id, type: "fibonacci-start" })
+                          }
+                        />
+                        <circle
+                          cx={drawing.x2}
+                          cy={drawing.y2}
+                          r={4}
+                          className="trade-chart-drawing-handle"
+                          onPointerDown={(event) =>
+                            handleStartDrawingDrag(event, { id: drawing.id, type: "fibonacci-end" })
+                          }
+                        />
+                      </>
+                    ) : null}
                   </g>
                 );
               }
@@ -3223,7 +3933,11 @@ export const TradeChart = ({
                           x2={line.x2}
                           y2={line.y2}
                           className="trade-chart-drawing-hit-area"
-                          onPointerDown={(event) => handleSelectDrawing(event, drawing.id)}
+                          onPointerDown={(event) =>
+                            isSelected
+                              ? handleStartWholeDrawingDrag(event, drawing.id, "pitchfork-move")
+                              : handleSelectDrawing(event, drawing.id)
+                          }
                           onContextMenu={(event) => handleOpenDrawingContextMenu(event, drawing.id)}
                         />
                         <line
@@ -3244,9 +3958,33 @@ export const TradeChart = ({
                     />
                     {isSelected ? (
                       <>
-                        <circle cx={drawing.pivotX} cy={drawing.pivotY} r={3.5} className="trade-chart-drawing-handle" />
-                        <circle cx={drawing.leftX} cy={drawing.leftY} r={3.5} className="trade-chart-drawing-handle" />
-                        <circle cx={drawing.rightX} cy={drawing.rightY} r={3.5} className="trade-chart-drawing-handle" />
+                        <circle
+                          cx={drawing.pivotX}
+                          cy={drawing.pivotY}
+                          r={3.5}
+                          className="trade-chart-drawing-handle"
+                          onPointerDown={(event) =>
+                            handleStartDrawingDrag(event, { id: drawing.id, type: "pitchfork-pivot" })
+                          }
+                        />
+                        <circle
+                          cx={drawing.leftX}
+                          cy={drawing.leftY}
+                          r={3.5}
+                          className="trade-chart-drawing-handle"
+                          onPointerDown={(event) =>
+                            handleStartDrawingDrag(event, { id: drawing.id, type: "pitchfork-left" })
+                          }
+                        />
+                        <circle
+                          cx={drawing.rightX}
+                          cy={drawing.rightY}
+                          r={3.5}
+                          className="trade-chart-drawing-handle"
+                          onPointerDown={(event) =>
+                            handleStartDrawingDrag(event, { id: drawing.id, type: "pitchfork-right" })
+                          }
+                        />
                       </>
                     ) : null}
                   </g>
@@ -3264,7 +4002,11 @@ export const TradeChart = ({
                           x2={line.x2}
                           y2={line.y2}
                           className="trade-chart-drawing-hit-area"
-                          onPointerDown={(event) => handleSelectDrawing(event, drawing.id)}
+                          onPointerDown={(event) =>
+                            isSelected
+                              ? handleStartWholeDrawingDrag(event, drawing.id, "channel-move")
+                              : handleSelectDrawing(event, drawing.id)
+                          }
                           onContextMenu={(event) => handleOpenDrawingContextMenu(event, drawing.id)}
                         />
                         <line
@@ -3292,9 +4034,33 @@ export const TradeChart = ({
                     />
                     {isSelected ? (
                       <>
-                        <circle cx={drawing.x1} cy={drawing.y1} r={3.5} className="trade-chart-drawing-handle" />
-                        <circle cx={drawing.x2} cy={drawing.y2} r={3.5} className="trade-chart-drawing-handle" />
-                        <circle cx={drawing.x3} cy={drawing.y3} r={3.5} className="trade-chart-drawing-handle" />
+                        <circle
+                          cx={drawing.x1}
+                          cy={drawing.y1}
+                          r={3.5}
+                          className="trade-chart-drawing-handle"
+                          onPointerDown={(event) =>
+                            handleStartDrawingDrag(event, { id: drawing.id, type: "channel-start" })
+                          }
+                        />
+                        <circle
+                          cx={drawing.x2}
+                          cy={drawing.y2}
+                          r={3.5}
+                          className="trade-chart-drawing-handle"
+                          onPointerDown={(event) =>
+                            handleStartDrawingDrag(event, { id: drawing.id, type: "channel-end" })
+                          }
+                        />
+                        <circle
+                          cx={drawing.x3}
+                          cy={drawing.y3}
+                          r={3.5}
+                          className="trade-chart-drawing-handle"
+                          onPointerDown={(event) =>
+                            handleStartDrawingDrag(event, { id: drawing.id, type: "channel-parallel" })
+                          }
+                        />
                       </>
                     ) : null}
                   </g>
@@ -3432,12 +4198,19 @@ export const TradeChart = ({
                 className="trade-chart-context-menu"
                 style={{
                   left: Math.min(drawingContextMenu.x, Math.max(0, overlaySize.width - 190)),
-                  top: Math.min(drawingContextMenu.y, Math.max(0, overlaySize.height - 64))
+                  top: Math.min(drawingContextMenu.y, Math.max(0, overlaySize.height - 104))
                 }}
                 onPointerDown={(event) => event.stopPropagation()}
                 onContextMenu={(event) => event.preventDefault()}
               >
-                <button type="button" onClick={() => handleDeleteDrawing(drawingContextMenu.drawingId)}>
+                <button type="button" onClick={handleDuplicateSelectedDrawing}>
+                  Duplicate drawing
+                </button>
+                <button
+                  type="button"
+                  className="trade-chart-context-menu-button-danger"
+                  onClick={() => handleDeleteDrawing(drawingContextMenu.drawingId)}
+                >
                   Delete drawing
                 </button>
               </div>

@@ -18,6 +18,14 @@ import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDebouncedSave } from "../../../lib/hooks/useDebouncedSave";
+import { FLUSH_DEBOUNCED_SAVES_EVENT } from "../../../lib/sync/pendingSaveFlush";
+import {
+  collectRichTextAttachmentPaths,
+  deleteWorkspaceAttachmentIfUnused,
+  normalizeRichTextContentForStorage,
+  prepareRichTextContentForEditor,
+  type InlineImageInsertResult
+} from "../../../lib/workspace/workspaceAttachmentClient";
 import type { JournalSaveState, JournalSlashCommandItem } from "../../../types/journalEditor";
 import { JournalBlockActionsMenu } from "./JournalBlockActionsMenu";
 import { JournalBubbleMenu } from "./JournalBubbleMenu";
@@ -30,10 +38,13 @@ interface JournalRichTextEditorProps {
   readOnly?: boolean;
   compact?: boolean;
   autosize?: boolean;
+  heightPreset?: "default" | "short";
   taskListColumns?: 1 | 2;
   appearance?: "default" | "notion";
   showBlockActions?: boolean;
-  onImageInsert?: (file: File) => Promise<string>;
+  onImageInsert?: (file: File) => Promise<string | InlineImageInsertResult>;
+  draftStorageKey?: string;
+  sourceUpdatedAt?: string;
 }
 
 const MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -44,6 +55,13 @@ const ACCEPTED_INLINE_IMAGE_TYPES = new Set([
   "image/gif",
   "image/svg+xml"
 ]);
+const EDITOR_DRAFT_STORAGE_PREFIX = "trade-engine-journal-editor-draft::";
+const MAX_STORED_DRAFT_BYTES = 512 * 1024;
+
+interface StoredEditorDraft {
+  content: JSONContent;
+  updatedAt: string;
+}
 
 const getCurrentSlashQueryFromState = (state: Editor["state"]): string | null => {
   const { selection } = state;
@@ -97,6 +115,9 @@ const createParagraphNodes = (items: string[]) =>
     content: [{ type: "text", text }]
   }));
 
+const createAttachmentPathSet = (content: JSONContent): Set<string> =>
+  new Set(collectRichTextAttachmentPaths(content));
+
 const countWords = (rawText: string) => {
   const normalized = rawText.replace(/\s+/g, " ").trim();
   if (!normalized) {
@@ -104,6 +125,146 @@ const countWords = (rawText: string) => {
   }
 
   return normalized.split(" ").length;
+};
+
+const countMeaningfulContent = (content?: JSONContent | null): number => {
+  if (!content || typeof content !== "object") {
+    return 0;
+  }
+
+  let total = 0;
+
+  const visit = (node: JSONContent) => {
+    if ("text" in node && typeof node.text === "string") {
+      total += node.text.trim().length;
+    }
+
+    if (node.type === "horizontalRule" || node.type === "image") {
+      total += 1;
+    }
+
+    if (node.type === "taskItem" || node.type === "listItem") {
+      total += 1;
+    }
+
+    if (Array.isArray(node.content)) {
+      node.content.forEach((child) => visit(child));
+    }
+  };
+
+  visit(content);
+  return total;
+};
+
+const parseTimestamp = (value?: string | null): number | null => {
+  if (!value || !value.trim()) {
+    return null;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const getDraftStorageItemKey = (draftStorageKey: string) => `${EDITOR_DRAFT_STORAGE_PREFIX}${draftStorageKey}`;
+
+const serializeStoredDraft = (content: JSONContent, updatedAt: string): string | null => {
+  try {
+    const serialized = JSON.stringify({
+      content,
+      updatedAt
+    } satisfies StoredEditorDraft);
+
+    if (serialized.length > MAX_STORED_DRAFT_BYTES) {
+      return null;
+    }
+
+    return serialized;
+  } catch {
+    return null;
+  }
+};
+
+const loadStoredDraft = (draftStorageKey?: string): StoredEditorDraft | null => {
+  if (!draftStorageKey || typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(getDraftStorageItemKey(draftStorageKey));
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<StoredEditorDraft>;
+    if (!parsed || typeof parsed !== "object" || !parsed.content || typeof parsed.updatedAt !== "string") {
+      return null;
+    }
+
+    return {
+      content: parsed.content as JSONContent,
+      updatedAt: parsed.updatedAt
+    };
+  } catch {
+    return null;
+  }
+};
+
+const saveStoredDraft = (draftStorageKey: string, content: JSONContent, updatedAt: string) => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    const storageItemKey = getDraftStorageItemKey(draftStorageKey);
+    const serialized = serializeStoredDraft(content, updatedAt);
+    if (!serialized) {
+      window.localStorage.removeItem(storageItemKey);
+      return;
+    }
+
+    window.localStorage.setItem(storageItemKey, serialized);
+  } catch {
+    // Draft recovery is best-effort only.
+  }
+};
+
+const clearStoredDraft = (draftStorageKey?: string) => {
+  if (!draftStorageKey || typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.removeItem(getDraftStorageItemKey(draftStorageKey));
+  } catch {
+    // Draft recovery is best-effort only.
+  }
+};
+
+const shouldUseStoredDraft = (
+  incomingContent: JSONContent,
+  sourceUpdatedAt: string | undefined,
+  storedDraft: StoredEditorDraft | null
+): boolean => {
+  if (!storedDraft) {
+    return false;
+  }
+
+  const draftSerialized = serializeNormalizedContent(storedDraft.content);
+  const incomingSerialized = serializeNormalizedContent(incomingContent);
+  if (draftSerialized === incomingSerialized) {
+    return false;
+  }
+
+  const draftUpdatedAt = parseTimestamp(storedDraft.updatedAt);
+  const sourceTimestamp = parseTimestamp(sourceUpdatedAt);
+  const draftScore = countMeaningfulContent(storedDraft.content);
+  const incomingScore = countMeaningfulContent(incomingContent);
+
+  if (draftUpdatedAt !== null && sourceTimestamp !== null) {
+    return draftUpdatedAt > sourceTimestamp + 1000;
+  }
+
+  return draftScore > incomingScore;
 };
 
 const readFileAsDataUrl = (file: File): Promise<string> =>
@@ -120,6 +281,25 @@ const readFileAsDataUrl = (file: File): Promise<string> =>
     reader.onerror = () => reject(reader.error ?? new Error("Unable to read image file."));
     reader.readAsDataURL(file);
   });
+
+const serializeNormalizedContent = (content: JSONContent): string =>
+  JSON.stringify(normalizeRichTextContentForStorage(content));
+
+const JournalInlineImage = Image.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      filePath: {
+        default: null,
+        parseHTML: (element) => element.getAttribute("data-file-path"),
+        renderHTML: (attributes) => {
+          const filePath = typeof attributes.filePath === "string" ? attributes.filePath.trim() : "";
+          return filePath ? { "data-file-path": filePath } : {};
+        }
+      }
+    };
+  }
+});
 
 const createSlashCommands = (): JournalSlashCommandItem[] => [
   {
@@ -354,12 +534,22 @@ export const JournalRichTextEditor = ({
   readOnly = false,
   compact = false,
   autosize = false,
+  heightPreset = "default",
   taskListColumns = 1,
   appearance = "default",
   showBlockActions = true,
-  onImageInsert
+  onImageInsert,
+  draftStorageKey,
+  sourceUpdatedAt
 }: JournalRichTextEditorProps) => {
-  const [pendingContent, setPendingContent] = useState<JSONContent>(content);
+  const initialStoredDraftRef = useRef<StoredEditorDraft | null>(loadStoredDraft(draftStorageKey));
+  const initialStorageContent = normalizeRichTextContentForStorage(
+    shouldUseStoredDraft(content, sourceUpdatedAt, initialStoredDraftRef.current)
+      ? initialStoredDraftRef.current?.content ?? content
+      : content
+  );
+  const initialContent = prepareRichTextContentForEditor(initialStorageContent);
+  const [pendingContent, setPendingContent] = useState<JSONContent>(initialContent);
   const [saveState, setSaveState] = useState<JournalSaveState>("saved");
   const [slashQuery, setSlashQuery] = useState("");
   const [activeSlashIndex, setActiveSlashIndex] = useState(0);
@@ -373,7 +563,9 @@ export const JournalRichTextEditor = ({
   const filteredCommandsRef = useRef<JournalSlashCommandItem[]>([]);
   const activeSlashIndexRef = useRef(0);
   const editorRef = useRef<Editor | null>(null);
-  const lastCommittedContentRef = useRef(JSON.stringify(content));
+  const lastCommittedContentRef = useRef(serializeNormalizedContent(initialStorageContent));
+  const latestEditorContentRef = useRef<JSONContent>(initialContent);
+  const trackedAttachmentPathsRef = useRef(createAttachmentPathSet(initialStorageContent));
   const imageStatusTimeoutRef = useRef<number | null>(null);
 
   const updateSlashState = useCallback((editor: Editor) => {
@@ -407,6 +599,40 @@ export const JournalRichTextEditor = ({
     [clearImageStatusTimeout]
   );
 
+  const syncTrackedAttachmentPaths = useCallback(
+    (content: JSONContent, options?: { deleteRemoved?: boolean }) => {
+      const nextAttachmentPaths = createAttachmentPathSet(content);
+      const previousAttachmentPaths = trackedAttachmentPathsRef.current;
+      trackedAttachmentPathsRef.current = nextAttachmentPaths;
+
+      if (!options?.deleteRemoved || previousAttachmentPaths.size === 0) {
+        return;
+      }
+
+      const removedPaths = Array.from(previousAttachmentPaths).filter(
+        (path) => !nextAttachmentPaths.has(path)
+      );
+      if (removedPaths.length === 0) {
+        return;
+      }
+
+      for (const path of removedPaths) {
+        void Promise.resolve().then(async () => {
+          if (trackedAttachmentPathsRef.current.has(path)) {
+            return;
+          }
+
+          try {
+            await deleteWorkspaceAttachmentIfUnused(path);
+          } catch (error) {
+            console.warn("[journal] Failed to clean up removed inline image attachment.", error);
+          }
+        });
+      }
+    },
+    []
+  );
+
   const insertImageFromFile = useCallback(
     async (file: File): Promise<boolean> => {
       const currentEditor = editorRef.current;
@@ -429,8 +655,26 @@ export const JournalRichTextEditor = ({
       updateImageStatus("Adding image...", false);
 
       try {
-        const imageUrl = onImageInsert ? await onImageInsert(file) : await readFileAsDataUrl(file);
-        currentEditor.chain().focus().setImage({ src: imageUrl, alt: file.name }).run();
+        const imageResult = onImageInsert ? await onImageInsert(file) : await readFileAsDataUrl(file);
+        const imageAttrs =
+          typeof imageResult === "string"
+            ? { src: imageResult, alt: file.name }
+            : {
+                src: imageResult.src,
+                alt: file.name,
+                ...(imageResult.storageSrc ? { filePath: imageResult.storageSrc } : {})
+              };
+        if (!imageAttrs.src) {
+          throw new Error("Missing image source.");
+        }
+
+        if (typeof imageResult !== "string" && imageResult.storageSrc) {
+          const nextTrackedPaths = new Set(trackedAttachmentPathsRef.current);
+          nextTrackedPaths.add(imageResult.storageSrc);
+          trackedAttachmentPathsRef.current = nextTrackedPaths;
+        }
+
+        currentEditor.chain().focus().insertContent({ type: "image", attrs: imageAttrs }).run();
         setSaveState("saving");
         updateImageStatus("Image added.", false, 2000);
         return true;
@@ -446,37 +690,50 @@ export const JournalRichTextEditor = ({
   );
 
   const commitContent = useCallback(
-    (nextContent: JSONContent) => {
-      const nextSerialized = JSON.stringify(nextContent);
+    (nextContent: JSONContent, options?: { skipUiState?: boolean }) => {
+      const normalizedContent = normalizeRichTextContentForStorage(nextContent);
+      syncTrackedAttachmentPaths(normalizedContent, { deleteRemoved: true });
+      const nextSerialized = JSON.stringify(normalizedContent);
       if (lastCommittedContentRef.current === nextSerialized) {
-        setSaveState("saved");
-        return;
+        if (!options?.skipUiState) {
+          setSaveState("saved");
+        }
+        return false;
       }
 
       lastCommittedContentRef.current = nextSerialized;
-      onChange(nextContent);
-      setSaveState("saved");
-      setLastSavedAt(new Date());
+      latestEditorContentRef.current = nextContent;
+      onChange(normalizedContent);
+      if (!options?.skipUiState) {
+        setSaveState("saved");
+        setLastSavedAt(new Date());
+      }
+      return true;
     },
-    [onChange]
+    [onChange, syncTrackedAttachmentPaths]
+  );
+
+  const flushEditorContent = useCallback(
+    (options?: { persistDraft?: boolean; skipUiState?: boolean }) => {
+      const nextContent = editorRef.current?.getJSON() ?? latestEditorContentRef.current;
+      latestEditorContentRef.current = nextContent;
+
+      if (!options?.skipUiState) {
+        setPendingContent(nextContent);
+      }
+
+      if (options?.persistDraft !== false && draftStorageKey) {
+        saveStoredDraft(draftStorageKey, normalizeRichTextContentForStorage(nextContent), new Date().toISOString());
+      }
+
+      commitContent(nextContent, { skipUiState: options?.skipUiState });
+    },
+    [commitContent, draftStorageKey]
   );
 
   const saveNow = useCallback(() => {
-    const currentEditor = editorRef.current;
-    if (!currentEditor) {
-      return;
-    }
-
-    const nextContent = currentEditor.getJSON();
-    const nextSerialized = JSON.stringify(nextContent);
-    if (nextSerialized === lastCommittedContentRef.current) {
-      setSaveState("saved");
-      return;
-    }
-
-    setPendingContent(nextContent);
-    commitContent(nextContent);
-  }, [commitContent]);
+    flushEditorContent({ persistDraft: true });
+  }, [flushEditorContent]);
 
   const editor = useEditor({
     extensions: [
@@ -501,7 +758,7 @@ export const JournalRichTextEditor = ({
       }),
       Subscript,
       Superscript,
-      Image.configure({
+      JournalInlineImage.configure({
         allowBase64: true,
         HTMLAttributes: {
           class: "journal-image"
@@ -538,7 +795,7 @@ export const JournalRichTextEditor = ({
         }
       })
     ],
-    content,
+    content: initialContent,
     editable: !readOnly,
     immediatelyRender: false,
     editorProps: {
@@ -664,13 +921,16 @@ export const JournalRichTextEditor = ({
       }
     },
     onCreate: ({ editor: nextEditor }) => {
+      latestEditorContentRef.current = nextEditor.getJSON();
       setWordCount(countWords(nextEditor.getText()));
       updateSlashState(nextEditor);
     },
     onUpdate: ({ editor: nextEditor }) => {
       const nextContent = nextEditor.getJSON();
-      const nextSerialized = JSON.stringify(nextContent);
+      latestEditorContentRef.current = nextContent;
+      const nextSerialized = serializeNormalizedContent(nextContent);
       if (nextSerialized === lastCommittedContentRef.current) {
+        syncTrackedAttachmentPaths(nextContent, { deleteRemoved: true });
         setSaveState("saved");
       } else {
         setPendingContent(nextContent);
@@ -691,6 +951,19 @@ export const JournalRichTextEditor = ({
       commitContent(nextContent);
     },
     saveState === "saving"
+  );
+
+  useDebouncedSave(
+    pendingContent,
+    900,
+    (nextContent) => {
+      if (!draftStorageKey) {
+        return;
+      }
+
+      saveStoredDraft(draftStorageKey, normalizeRichTextContentForStorage(nextContent), new Date().toISOString());
+    },
+    Boolean(draftStorageKey)
   );
 
   const filteredSlashCommands = useMemo(() => {
@@ -735,21 +1008,80 @@ export const JournalRichTextEditor = ({
   );
 
   useEffect(() => {
-    const nextSerialized = JSON.stringify(content);
+    if (typeof window === "undefined" || readOnly) {
+      return;
+    }
+
+    const flushOnLifecycleEvent = () => {
+      flushEditorContent({ persistDraft: true, skipUiState: true });
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flushOnLifecycleEvent();
+      }
+    };
+
+    window.addEventListener(FLUSH_DEBOUNCED_SAVES_EVENT, flushOnLifecycleEvent);
+    window.addEventListener("beforeunload", flushOnLifecycleEvent);
+    window.addEventListener("pagehide", flushOnLifecycleEvent);
+    window.addEventListener("blur", flushOnLifecycleEvent);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      flushOnLifecycleEvent();
+      window.removeEventListener(FLUSH_DEBOUNCED_SAVES_EVENT, flushOnLifecycleEvent);
+      window.removeEventListener("beforeunload", flushOnLifecycleEvent);
+      window.removeEventListener("pagehide", flushOnLifecycleEvent);
+      window.removeEventListener("blur", flushOnLifecycleEvent);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [flushEditorContent, readOnly]);
+
+  useEffect(() => {
+    const storedDraft = loadStoredDraft(draftStorageKey);
+    const nextStorageContent = normalizeRichTextContentForStorage(
+      shouldUseStoredDraft(content, sourceUpdatedAt, storedDraft)
+        ? storedDraft?.content ?? content
+        : content
+    );
+    const nextContent = prepareRichTextContentForEditor(nextStorageContent);
+    const nextSerialized = JSON.stringify(nextStorageContent);
+    const nextAttachmentPaths = createAttachmentPathSet(nextStorageContent);
     if (lastCommittedContentRef.current === nextSerialized) {
+      trackedAttachmentPathsRef.current = nextAttachmentPaths;
+      if (storedDraft && serializeNormalizedContent(content) === serializeNormalizedContent(storedDraft.content)) {
+        clearStoredDraft(draftStorageKey);
+      }
       return;
     }
 
     if (!editor) {
-      setPendingContent(content);
+      latestEditorContentRef.current = nextContent;
+      setPendingContent(nextContent);
       lastCommittedContentRef.current = nextSerialized;
+      trackedAttachmentPathsRef.current = nextAttachmentPaths;
       return;
     }
 
-    const currentSerialized = JSON.stringify(editor.getJSON());
+    const currentSerialized = serializeNormalizedContent(editor.getJSON());
 
     if (currentSerialized === nextSerialized) {
       lastCommittedContentRef.current = nextSerialized;
+      trackedAttachmentPathsRef.current = nextAttachmentPaths;
+      return;
+    }
+
+    const currentContent = editor.getJSON();
+    const currentContentScore = countMeaningfulContent(currentContent);
+    const nextContentScore = countMeaningfulContent(nextContent);
+
+    if (
+      currentContentScore > 0 &&
+      nextContentScore === 0 &&
+      nextSerialized !== lastCommittedContentRef.current
+    ) {
+      console.warn("[journal] Ignored stale empty editor content update.");
       return;
     }
 
@@ -757,12 +1089,14 @@ export const JournalRichTextEditor = ({
       return;
     }
 
-    editor.commands.setContent(content, { emitUpdate: false });
-    setPendingContent(content);
+    editor.commands.setContent(nextContent, { emitUpdate: false });
+    latestEditorContentRef.current = nextContent;
+    setPendingContent(nextContent);
     lastCommittedContentRef.current = nextSerialized;
+    trackedAttachmentPathsRef.current = nextAttachmentPaths;
     setWordCount(countWords(editor.getText()));
     setSaveState("saved");
-  }, [content, editor]);
+  }, [content, draftStorageKey, editor, sourceUpdatedAt]);
 
   const formattedSavedTime = useMemo(
     () =>
@@ -781,7 +1115,9 @@ export const JournalRichTextEditor = ({
     <div
       className={`journal-rich-editor-shell${compact ? " journal-rich-editor-shell-compact" : ""}${
         appearance === "notion" ? " journal-rich-editor-shell-notion" : ""
-      }${autosize ? " journal-rich-editor-shell-autosize" : ""}`}
+      }${autosize ? " journal-rich-editor-shell-autosize" : ""}${
+        heightPreset === "short" ? " journal-rich-editor-shell-short" : ""
+      }`}
     >
       {!readOnly ? (
         <JournalBubbleMenu

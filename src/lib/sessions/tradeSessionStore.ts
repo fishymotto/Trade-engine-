@@ -103,10 +103,11 @@ export const loadTradeSessions = async (): Promise<TradeSessionRecord[]> => {
 };
 
 export const saveTradeSessions = async (sessions: TradeSessionRecord[]): Promise<void> => {
-  await syncStores.tradeSessions.save(sessions);
+  const syncPromise = syncStores.tradeSessions.save(sessions);
 
   const activeUserId = syncStores.tradeSessions.getUserId();
   if (!canUseMachineLegacyData(activeUserId)) {
+    await syncPromise;
     return;
   }
 
@@ -123,6 +124,8 @@ export const saveTradeSessions = async (sessions: TradeSessionRecord[]): Promise
       console.warn("[sessions] Failed to save desktop trade sessions backup.", error);
     }
   }
+
+  await syncPromise;
 };
 
 export const mergeTradesIntoSessions = (

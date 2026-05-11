@@ -1,4 +1,8 @@
-import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import {
+  deleteWorkspaceAttachmentIfUnused,
+  resolveWorkspaceAttachmentSrc
+} from "../workspace/workspaceAttachmentClient";
 
 export type PlaybookAttachmentKind = "screenshot" | "recording";
 
@@ -21,22 +25,9 @@ export const pickAndSavePlaybookAttachment = async (
 };
 
 export const deletePlaybookAttachment = async (path: string): Promise<void> => {
-  if (!isTauri()) {
-    return;
-  }
-
-  await invoke("delete_playbook_attachment", { path });
+  await deleteWorkspaceAttachmentIfUnused(path);
 };
 
 export const resolvePlaybookAttachmentSrc = (path: string): string => {
-  if (!path) {
-    return "";
-  }
-
-  if (!isTauri()) {
-    return path;
-  }
-
-  const normalizedPath = path.includes("\\") ? path.replace(/\\/g, "/") : path;
-  return convertFileSrc(normalizedPath);
+  return resolveWorkspaceAttachmentSrc(path);
 };

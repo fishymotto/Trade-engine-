@@ -167,10 +167,11 @@ export const loadTradeTagOverrides = async (): Promise<TradeTagOverrideRecord[]>
 export const saveTradeTagOverrides = async (
   overrides: TradeTagOverrideRecord[]
 ): Promise<void> => {
-  await syncStores.tradeTagOverrides.save(overrides);
+  const syncPromise = syncStores.tradeTagOverrides.save(overrides);
 
   const activeUserId = syncStores.tradeTagOverrides.getUserId();
   if (!canUseMachineLegacyData(activeUserId)) {
+    await syncPromise;
     return;
   }
 
@@ -190,4 +191,6 @@ export const saveTradeTagOverrides = async (
       console.warn("[tags] Failed to save desktop trade tag overrides backup.", error);
     }
   }
+
+  await syncPromise;
 };

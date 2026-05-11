@@ -1,30 +1,26 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { AppLayout } from "../components/AppLayout";
-import { AuthModal } from "../components/AuthModal";
-import { authService, type User } from "../lib/auth";
-import { createEmptyJournalDoc } from "../lib/journal/journalContent";
+import type { User } from "../lib/auth";
+import { hasJournalDocContent } from "../lib/journal/journalContent";
 import {
-  getDefaultChecklistContent,
   defaultJournalChecklistTemplates,
   loadJournalChecklistTemplates,
+  recoverJournalChecklistTemplatesFromDesktopBackup,
   saveJournalChecklistTemplates,
-  type JournalChecklistTemplates,
-  type NamedChecklistTemplate
+  type JournalChecklistTemplates
 } from "../lib/journal/journalTemplateStore";
 import { buildCsvContent, toExportRows } from "../features/export/lib/csvExporter";
 import { dedupeJournalPages, loadJournalPages, saveJournalPages } from "../lib/journal/journalStore";
-import { loadAdminWorkspaceUsers } from "../lib/admin/adminUsers";
 import {
   findNotionDuplicates,
-  importTradesToNotion,
-  testNotionConnection
+  importTradesToNotion
 } from "../features/notion/lib/notionClient";
 import { loadTradeReviews, saveTradeReviews } from "../lib/reviews/tradeReviewStore";
-import { ensurePlaybooksForNames, loadPlaybooks, savePlaybooks } from "../lib/playbooks/playbookStore";
 import {
   buildBarSetKey,
   loadHistoricalBarSets,
+  recoverHistoricalBarSetsFromDesktopBackup,
   removeHistoricalBarSet,
   saveHistoricalBarSets,
   upsertHistoricalBarSet
@@ -45,22 +41,47 @@ import { loadTradeTagOverrides, saveTradeTagOverrides } from "../lib/trades/trad
 import {
   applyTradeTagOverrides,
   hasTradeTagOverridesForTradeDates,
-  removeTradeTagOverridesForTradeDates,
-  upsertTradeTagOverride
+  removeTradeTagOverridesForTradeDates
 } from "../lib/trades/tradeTagOverrides";
-import { loadWorkspaceState, saveWorkspaceState } from "../lib/workspace/workspaceStore";
+import { createTradeTagActions } from "../lib/trades/tradeTagActions";
+import {
+  loadWorkspaceState,
+  recoverWorkspaceStateFromDesktopBackup,
+  saveWorkspaceState
+} from "../lib/workspace/workspaceStore";
+import { recoverHeadlinesFromDesktopBackup } from "../lib/headlines/headlineStore";
 import { defaultSettings, loadSettings, saveSettings } from "../lib/settings/settingsStore";
-import { syncStores } from "../lib/sync/syncStore";
+import { useDebouncedSave } from "../lib/hooks/useDebouncedSave";
+import { recoverReviewTemplatesFromDesktopBackup } from "../lib/review/reviewTemplateStore";
+import { recoverSelectOptionAdditionsFromDesktopBackup } from "../lib/select/selectOptionAdditionsStore";
+import { resetAllSyncStoreMemory } from "../lib/sync/syncStore";
 import { requestFlushDebouncedSaves } from "../lib/sync/pendingSaveFlush";
-import { retryDirtyUserData, setUserIdForSync, syncUserDataOnLogin } from "../lib/sync/userDataSync";
+import { setUserIdForSync } from "../lib/sync/userDataSync";
+import {
+  createJournalPageActions,
+  createMissingJournalPages,
+  normalizeJournalTradeDate
+} from "../features/journal/lib/journalPageActions";
+import {
+  buildJournalTradeContextById,
+  syncJournalPagesFromTradeReviews,
+  syncTradeReviewsFromJournalPages
+} from "../features/journal/lib/journalScreenshotSync";
+import { createSettingsPageActions } from "../features/settings/lib/settingsPageActions";
+import {
+  loadPlaybooks,
+  recoverPlaybooksFromDesktopBackup,
+  savePlaybooks
+} from "../lib/playbooks/playbookStore";
+import {
+  loadLibraryPages,
+  recoverLibraryPagesFromDesktopBackup,
+  saveLibraryPages
+} from "../lib/library/libraryStore";
 import type { AppNavItem, AppRoute } from "../types/app";
 import type { ChartInterval, HistoricalBarSet } from "../types/chart";
-import type {
-  JournalContentField,
-  JournalPageRecord,
-  JournalScreenshotTagRecord,
-  JournalScreenshotTradeLink
-} from "../types/journal";
+import type { JournalPageRecord } from "../types/journal";
+import type { JSONContent } from "@tiptap/core";
 import type { TradeReviewRecord } from "../types/review";
 import type { TradeSessionRecord } from "../types/session";
 import type { GroupedTrade, Settings } from "../types/trade";
@@ -77,7 +98,7 @@ const navItems: AppNavItem[] = [
   { id: "journal", label: "Journal", icon: "journal" },
   { id: "library", label: "Library", icon: "library" },
   { id: "reports", label: "Reports", icon: "reports" },
-  { id: "import", label: "Import", icon: "import" },
+  { id: "import", label: "Imports", icon: "import" },
   { id: "data", label: "Data", icon: "data" },
   { id: "settings", label: "Settings", icon: "filter" }
 ];
@@ -107,35 +128,19 @@ const SettingsPage = lazy(() =>
   import("../features/settings/pages/SettingsPage").then((module) => ({ default: module.SettingsPage }))
 );
 
-const buildJournalTemplate = (checklistTemplates: JournalChecklistTemplates) => ({
-  title: "Daily Journal",
-  dayGrade: "",
-  marketRegime: "",
-  mpp: "",
-  sleepHours: "",
-  sleepScore: "",
-  morningMood: "",
-  openMood: "",
-  afternoonMood: "",
-  closeMood: "",
-  screenshotUrls: [],
-  screenshotTags: [],
-  closingChecklistContent: getDefaultChecklistContent(checklistTemplates, "closing"),
-  morningChecklistContent: getDefaultChecklistContent(checklistTemplates, "morning"),
-  morningContent: createEmptyJournalDoc(),
-  closingContent: createEmptyJournalDoc(),
-  mppPlanContent: getDefaultChecklistContent(checklistTemplates, "mpp"),
-  inPlayStocksContent: createEmptyJournalDoc(),
-  traderReachOutsContent: createEmptyJournalDoc(),
-  notesContent: createEmptyJournalDoc()
-});
-
 const createExportFileName = (): string => {
   const now = new Date();
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");
   return `notion_ready_${year}-${month}-${day}.csv`;
+};
+
+const LOCAL_WORKSPACE_USER: User = {
+  id: "local-workspace",
+  email: "",
+  username: "Local Workspace",
+  isAdmin: false,
 };
 
 const toErrorMessage = (error: unknown, fallback: string): string => {
@@ -146,21 +151,11 @@ const toErrorMessage = (error: unknown, fallback: string): string => {
   return fallback;
 };
 
-const normalizeJournalTradeDate = (value: string) => {
-  if (!value) {
-    return "";
-  }
-
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return value;
-  }
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-
-  return parsed.toISOString().slice(0, 10);
+const getLocalTradeDateKey = (date = new Date()): string => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 };
 
 const parseTimestamp = (value: string): number => {
@@ -168,136 +163,226 @@ const parseTimestamp = (value: string): number => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-const collectScreenshotLinks = (
-  screenshotTag: JournalScreenshotTagRecord | undefined
-): JournalScreenshotTradeLink[] => {
-  if (!screenshotTag) {
-    return [];
-  }
+const cloneValue = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+const JOURNAL_EDITOR_DRAFT_STORAGE_PREFIX = "trade-engine-journal-editor-draft::";
+type RecoverableJournalDraftField =
+  | "morningChecklistContent"
+  | "closingChecklistContent"
+  | "morningContent"
+  | "closingContent"
+  | "mppPlanContent"
+  | "inPlayStocksContent"
+  | "traderReachOutsContent"
+  | "notesContent";
 
-  const fromLinkedTrades = Array.isArray(screenshotTag.linkedTrades)
-    ? screenshotTag.linkedTrades.filter(
-        (link) =>
-          Boolean(link) &&
-          typeof link.tradeId === "string" &&
-          link.tradeId.trim().length > 0 &&
-          typeof link.tradeDate === "string" &&
-          link.tradeDate.trim().length > 0
-      )
-    : [];
+interface StoredJournalEditorDraft {
+  content: JSONContent;
+  updatedAt: string;
+}
 
-  const legacyLink =
-    screenshotTag.linkedTradeId?.trim() && screenshotTag.linkedTradeDate?.trim()
-      ? [
-          {
-            tradeId: screenshotTag.linkedTradeId.trim(),
-            tradeDate: screenshotTag.linkedTradeDate.trim()
-          }
-        ]
-      : [];
+type StoredJournalDraftFieldMap = Partial<Record<RecoverableJournalDraftField, StoredJournalEditorDraft>>;
 
-  const deduped = new Map<string, JournalScreenshotTradeLink>();
-  for (const link of [...fromLinkedTrades, ...legacyLink]) {
-    deduped.set(`${link.tradeId}::${link.tradeDate}`, link);
-  }
+interface StoredJournalDraftIndex {
+  byPageId: Map<string, StoredJournalDraftFieldMap>;
+  latestByTradeDate: Map<string, StoredJournalDraftFieldMap>;
+}
 
-  return Array.from(deduped.values());
-};
+const recoverableJournalDraftFields: RecoverableJournalDraftField[] = [
+  "morningChecklistContent",
+  "closingChecklistContent",
+  "morningContent",
+  "closingContent",
+  "mppPlanContent",
+  "inPlayStocksContent",
+  "traderReachOutsContent",
+  "notesContent"
+];
 
-const recoverReviewScreenshotsFromJournalPages = (
-  pages: JournalPageRecord[]
-): Map<string, { screenshotUrl: string; updatedAt: string }> => {
-  const recovered = new Map<string, { screenshotUrl: string; updatedAt: string }>();
+const recoverableJournalDraftFieldSet = new Set<RecoverableJournalDraftField>(recoverableJournalDraftFields);
 
-  for (const page of pages) {
-    for (const [index, screenshotUrl] of page.screenshotUrls.entries()) {
-      if (!screenshotUrl || typeof screenshotUrl !== "string") {
-        continue;
-      }
-
-      const links = collectScreenshotLinks(page.screenshotTags[index]);
-      if (links.length === 0) {
-        continue;
-      }
-
-      for (const link of links) {
-        const current = recovered.get(link.tradeId);
-        if (!current || parseTimestamp(page.updatedAt) >= parseTimestamp(current.updatedAt)) {
-          recovered.set(link.tradeId, {
-            screenshotUrl,
-            updatedAt: page.updatedAt
-          });
-        }
-      }
+const parseStoredJournalEditorDraft = (raw: string | null): StoredJournalEditorDraft | null => {
+  try {
+    if (!raw) {
+      return null;
     }
-  }
 
-  return recovered;
-};
+    const parsed = JSON.parse(raw) as Partial<StoredJournalEditorDraft>;
+    if (!parsed || typeof parsed !== "object" || typeof parsed.updatedAt !== "string") {
+      return null;
+    }
 
-const createJournalScreenshotTag = (tradeDate: string): JournalScreenshotTagRecord => ({
-  linkedTrades: [],
-  linkedTradeId: "",
-  linkedTradeDate: "",
-  ticker: "",
-  playbook: "",
-  taggedDate: tradeDate
-});
+    if (!parsed.content || typeof parsed.content !== "object") {
+      return null;
+    }
 
-const parseTradeContextFromTradeId = (
-  tradeId: string
-): { tradeDate: string; symbol: string } | null => {
-  const match = tradeId.match(/^(?<symbol>[A-Z0-9]+)-(?<tradeDate>\d{4}-\d{2}-\d{2})-/);
-  if (!match?.groups?.tradeDate || !match.groups.symbol) {
+    return {
+      content: parsed.content as JSONContent,
+      updatedAt: parsed.updatedAt
+    };
+  } catch {
     return null;
   }
-
-  return {
-    tradeDate: match.groups.tradeDate,
-    symbol: match.groups.symbol
-  };
 };
 
-const equalsOptionValue = (left: string, right: string): boolean =>
-  left.trim().toLowerCase() === right.trim().toLowerCase();
+const getTradeDateFromJournalDraftPageId = (pageId: string): string => {
+  const match = pageId.match(/^journal-(\d{4}-\d{2}-\d{2})-/);
+  return match?.[1] ?? "";
+};
 
-const createJournalPageRecord = (
-  tradeDate: string,
-  checklistTemplates: JournalChecklistTemplates,
-  timestamp: string
-): JournalPageRecord => {
-  const templateContent = buildJournalTemplate(checklistTemplates);
+const selectPreferredStoredJournalDraft = (
+  primaryDraft: StoredJournalEditorDraft | null,
+  fallbackDraft: StoredJournalEditorDraft | null
+): StoredJournalEditorDraft | null => {
+  if (!primaryDraft) {
+    return fallbackDraft;
+  }
 
-  return {
-    id: `journal-${tradeDate}-${timestamp}`,
-    title: templateContent.title,
-    tradeDate,
-    dayGrade: templateContent.dayGrade,
-    marketRegime: templateContent.marketRegime,
-    mpp: templateContent.mpp,
-    sleepHours: templateContent.sleepHours,
-    sleepScore: templateContent.sleepScore,
-    morningMood: templateContent.morningMood,
-    openMood: templateContent.openMood,
-    afternoonMood: templateContent.afternoonMood,
-    closeMood: templateContent.closeMood,
-    screenshotUrls: templateContent.screenshotUrls,
-    screenshotTags: templateContent.screenshotTags,
-    closingChecklistContent: templateContent.closingChecklistContent,
-    morningChecklistContent: templateContent.morningChecklistContent,
-    morningContent: templateContent.morningContent,
-    closingContent: templateContent.closingContent,
-    mppPlanContent: templateContent.mppPlanContent,
-    inPlayStocksContent: templateContent.inPlayStocksContent,
-    traderReachOutsContent: templateContent.traderReachOutsContent,
-    notesContent: templateContent.notesContent,
-    morningBlocks: [],
-    closingBlocks: [],
-    mppPlanBlocks: [],
-    blocks: [],
-    createdAt: timestamp,
-    updatedAt: timestamp
+  if (!fallbackDraft) {
+    return primaryDraft;
+  }
+
+  const primaryTimestamp = parseTimestamp(primaryDraft.updatedAt);
+  const fallbackTimestamp = parseTimestamp(fallbackDraft.updatedAt);
+  if (fallbackTimestamp !== primaryTimestamp) {
+    return fallbackTimestamp > primaryTimestamp ? fallbackDraft : primaryDraft;
+  }
+
+  const primaryHasContent = hasJournalDocContent(primaryDraft.content);
+  const fallbackHasContent = hasJournalDocContent(fallbackDraft.content);
+  if (fallbackHasContent !== primaryHasContent) {
+    return fallbackHasContent ? fallbackDraft : primaryDraft;
+  }
+
+  return primaryDraft;
+};
+
+const setStoredJournalDraftIndexEntry = (
+  indexMap: Map<string, StoredJournalDraftFieldMap>,
+  key: string,
+  field: RecoverableJournalDraftField,
+  draft: StoredJournalEditorDraft
+) => {
+  if (!key) {
+    return;
+  }
+
+  const fieldMap = indexMap.get(key) ?? {};
+  const preferredDraft = selectPreferredStoredJournalDraft(fieldMap[field] ?? null, draft);
+  if (!preferredDraft) {
+    return;
+  }
+
+  fieldMap[field] = preferredDraft;
+  indexMap.set(key, fieldMap);
+};
+
+const buildStoredJournalDraftIndex = (): StoredJournalDraftIndex => {
+  const draftIndex: StoredJournalDraftIndex = {
+    byPageId: new Map(),
+    latestByTradeDate: new Map()
   };
+
+  if (typeof window === "undefined") {
+    return draftIndex;
+  }
+
+  try {
+    for (let storageIndex = 0; storageIndex < window.localStorage.length; storageIndex += 1) {
+      const storageKey = window.localStorage.key(storageIndex);
+      if (!storageKey || !storageKey.startsWith(JOURNAL_EDITOR_DRAFT_STORAGE_PREFIX)) {
+        continue;
+      }
+
+      const keyBody = storageKey.slice(JOURNAL_EDITOR_DRAFT_STORAGE_PREFIX.length);
+      const separatorIndex = keyBody.lastIndexOf(":");
+      if (separatorIndex <= 0) {
+        continue;
+      }
+
+      const pageId = keyBody.slice(0, separatorIndex);
+      const fieldName = keyBody.slice(separatorIndex + 1);
+      if (!recoverableJournalDraftFieldSet.has(fieldName as RecoverableJournalDraftField)) {
+        continue;
+      }
+
+      const draft = parseStoredJournalEditorDraft(window.localStorage.getItem(storageKey));
+      if (!draft) {
+        continue;
+      }
+
+      const field = fieldName as RecoverableJournalDraftField;
+      const tradeDate = getTradeDateFromJournalDraftPageId(pageId);
+      setStoredJournalDraftIndexEntry(draftIndex.byPageId, pageId, field, draft);
+      setStoredJournalDraftIndexEntry(draftIndex.latestByTradeDate, tradeDate, field, draft);
+    }
+  } catch {
+    return draftIndex;
+  }
+
+  return draftIndex;
+};
+
+const getStoredJournalDraftFromIndex = (
+  index: StoredJournalDraftIndex,
+  pageId: string,
+  tradeDate: string,
+  field: RecoverableJournalDraftField
+): StoredJournalEditorDraft | null =>
+  selectPreferredStoredJournalDraft(
+    index.byPageId.get(pageId)?.[field] ?? null,
+    index.latestByTradeDate.get(tradeDate)?.[field] ?? null
+  );
+
+const recoverJournalPagesFromStoredDrafts = (pages: JournalPageRecord[]): JournalPageRecord[] => {
+  const storedDraftIndex = buildStoredJournalDraftIndex();
+  if (storedDraftIndex.byPageId.size === 0 && storedDraftIndex.latestByTradeDate.size === 0) {
+    return pages;
+  }
+
+  let changed = false;
+
+  const recoveredPages = pages.map((page) => {
+    let nextPage = page;
+    let nextUpdatedAt = page.updatedAt;
+
+    for (const field of recoverableJournalDraftFields) {
+      const storedDraft = getStoredJournalDraftFromIndex(storedDraftIndex, page.id, page.tradeDate, field);
+      if (!storedDraft) {
+        continue;
+      }
+
+      const draftTimestamp = parseTimestamp(storedDraft.updatedAt);
+      const pageTimestamp = parseTimestamp(nextUpdatedAt);
+      const currentContent = nextPage[field];
+      const draftContent = storedDraft.content;
+      const currentSerialized = JSON.stringify(currentContent);
+      const draftSerialized = JSON.stringify(draftContent);
+
+      if (currentSerialized === draftSerialized) {
+        continue;
+      }
+
+      const shouldPromoteDraft =
+        draftTimestamp > pageTimestamp + 1000 ||
+        (!hasJournalDocContent(currentContent) && hasJournalDocContent(draftContent));
+
+      if (!shouldPromoteDraft) {
+        continue;
+      }
+
+      nextPage = {
+        ...nextPage,
+        [field]: cloneValue(draftContent),
+        updatedAt: storedDraft.updatedAt
+      };
+      nextUpdatedAt = storedDraft.updatedAt;
+      changed = true;
+    }
+
+    return nextPage;
+  });
+
+  return changed ? dedupeJournalPages(recoveredPages) : pages;
 };
 
 const downloadCsvInBrowser = (fileName: string, contents: string): void => {
@@ -325,6 +410,7 @@ function App() {
   const [journalChecklistTemplatesLoaded, setJournalChecklistTemplatesLoaded] = useState(false);
   const [tradeReviewsLoaded, setTradeReviewsLoaded] = useState(false);
   const [historicalBarSetsLoaded, setHistoricalBarSetsLoaded] = useState(false);
+  const [workspaceRefreshKey, setWorkspaceRefreshKey] = useState(0);
   const [activeRoute, setActiveRoute] = useState<AppRoute>("dashboard");
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -359,13 +445,63 @@ function App() {
   const [isCurrentImportSaved, setIsCurrentImportSaved] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("Load one PPro8 Trade Detail CSV file, then export the cleaned CSV.");
-  const [bootError, setBootError] = useState<string | null>(null);
+  const [, setBootError] = useState<string | null>(null);
+  const journalPagesRef = useRef<JournalPageRecord[]>([]);
+  journalPagesRef.current = journalPages;
+
+  const persistJournalPages = (nextPages: JournalPageRecord[]) => {
+    journalPagesRef.current = nextPages;
+    setJournalPages(nextPages);
+  };
 
   const hydrateWorkspaceFromStores = async () => {
-    const loadedSettings = await loadSettings();
-    const loadedOptions = await loadTradeTagOptions();
-    const loadedOverrides = await loadTradeTagOverrides();
-    const loadedSessions = await loadTradeSessions();
+    const localWorkspaceState = loadWorkspaceState();
+    const localHistoricalBarSets = loadHistoricalBarSets();
+    const localJournalChecklistTemplates = loadJournalChecklistTemplates();
+    const localPlaybooks = loadPlaybooks();
+    const localLibraryPages = loadLibraryPages();
+    const [
+      loadedSettings,
+      loadedOptions,
+      loadedOverrides,
+      loadedSessions,
+      loadedJournalPages,
+      loadedTradeReviews,
+      recoveredWorkspaceState,
+      recoveredHistoricalBarSets,
+      recoveredJournalChecklistTemplates,
+      recoveredPlaybooks,
+      recoveredLibraryPages
+    ] = await Promise.all([
+      loadSettings(),
+      loadTradeTagOptions(),
+      loadTradeTagOverrides(),
+      loadTradeSessions(),
+      loadJournalPages(),
+      loadTradeReviews(),
+      recoverWorkspaceStateFromDesktopBackup(localWorkspaceState),
+      recoverHistoricalBarSetsFromDesktopBackup(localHistoricalBarSets),
+      recoverJournalChecklistTemplatesFromDesktopBackup(localJournalChecklistTemplates),
+      recoverPlaybooksFromDesktopBackup(localPlaybooks),
+      recoverLibraryPagesFromDesktopBackup(localLibraryPages),
+      recoverReviewTemplatesFromDesktopBackup(),
+      recoverHeadlinesFromDesktopBackup(),
+      recoverSelectOptionAdditionsFromDesktopBackup()
+    ]);
+
+    const sharedStoreRecoveryTasks: Promise<unknown>[] = [];
+
+    if (recoveredPlaybooks) {
+      sharedStoreRecoveryTasks.push(savePlaybooks(recoveredPlaybooks));
+    }
+
+    if (recoveredLibraryPages) {
+      sharedStoreRecoveryTasks.push(saveLibraryPages(recoveredLibraryPages));
+    }
+
+    if (sharedStoreRecoveryTasks.length > 0) {
+      await Promise.all(sharedStoreRecoveryTasks);
+    }
 
     setSettings(loadedSettings);
     setSettingsLoaded(true);
@@ -379,7 +515,7 @@ function App() {
     setTradeSessions(loadedSessions);
     setTradeSessionsLoaded(true);
 
-    const workspaceState = loadWorkspaceState();
+    const workspaceState = recoveredWorkspaceState ?? localWorkspaceState;
     setActiveRoute(workspaceState.activeRoute);
     setReviewChartInterval(workspaceState.reviewChartInterval);
     setDayChartInterval(workspaceState.dayChartInterval);
@@ -387,77 +523,64 @@ function App() {
     setIsCurrentImportSaved(workspaceState.isCurrentImportSaved);
     setWorkspaceLoaded(true);
 
-    setHistoricalBarSets(loadHistoricalBarSets());
+    setHistoricalBarSets(recoveredHistoricalBarSets ?? localHistoricalBarSets);
     setHistoricalBarSetsLoaded(true);
 
-    const loadedJournalPages = await loadJournalPages();
-    setJournalPages(loadedJournalPages);
+    setJournalPages(recoverJournalPagesFromStoredDrafts(loadedJournalPages));
     setJournalPagesLoaded(true);
 
-    setJournalChecklistTemplates(loadJournalChecklistTemplates());
+    setJournalChecklistTemplates(recoveredJournalChecklistTemplates ?? localJournalChecklistTemplates);
     setJournalChecklistTemplatesLoaded(true);
 
-    setTradeReviews(loadTradeReviews());
+    setTradeReviews(loadedTradeReviews);
     setTradeReviewsLoaded(true);
   };
+
+  const journalPagesForSave = useMemo(() => dedupeJournalPages(journalPages), [journalPages]);
+  const loadedTradeDates = useMemo(
+    () => Array.from(new Set(trades.map((trade) => trade.tradeDate))).sort(),
+    [trades]
+  );
+  const workspaceStateForSave = useMemo(
+    () => ({
+      activeRoute,
+      loadedTradeDates,
+      fileName,
+      isCurrentImportSaved,
+      reviewChartInterval,
+      dayChartInterval
+    }),
+    [activeRoute, dayChartInterval, fileName, isCurrentImportSaved, loadedTradeDates, reviewChartInterval]
+  );
 
   useEffect(() => {
     let cancelled = false;
 
     const boot = async () => {
       setSyncing(true);
-      let existingUser: User | null = null;
       try {
         setBootError(null);
+        setUserIdForSync(undefined);
+        resetAllSyncStoreMemory();
         await hydrateWorkspaceFromStores();
         if (cancelled) {
           return;
         }
 
-        existingUser = await authService.getCurrentUser();
-        if (cancelled) {
-          return;
-        }
-
-        if (!existingUser) {
-          setUserIdForSync(undefined);
-          setUser(null);
-          setBootError(null);
-          return;
-        }
-
-        await syncUserDataOnLogin(existingUser.id);
-        if (cancelled) {
-          return;
-        }
-
-        await hydrateWorkspaceFromStores();
-        if (cancelled) {
-          return;
-        }
-
-        setUser(existingUser);
+        setUser(LOCAL_WORKSPACE_USER);
         setBootError(null);
       } catch (error) {
         if (cancelled) {
           return;
         }
 
-        const errorMessage = toErrorMessage(
-          error,
-          "Workspace failed to load. Restart the app and sign in again."
-        );
+        const errorMessage = toErrorMessage(error, "Workspace failed to load. Restart the app and try again.");
         console.error("[app] Failed to bootstrap workspace.", error);
         setBootError(errorMessage);
         setMessage(errorMessage);
-
-        if (existingUser) {
-          setUser(existingUser);
-          return;
-        }
-
         setUserIdForSync(undefined);
-        setUser(null);
+        resetAllSyncStoreMemory();
+        setUser(LOCAL_WORKSPACE_USER);
       } finally {
         if (!cancelled) {
           setAuthChecked(true);
@@ -516,14 +639,6 @@ function App() {
   }, [tradeTagOverrides, tradeTagOverridesLoaded]);
 
   useEffect(() => {
-    if (!settingsLoaded) {
-      return;
-    }
-
-    void saveSettings(settings);
-  }, [settings, settingsLoaded]);
-
-  useEffect(() => {
     if (hasRestoredWorkspaceRef.current) {
       return;
     }
@@ -561,83 +676,17 @@ function App() {
       return;
     }
 
-    const dedupedPages = dedupeJournalPages(journalPages);
-    if (dedupedPages.length !== journalPages.length) {
-      setJournalPages(dedupedPages);
-      return;
+    if (journalPagesForSave.length !== journalPages.length) {
+      setJournalPages(journalPagesForSave);
     }
-
-    void saveJournalPages(dedupedPages);
-  }, [journalPages, journalPagesLoaded]);
-
-  useEffect(() => {
-    if (!journalChecklistTemplatesLoaded) {
-      return;
-    }
-
-    saveJournalChecklistTemplates(journalChecklistTemplates);
-  }, [journalChecklistTemplates, journalChecklistTemplatesLoaded]);
-
-  useEffect(() => {
-    if (!tradeReviewsLoaded) {
-      return;
-    }
-
-    saveTradeReviews(tradeReviews);
-  }, [tradeReviews, tradeReviewsLoaded]);
+  }, [journalPages, journalPagesForSave, journalPagesLoaded]);
 
   useEffect(() => {
     if (!journalPagesLoaded || !tradeReviewsLoaded) {
       return;
     }
 
-    const recoveredByTradeId = recoverReviewScreenshotsFromJournalPages(journalPages);
-    if (recoveredByTradeId.size === 0) {
-      return;
-    }
-
-    setTradeReviews((current) => {
-      const next = [...current];
-      const indexByTradeId = new Map<string, number>(next.map((review, index) => [review.tradeId, index]));
-      let changed = false;
-
-      for (const [tradeId, recovered] of recoveredByTradeId.entries()) {
-        const reviewIndex = indexByTradeId.get(tradeId);
-        if (reviewIndex === undefined) {
-          next.push({
-            tradeId,
-            notes: "",
-            chartContext: "",
-            screenshotUrl: recovered.screenshotUrl,
-            drawings: [],
-            updatedAt: recovered.updatedAt
-          });
-          changed = true;
-          continue;
-        }
-
-        const existing = next[reviewIndex];
-        if (!existing) {
-          continue;
-        }
-
-        if (existing.screenshotUrl.trim().length > 0) {
-          continue;
-        }
-
-        next[reviewIndex] = {
-          ...existing,
-          screenshotUrl: recovered.screenshotUrl,
-          updatedAt:
-            parseTimestamp(recovered.updatedAt) > parseTimestamp(existing.updatedAt)
-              ? recovered.updatedAt
-              : existing.updatedAt
-        };
-        changed = true;
-      }
-
-      return changed ? next : current;
-    });
+    setTradeReviews((current) => syncTradeReviewsFromJournalPages(current, journalPages));
   }, [journalPages, journalPagesLoaded, tradeReviewsLoaded]);
 
   useEffect(() => {
@@ -645,117 +694,14 @@ function App() {
       return;
     }
 
-    const tradeContextById = new Map<
-      string,
-      { tradeDate: string; symbol: string; playbook: string }
-    >();
-    const resolvedSessionTrades = applyTradeTagOverrides(
-      tradeSessions.flatMap((session) => session.trades),
-      tradeTagOverrides
+    const tradeContextById = buildJournalTradeContextById(
+      applyTradeTagOverrides(
+        tradeSessions.flatMap((session) => session.trades),
+        tradeTagOverrides
+      )
     );
 
-    for (const trade of resolvedSessionTrades) {
-      tradeContextById.set(trade.id, {
-        tradeDate: normalizeJournalTradeDate(trade.tradeDate),
-        symbol: trade.symbol,
-        playbook: trade.setups?.[0] ?? ""
-      });
-    }
-
-    setJournalPages((current) => {
-      const next = [...current];
-      let changed = false;
-      const indexByTradeDate = new Map<string, number>(
-        next.map((page, index) => [normalizeJournalTradeDate(page.tradeDate), index])
-      );
-
-      for (const review of tradeReviews) {
-        if (!review.screenshotUrl || review.screenshotUrl.trim().length === 0) {
-          continue;
-        }
-
-        const fromTradeMap = tradeContextById.get(review.tradeId);
-        const parsed = fromTradeMap ? null : parseTradeContextFromTradeId(review.tradeId);
-        const tradeDate = fromTradeMap?.tradeDate ?? parsed?.tradeDate ?? "";
-        if (!tradeDate) {
-          continue;
-        }
-
-        const pageIndex = indexByTradeDate.get(tradeDate);
-        if (pageIndex === undefined) {
-          continue;
-        }
-
-        const page = next[pageIndex];
-        if (!page) {
-          continue;
-        }
-
-        const screenshotUrls = [...page.screenshotUrls];
-        const screenshotTags = [...page.screenshotTags];
-        let urlIndex = screenshotUrls.findIndex((url) => url === review.screenshotUrl);
-        const hadTagAtIndexBeforeMutation =
-          urlIndex >= 0 && urlIndex < screenshotTags.length && Boolean(screenshotTags[urlIndex]);
-        if (urlIndex < 0) {
-          screenshotUrls.push(review.screenshotUrl);
-          screenshotTags.push(createJournalScreenshotTag(tradeDate));
-          urlIndex = screenshotUrls.length - 1;
-          changed = true;
-        }
-
-        while (screenshotTags.length <= urlIndex) {
-          screenshotTags.push(createJournalScreenshotTag(tradeDate));
-        }
-
-        const rawTag = screenshotTags[urlIndex] ?? createJournalScreenshotTag(tradeDate);
-        const links = collectScreenshotLinks(rawTag);
-        const hasLink = links.some(
-          (link) => link.tradeId === review.tradeId && normalizeJournalTradeDate(link.tradeDate) === tradeDate
-        );
-        // Respect explicit Journal tag selections; only auto-link when the tag entry did not exist yet.
-        if (!hasLink && !hadTagAtIndexBeforeMutation) {
-          links.push({
-            tradeId: review.tradeId,
-            tradeDate
-          });
-          changed = true;
-        }
-
-        const primaryLink = links[0];
-        const existingTaggedDate = normalizeJournalTradeDate(rawTag.taggedDate || tradeDate);
-        const nextTag: JournalScreenshotTagRecord = {
-          ...rawTag,
-          linkedTrades: links,
-          linkedTradeId: primaryLink?.tradeId ?? rawTag.linkedTradeId,
-          linkedTradeDate: primaryLink?.tradeDate ?? rawTag.linkedTradeDate,
-          ticker: rawTag.ticker || fromTradeMap?.symbol || parsed?.symbol || "",
-          playbook: rawTag.playbook || fromTradeMap?.playbook || "",
-          taggedDate: existingTaggedDate || tradeDate
-        };
-
-        if (
-          nextTag.linkedTrades.length !== (rawTag.linkedTrades?.length ?? 0) ||
-          nextTag.linkedTradeId !== rawTag.linkedTradeId ||
-          nextTag.linkedTradeDate !== rawTag.linkedTradeDate ||
-          nextTag.ticker !== rawTag.ticker ||
-          nextTag.playbook !== rawTag.playbook ||
-          nextTag.taggedDate !== rawTag.taggedDate
-        ) {
-          screenshotTags[urlIndex] = nextTag;
-          changed = true;
-        }
-
-        if (changed) {
-          next[pageIndex] = {
-            ...page,
-            screenshotUrls,
-            screenshotTags
-          };
-        }
-      }
-
-      return changed ? dedupeJournalPages(next) : current;
-    });
+    setJournalPages((current) => syncJournalPagesFromTradeReviews(current, tradeReviews, tradeContextById));
   }, [
     journalPagesLoaded,
     tradeReviews,
@@ -766,53 +712,95 @@ function App() {
     tradeTagOverridesLoaded
   ]);
 
-  useEffect(() => {
-    if (!tradeTagOptionsLoaded) {
-      return;
-    }
+  useDebouncedSave(
+    settings,
+    400,
+    (nextSettings) => {
+      void saveSettings(nextSettings);
+    },
+    settingsLoaded,
+    { skipInitialSave: true }
+  );
 
-    void saveTradeTagOptions(tradeTagOptions);
-  }, [tradeTagOptions, tradeTagOptionsLoaded]);
+  useDebouncedSave(
+    journalPagesForSave,
+    900,
+    (nextJournalPages) => {
+      void saveJournalPages(nextJournalPages);
+    },
+    journalPagesLoaded,
+    { skipInitialSave: true }
+  );
 
-  useEffect(() => {
-    if (!tradeSessionsLoaded) {
-      return;
-    }
+  useDebouncedSave(
+    journalChecklistTemplates,
+    600,
+    (nextTemplates) => {
+      saveJournalChecklistTemplates(nextTemplates);
+    },
+    journalChecklistTemplatesLoaded,
+    { skipInitialSave: true }
+  );
 
-    void saveTradeSessions(tradeSessions);
-  }, [tradeSessions, tradeSessionsLoaded]);
+  useDebouncedSave(
+    tradeReviews,
+    700,
+    (nextReviews) => {
+      saveTradeReviews(nextReviews);
+    },
+    tradeReviewsLoaded,
+    { skipInitialSave: true }
+  );
 
-  useEffect(() => {
-    if (!tradeTagOverridesLoaded) {
-      return;
-    }
+  useDebouncedSave(
+    tradeTagOptions,
+    500,
+    (nextOptions) => {
+      void saveTradeTagOptions(nextOptions);
+    },
+    tradeTagOptionsLoaded,
+    { skipInitialSave: true }
+  );
 
-    void saveTradeTagOverrides(tradeTagOverrides);
-  }, [tradeTagOverrides, tradeTagOverridesLoaded]);
+  useDebouncedSave(
+    tradeSessions,
+    800,
+    (nextTradeSessions) => {
+      void saveTradeSessions(nextTradeSessions);
+    },
+    tradeSessionsLoaded,
+    { skipInitialSave: true }
+  );
 
-  useEffect(() => {
-    if (!historicalBarSetsLoaded) {
-      return;
-    }
+  useDebouncedSave(
+    tradeTagOverrides,
+    700,
+    (nextOverrides) => {
+      void saveTradeTagOverrides(nextOverrides);
+    },
+    tradeTagOverridesLoaded,
+    { skipInitialSave: true }
+  );
 
-    saveHistoricalBarSets(historicalBarSets);
-  }, [historicalBarSets, historicalBarSetsLoaded]);
+  useDebouncedSave(
+    historicalBarSets,
+    900,
+    (nextBarSets) => {
+      saveHistoricalBarSets(nextBarSets);
+    },
+    historicalBarSetsLoaded,
+    { skipInitialSave: true }
+  );
 
-  useEffect(() => {
-    if (!workspaceLoaded) {
-      return;
-    }
-
-    const loadedTradeDates = Array.from(new Set(trades.map((trade) => trade.tradeDate))).sort();
-    saveWorkspaceState({
-      activeRoute,
-      loadedTradeDates,
-      fileName,
-      isCurrentImportSaved,
-      reviewChartInterval,
-      dayChartInterval
-    });
-  }, [activeRoute, trades, fileName, isCurrentImportSaved, reviewChartInterval, dayChartInterval]);
+  useDebouncedSave(
+    workspaceStateForSave,
+    250,
+    (nextWorkspaceState) => {
+      saveWorkspaceState(nextWorkspaceState);
+    },
+    workspaceLoaded,
+    { skipInitialSave: true }
+  );
 
   useEffect(() => {
     if (journalPages.length === 0) {
@@ -822,7 +810,9 @@ function App() {
 
     const pageStillExists = journalPages.some((page) => page.id === selectedJournalPageId);
     if (!pageStillExists) {
-      setSelectedJournalPageId(journalPages[0].id);
+      const todayTradeDate = getLocalTradeDateKey();
+      const preferredPage = journalPages.find((page) => page.tradeDate === todayTradeDate) ?? journalPages[0];
+      setSelectedJournalPageId(preferredPage.id);
     }
   }, [journalPages, selectedJournalPageId]);
 
@@ -844,137 +834,62 @@ function App() {
     }
 
     setJournalPages((current) => {
-      const existingDates = new Set(current.map((page) => normalizeJournalTradeDate(page.tradeDate)));
-      const missingDates = tradeDates.filter((tradeDate) => !existingDates.has(tradeDate));
+      const missingPages = createMissingJournalPages({
+        currentPages: current,
+        tradeDates,
+        checklistTemplates: journalChecklistTemplates,
+        startTimestamp: Date.now()
+      });
 
-      if (missingDates.length === 0) {
+      if (missingPages.length === 0) {
         return current;
       }
-
-      const startMs = Date.now();
-      const missingPages = missingDates.map((tradeDate, index) =>
-        createJournalPageRecord(
-          tradeDate,
-          journalChecklistTemplates,
-          new Date(startMs + index).toISOString()
-        )
-      );
 
       return [...current, ...missingPages].sort((left, right) => right.tradeDate.localeCompare(left.tradeDate));
     });
   }, [tradeSessions, tradeSessionsLoaded, journalPagesLoaded, journalChecklistTemplates, journalChecklistTemplatesLoaded]);
 
-  const runConnectionTest = async (): Promise<string> => {
-    try {
-      const result = await testNotionConnection(settings);
-      if (result.ok) {
-        setAllowedSymbols(result.allowedSymbolOptions);
-        setHasExecutionProperty(result.hasExecutionProperty);
-      }
-      return result.message;
-    } catch (error) {
-      return error instanceof Error ? error.message : "The Notion connection test failed.";
-    }
+  const resetWorkspaceAfterImport = () => {
+    hasRestoredWorkspaceRef.current = false;
+    hasRetriedJournalDesktopRecoveryRef.current = false;
+    hasRetriedSessionsDesktopRecoveryRef.current = false;
+    hasRetriedTradeTagsDesktopRecoveryRef.current = false;
+    setBootError(null);
+    setTrades([]);
+    setFileName("");
+    setIsCurrentImportSaved(false);
+    setSelectedJournalPageId("");
   };
 
-  const loadAdminUsers = async () => {
-    if (!user?.isAdmin) {
-      return [];
-    }
-
-    return loadAdminWorkspaceUsers();
+  const refreshWorkspaceAfterImport = () => {
+    setWorkspaceRefreshKey((current) => current + 1);
   };
 
-  const handleSignOut = async (): Promise<void> => {
-    setSyncing(true);
-    try {
-      await requestFlushDebouncedSaves();
-      await authService.logout();
-      setBootError(null);
-      setUserIdForSync(undefined);
-      setUser(null);
-      setMessage("Signed out. Sign in to open your private workspace.");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Sign out failed.");
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  const handleForceCloudSeed = async (): Promise<string> => {
-    if (!user) {
-      return "Sign in before pushing this computer to cloud.";
-    }
-
-    setSyncing(true);
-    try {
-      // Ensure all debounced editor writes are committed before collecting state.
-      await requestFlushDebouncedSaves();
-
-      // Flush in-memory workspace state to local sync cache first so force-seed
-      // pushes what the user currently sees, not stale/empty cache values.
-      const loadedTradeDates = Array.from(new Set(trades.map((trade) => trade.tradeDate))).sort();
-      const dedupedJournalPages = dedupeJournalPages(journalPages);
-      await Promise.all([
-        saveSettings(settings),
-        saveTradeTagOptions(tradeTagOptions),
-        saveTradeTagOverrides(tradeTagOverrides),
-        saveTradeSessions(tradeSessions),
-        syncStores.journalPages.save(dedupedJournalPages),
-        syncStores.journalChecklistTemplates.save(journalChecklistTemplates),
-        syncStores.tradeReviews.save(tradeReviews),
-        syncStores.historicalBars.save(historicalBarSets),
-        syncStores.workspaceState.save({
-          activeRoute,
-          loadedTradeDates,
-          fileName,
-          isCurrentImportSaved,
-          reviewChartInterval,
-          dayChartInterval
-        })
-      ]);
-
-      // Journal pages are the largest and most likely to be stale when local cache
-      // hits quota limits, so force-push them from in-memory state directly.
-      await syncStores.journalPages.forcePushRemote(dedupedJournalPages, user.id);
-
-      // Best-effort push for any other dirty stores, then rehydrate from cloud.
-      await retryDirtyUserData(user.id);
-      await syncUserDataOnLogin(user.id);
-      setUserIdForSync(user.id);
-      return "This computer's saved workspace was pushed to cloud. Pull from the other computer after signing in.";
-    } catch (error) {
-      return error instanceof Error ? error.message : "Cloud push failed.";
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  const handleRecoverFromCloud = async (): Promise<string> => {
-    if (!user) {
-      return "Sign in before pulling data from cloud.";
-    }
-
-    setSyncing(true);
-    try {
-      await requestFlushDebouncedSaves();
-      const summary = await syncUserDataOnLogin(user.id);
-      const syncErrors = summary.results.filter((result) => result.source === "error");
-      await hydrateWorkspaceFromStores();
-
-      const cloudPages = (await loadJournalPages()).length;
-      const cloudReviews = loadTradeReviews().length;
-      if (syncErrors.length > 0) {
-        return `Cloud recovery completed with warnings. Journal pages: ${cloudPages}. Reviews: ${cloudReviews}.`;
-      }
-
-      return `Cloud recovery finished. Journal pages: ${cloudPages}. Reviews: ${cloudReviews}.`;
-    } catch (error) {
-      return error instanceof Error ? error.message : "Cloud recovery failed.";
-    } finally {
-      setSyncing(false);
-    }
-  };
+  const {
+    runConnectionTest,
+    handleLoadWorkspaceAttachmentSummary,
+    handleAuditWorkspaceAttachments,
+    handlePruneWorkspaceAttachments,
+    handleExportWorkspaceBundle,
+    handleImportWorkspaceBundle
+  } = createSettingsPageActions({
+    settings,
+    tradeTagOptions,
+    tradeTagOverrides,
+    tradeSessions,
+    journalPagesForSave,
+    journalChecklistTemplates,
+    tradeReviews,
+    historicalBarSets,
+    workspaceStateForSave,
+    setAllowedSymbols,
+    setHasExecutionProperty,
+    setMessage,
+    setSyncing,
+    hydrateWorkspaceFromStores,
+    resetWorkspaceAfterImport,
+    refreshWorkspaceAfterImport
+  });
 
   const resolvedTrades = useMemo<EditableTradeRow[]>(
     () => applyTradeTagOverrides(trades, tradeTagOverrides),
@@ -1005,6 +920,24 @@ function App() {
       ),
     [mergedTradeTagOptionsByField, settings.tradeTagVisibility]
   );
+  const allStoredTrades = useMemo(
+    () => resolvedTradeSessions.flatMap((session) => session.trades as EditableTradeRow[]),
+    [resolvedTradeSessions]
+  );
+  const {
+    updateTradeTag,
+    createTradeTagOption,
+    renameTradeTagOption,
+    deleteTradeTagOption,
+    bulkUpdateTradeTags
+  } = createTradeTagActions({
+    mergedTradeTagOptionsByField,
+    tradeTagOptions,
+    candidateTrades: [...resolvedTrades, ...allStoredTrades],
+    setTradeTagOverrides,
+    setTradeTagOptions,
+    setMessage
+  });
 
   const handleFileDrop = async (file: File) => {
     setBusy(true);
@@ -1093,7 +1026,7 @@ function App() {
       }
 
       if (!settings.exportFolder.trim()) {
-        throw new Error("Choose an export folder in Settings first.");
+        throw new Error("Choose an export destination in Send Workspace first.");
       }
 
       const savedPath = await invoke<string>("save_export_csv", {
@@ -1270,170 +1203,21 @@ function App() {
     setMessage(`Cleared historical bars for ${trade.symbol} on ${trade.tradeDate}.`);
   };
 
-  const createJournalPage = (tradeDate: string) => {
-    const normalizedTradeDate = normalizeJournalTradeDate(tradeDate.trim());
-    if (!normalizedTradeDate) {
-      return;
-    }
-
-    const existingPage = journalPages.find((page) => page.tradeDate === normalizedTradeDate);
-    if (existingPage) {
-      setSelectedJournalPageId(existingPage.id);
-      setMessage(`Opened the existing journal page for ${normalizedTradeDate}.`);
-      return;
-    }
-
-    const timestamp = new Date().toISOString();
-    const newPage = createJournalPageRecord(normalizedTradeDate, journalChecklistTemplates, timestamp);
-
-    setJournalPages((current) =>
-      [newPage, ...current].sort((left, right) => right.tradeDate.localeCompare(left.tradeDate))
-    );
-    setSelectedJournalPageId(newPage.id);
-  };
-
-  const updateJournalPage = (
-    pageId: string,
-    updates: Partial<
-      Pick<
-        JournalPageRecord,
-        | "title"
-        | "tradeDate"
-        | "dayGrade"
-        | "marketRegime"
-        | "mpp"
-        | "sleepHours"
-        | "sleepScore"
-        | "morningMood"
-        | "openMood"
-        | "afternoonMood"
-        | "closeMood"
-        | "screenshotUrls"
-        | "screenshotTags"
-      >
-    >
-  ) => {
-    setSelectedJournalPageId(pageId);
-    setJournalPages((current) =>
-      current
-        .map((page) =>
-          page.id === pageId
-            ? {
-                ...page,
-                ...updates,
-                tradeDate: updates.tradeDate
-                  ? normalizeJournalTradeDate(updates.tradeDate)
-                  : page.tradeDate,
-                updatedAt: new Date().toISOString()
-              }
-            : page
-        )
-        .sort((left, right) => right.tradeDate.localeCompare(left.tradeDate))
-    );
-  };
-
-  const updateJournalContent = (
-    pageId: string,
-    field: JournalContentField,
-    content: JournalPageRecord[JournalContentField]
-  ) => {
-    setJournalPages((current) =>
-      current.map((page) =>
-        page.id === pageId
-          ? {
-              ...page,
-              [field]: content,
-              updatedAt: new Date().toISOString()
-            }
-          : page
-      )
-    );
-  };
-
-  const saveJournalChecklistTemplateAs = (
-    type: "morning" | "closing" | "mpp",
-    name: string,
-    content: NamedChecklistTemplate["content"]
-  ) => {
-    const trimmedName = name.trim();
-    if (!trimmedName) {
-      return;
-    }
-
-    setJournalChecklistTemplates((current) => ({
-      ...current,
-      [type === "morning" ? "morningTemplates" : type === "closing" ? "closingTemplates" : "mppTemplates"]: [
-        ...(
-          type === "morning"
-            ? current.morningTemplates
-            : type === "closing"
-              ? current.closingTemplates
-              : current.mppTemplates
-        ).filter(
-          (template) => template.name.toLowerCase() !== trimmedName.toLowerCase()
-        ),
-        {
-          id: `template-${Date.now()}`,
-          name: trimmedName,
-          content
-        }
-      ]
-    }));
-    setMessage(
-      `${type === "morning" ? "Morning" : type === "closing" ? "Closing" : "MPP"} template "${trimmedName}" saved.`
-    );
-  };
-
-  const updateJournalChecklistTemplate = (
-    type: "morning" | "closing" | "mpp",
-    templateId: string,
-    content: NamedChecklistTemplate["content"]
-  ) => {
-    if (!templateId) {
-      return;
-    }
-
-    setJournalChecklistTemplates((current) => {
-      const templateKey =
-        type === "morning" ? "morningTemplates" : type === "closing" ? "closingTemplates" : "mppTemplates";
-      const templates = current[templateKey];
-
-      if (!templates.some((template) => template.id === templateId)) {
-        return current;
-      }
-
-      return {
-        ...current,
-        [templateKey]: templates.map((template) => (template.id === templateId ? { ...template, content } : template))
-      };
-    });
-
-    setMessage(`${type === "morning" ? "Morning" : type === "closing" ? "Closing" : "MPP"} template updated.`);
-  };
-
-  const deleteJournalChecklistTemplate = (type: "morning" | "closing" | "mpp", templateId: string) => {
-    setJournalChecklistTemplates((current) => {
-      const templateKey =
-        type === "morning" ? "morningTemplates" : type === "closing" ? "closingTemplates" : "mppTemplates";
-      const templates = current[templateKey];
-
-      if (templates.length <= 1) {
-        return current;
-      }
-
-      const nextTemplates = templates.filter((template) => template.id !== templateId);
-      if (nextTemplates.length === templates.length) {
-        return current;
-      }
-
-      return {
-        ...current,
-        [templateKey]: nextTemplates
-      };
-    });
-
-    setMessage(`${type === "morning" ? "Morning" : type === "closing" ? "Closing" : "MPP"} template deleted.`);
-  };
+  const {
+    createJournalPage,
+    updateJournalPage,
+    updateJournalContent,
+    saveJournalChecklistTemplateAs,
+    updateJournalChecklistTemplate,
+    deleteJournalChecklistTemplate
+  } = createJournalPageActions({
+    getJournalPages: () => journalPagesRef.current,
+    journalChecklistTemplates,
+    persistJournalPages,
+    setSelectedJournalPageId,
+    setJournalChecklistTemplates,
+    setMessage
+  });
 
   const updateTradeReview = (
     tradeId: string,
@@ -1469,277 +1253,6 @@ function App() {
     });
   };
 
-  const updateTradeTag = (
-    trade: EditableTradeRow,
-    field: EditableTradeTagField,
-    value: string | string[] | null
-  ) => {
-    setTradeTagOverrides((current) => upsertTradeTagOverride(current, trade, field, value));
-
-    if (field === "playbook") {
-      const nextPlaybookName = Array.isArray(value) ? (value[0] ?? "") : value ?? "";
-      if (nextPlaybookName.trim()) {
-        const { playbooks, addedPlaybookIds } = ensurePlaybooksForNames(loadPlaybooks(), [nextPlaybookName]);
-        if (addedPlaybookIds.length > 0) {
-          savePlaybooks(playbooks);
-        }
-      }
-    }
-  };
-
-  const createTradeTagOption = (field: EditableTradeTagField, rawValue: string) => {
-    const value = rawValue.trim();
-    if (!value) {
-      return;
-    }
-
-    if (mergedTradeTagOptionsByField[field].some((option) => option.toLowerCase() === value.toLowerCase())) {
-      return;
-    }
-
-    setTradeTagOptions((current) => ({
-      ...current,
-      [field]: [...(current[field] ?? []), value]
-    }));
-
-    setMessage(`Added "${value}" to the ${field} tag list.`);
-  };
-
-  const renameTradeTagOption = (
-    field: EditableTradeTagField,
-    currentValue: string,
-    rawNextValue: string
-  ) => {
-    const sourceValue = currentValue.trim();
-    const nextValue = rawNextValue.trim();
-    if (!sourceValue || !nextValue || sourceValue === nextValue) {
-      return;
-    }
-    const isCaseOnlyRename = equalsOptionValue(sourceValue, nextValue);
-
-    const customOptionsForField = tradeTagOptions[field] ?? [];
-    if (!customOptionsForField.some((option) => equalsOptionValue(option, sourceValue))) {
-      setMessage(`Only custom ${field} options can be renamed here.`);
-      return;
-    }
-
-    if (
-      !isCaseOnlyRename &&
-      mergedTradeTagOptionsByField[field].some((option) => equalsOptionValue(option, nextValue))
-    ) {
-      setMessage(`"${nextValue}" already exists in the ${field} tag list.`);
-      return;
-    }
-
-    setTradeTagOptions((current) => {
-      const existing = current[field] ?? [];
-      const filtered = existing.filter((option) => !equalsOptionValue(option, sourceValue));
-      return {
-        ...current,
-        [field]: [...filtered, nextValue]
-      };
-    });
-
-    setTradeTagOverrides((current) =>
-      current.map((override) => {
-        const now = new Date().toISOString();
-
-        if (field === "mistake") {
-          let changed = false;
-          let nextMistakes = override.mistakes;
-          let nextMistake = override.mistake;
-
-          if (Array.isArray(override.mistakes)) {
-            const renamed = override.mistakes.map((value) =>
-              equalsOptionValue(value, sourceValue) ? nextValue : value
-            );
-            changed = renamed.some((value, index) => value !== override.mistakes?.[index]);
-            nextMistakes = renamed;
-          }
-
-          if (typeof override.mistake === "string" && equalsOptionValue(override.mistake, sourceValue)) {
-            nextMistake = nextValue;
-            changed = true;
-          }
-
-          return changed
-            ? {
-                ...override,
-                mistakes: nextMistakes,
-                mistake: nextMistake,
-                updatedAt: now
-              }
-            : override;
-        }
-
-        if (field === "catalyst") {
-          if (!Array.isArray(override.catalyst)) {
-            return override;
-          }
-
-          const renamed = override.catalyst.map((value) =>
-            equalsOptionValue(value, sourceValue) ? nextValue : value
-          );
-          const changed = renamed.some((value, index) => value !== override.catalyst?.[index]);
-          return changed
-            ? {
-                ...override,
-                catalyst: renamed,
-                updatedAt: now
-              }
-            : override;
-        }
-
-        const currentFieldValue = override[field];
-        if (typeof currentFieldValue === "string" && equalsOptionValue(currentFieldValue, sourceValue)) {
-          return {
-            ...override,
-            [field]: nextValue,
-            updatedAt: now
-          };
-        }
-
-        return override;
-      })
-    );
-
-    if (field === "playbook") {
-      const { playbooks, addedPlaybookIds } = ensurePlaybooksForNames(loadPlaybooks(), [nextValue]);
-      if (addedPlaybookIds.length > 0) {
-        savePlaybooks(playbooks);
-      }
-    }
-
-    setMessage(`Renamed "${sourceValue}" to "${nextValue}" in the ${field} tag list.`);
-  };
-
-  const deleteTradeTagOption = (field: EditableTradeTagField, rawValue: string) => {
-    const value = rawValue.trim();
-    if (!value) {
-      return;
-    }
-
-    const customOptionsForField = tradeTagOptions[field] ?? [];
-    if (!customOptionsForField.some((option) => equalsOptionValue(option, value))) {
-      setMessage(`Only custom ${field} options can be removed here.`);
-      return;
-    }
-
-    setTradeTagOptions((current) => ({
-      ...current,
-      [field]: (current[field] ?? []).filter((option) => !equalsOptionValue(option, value))
-    }));
-
-    setTradeTagOverrides((current) =>
-      current.map((override) => {
-        const now = new Date().toISOString();
-
-        if (field === "mistake") {
-          const nextMistakes = Array.isArray(override.mistakes)
-            ? override.mistakes.filter((option) => !equalsOptionValue(option, value))
-            : override.mistakes;
-          const mistakeCleared =
-            typeof override.mistake === "string" && equalsOptionValue(override.mistake, value) ? null : override.mistake;
-
-          const mistakesChanged =
-            Array.isArray(override.mistakes) &&
-            nextMistakes &&
-            nextMistakes.length !== override.mistakes.length;
-          const mistakeChanged = mistakeCleared !== override.mistake;
-
-          return mistakesChanged || mistakeChanged
-            ? {
-                ...override,
-                mistakes: nextMistakes,
-                mistake: mistakeCleared,
-                updatedAt: now
-              }
-            : override;
-        }
-
-        if (field === "catalyst") {
-          if (!Array.isArray(override.catalyst)) {
-            return override;
-          }
-
-          const nextCatalyst = override.catalyst.filter((option) => !equalsOptionValue(option, value));
-          return nextCatalyst.length !== override.catalyst.length
-            ? {
-                ...override,
-                catalyst: nextCatalyst,
-                updatedAt: now
-              }
-            : override;
-        }
-
-        const currentFieldValue = override[field];
-        if (typeof currentFieldValue === "string" && equalsOptionValue(currentFieldValue, value)) {
-          return {
-            ...override,
-            [field]: null,
-            updatedAt: now
-          };
-        }
-
-        return override;
-      })
-    );
-
-    setMessage(`Removed "${value}" from the ${field} tag list.`);
-  };
-
-  const bulkUpdateTradeTags = (
-    tradeIds: string[],
-    field: EditableTradeTagField,
-    value: string | string[] | null
-  ) => {
-    const tradeLookup = new Map<string, EditableTradeRow>();
-
-    for (const trade of resolvedTrades) {
-      tradeLookup.set(trade.id, trade);
-    }
-
-    for (const session of resolvedTradeSessions) {
-      for (const trade of session.trades as EditableTradeRow[]) {
-        if (!tradeLookup.has(trade.id)) {
-          tradeLookup.set(trade.id, trade);
-        }
-      }
-    }
-
-    const targetTrades = tradeIds
-      .map((tradeId) => tradeLookup.get(tradeId))
-      .filter((trade): trade is EditableTradeRow => trade !== undefined);
-    if (targetTrades.length === 0) {
-      return;
-    }
-
-    setTradeTagOverrides((current) =>
-      targetTrades.reduce(
-        (nextOverrides, trade) => upsertTradeTagOverride(nextOverrides, trade, field, value),
-        current
-      )
-    );
-
-    if (field === "playbook") {
-      const nextPlaybookName = Array.isArray(value) ? (value[0] ?? "") : value ?? "";
-      if (nextPlaybookName.trim()) {
-        const { playbooks, addedPlaybookIds } = ensurePlaybooksForNames(loadPlaybooks(), [nextPlaybookName]);
-        if (addedPlaybookIds.length > 0) {
-          savePlaybooks(playbooks);
-        }
-      }
-    }
-
-    setMessage(
-      `${value && (!Array.isArray(value) || value.length > 0) ? "Applied" : "Cleared"} ${field} for ${targetTrades.length} selected trade${targetTrades.length === 1 ? "" : "s"}.`
-    );
-  };
-
-  const allStoredTrades = resolvedTradeSessions.flatMap(
-    (session) => session.trades as EditableTradeRow[]
-  );
-
   const renderActivePage = () => {
     switch (activeRoute) {
       case "dashboard":
@@ -1774,7 +1287,6 @@ function App() {
       case "trades":
         return (
           <TradesPage
-              fileName={fileName}
               trades={resolvedTrades}
               databaseTrades={
                 resolvedTrades.length > 0 && !isCurrentImportSaved
@@ -1792,6 +1304,7 @@ function App() {
               externalSelectedTradeRequestId={dashboardSelectedTradeRequestId}
               reviews={tradeReviews}
               historicalBarSets={historicalBarSets}
+              historicalBarSetsLoaded={historicalBarSetsLoaded}
               reviewChartInterval={reviewChartInterval}
               dayChartInterval={dayChartInterval}
               tagOptionsByField={activeTradeTagOptionsByField}
@@ -1817,6 +1330,7 @@ function App() {
               pages={journalPages}
               selectedPageId={selectedJournalPageId}
               trades={allStoredTrades}
+              settings={settings}
               tagOptionsByField={activeTradeTagOptionsByField}
               checklistTemplates={journalChecklistTemplates}
               externalSelectedTradeDate={
@@ -1942,10 +1456,16 @@ function App() {
             trades={resolvedTrades}
             busy={busy}
             isCurrentImportSaved={isCurrentImportSaved}
+            settings={settings}
+            savedTradeDates={tradeSessions.map((session) => session.tradeDate)}
             onFileDrop={handleFileDrop}
+            onSettingsChange={setSettings}
+            onBrowseExportFolder={handleBrowseFolder}
             onSaveToDatabase={handleSaveToDatabase}
             onExport={handleExport}
             onImport={handleImport}
+            onExportWorkspaceBundle={handleExportWorkspaceBundle}
+            onImportWorkspaceBundle={handleImportWorkspaceBundle}
             onClear={handleClear}
             tagOptionsByField={activeTradeTagOptionsByField}
             onUpdateTradeTag={updateTradeTag}
@@ -1967,13 +1487,11 @@ function App() {
         return (
           <SettingsPage
             settings={settings}
-            isAdmin={Boolean(user?.isAdmin)}
             onChange={setSettings}
-            onBrowse={handleBrowseFolder}
             onTestConnection={runConnectionTest}
-            onRecoverFromCloud={handleRecoverFromCloud}
-            onForceCloudSeed={handleForceCloudSeed}
-            onLoadAdminUsers={loadAdminUsers}
+            onLoadWorkspaceAttachmentSummary={handleLoadWorkspaceAttachmentSummary}
+            onAuditWorkspaceAttachments={handleAuditWorkspaceAttachments}
+            onPruneWorkspaceAttachments={handlePruneWorkspaceAttachments}
           />
         );
       default:
@@ -1999,38 +1517,11 @@ function App() {
           <div className="page-loading-state">
             <div className="page-loading-orb" aria-hidden="true" />
             <div className="page-loading-copy">
-              <strong>{!authChecked ? "Checking session" : "Syncing workspace"}</strong>
+              <strong>{!authChecked ? "Loading workspace" : "Applying workspace changes"}</strong>
               <span>Preparing charts, reports, and journal tools.</span>
             </div>
           </div>
         </div>
-      ) : null}
-      {authChecked && !syncing && !user ? (
-        <AuthModal
-          externalError={bootError}
-          onAuthenticated={async (authenticatedUser) => {
-            setSyncing(true);
-            setBootError(null);
-            try {
-              await syncUserDataOnLogin(authenticatedUser.id);
-              await hydrateWorkspaceFromStores();
-              setUser(authenticatedUser);
-              setBootError(null);
-            } catch (error) {
-              const errorMessage = toErrorMessage(
-                error,
-                "Workspace failed to initialize after sign in. Restart the app and try again."
-              );
-              console.error("[app] Failed to initialize workspace after sign in.", error);
-              setBootError(errorMessage);
-              setMessage(errorMessage);
-              setUser(authenticatedUser);
-            } finally {
-              setAuthChecked(true);
-              setSyncing(false);
-            }
-          }}
-        />
       ) : null}
       <Suspense
         fallback={
@@ -2050,12 +1541,9 @@ function App() {
             activeRoute={activeRoute}
             navItems={navItems}
             onNavigate={handleNavigate}
-            accountLabel={user.email || user.username || "Signed in"}
-            onSignOut={() => {
-              void handleSignOut();
-            }}
+            accountLabel={user.username || "Local Workspace"}
           >
-            {renderActivePage()}
+            <div key={`${activeRoute}-${workspaceRefreshKey}`}>{renderActivePage()}</div>
           </AppLayout>
         ) : null}
       </Suspense>

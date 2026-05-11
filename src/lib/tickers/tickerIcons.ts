@@ -8,6 +8,10 @@ import socialConsumerAppsIcon from "../../assets/tickers/sector-social-consumer-
 import technologyIcon from "../../assets/tickers/sector-technology.png";
 import type { LibraryPageRecord } from "../../types/library";
 import { loadLibraryPages } from "../library/libraryStore";
+import {
+  isWorkspaceAttachmentPath,
+  resolveWorkspaceAttachmentSrc
+} from "../workspace/workspaceAttachmentClient";
 
 export type TickerSector = string;
 
@@ -132,6 +136,10 @@ export const resolveTickerGroupIcon = (iconValue: string | undefined): string | 
   if (normalized.startsWith(PRESET_PREFIX)) {
     const presetKey = normalized.slice(PRESET_PREFIX.length) as TickerGroupIconPresetKey;
     return tickerGroupIconPresets[presetKey];
+  }
+
+  if (isWorkspaceAttachmentPath(normalized)) {
+    return resolveWorkspaceAttachmentSrc(normalized);
   }
 
   return undefined;

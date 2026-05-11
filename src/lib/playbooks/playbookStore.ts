@@ -1,7 +1,8 @@
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { JSONContent } from "@tiptap/core";
 import { createEmptyJournalDoc, hasJournalDocContent } from "../journal/journalContent";
 import type { PlaybookExampleRating, PlaybookRecord, PlaybookStatus } from "../../types/playbook";
-import { syncStores } from "../sync/syncStore";
+import { canUseMachineLegacyData, syncStores } from "../sync/syncStore";
 
 const DEFAULT_PLAYBOOK_ID = "wide-spread-open-drive";
 const LEGACY_WIDE_SPREAD_OPEN_DRIVE_ID = "opening-drive-wide-spread";
@@ -985,75 +986,180 @@ export const loadPlaybooks = (): PlaybookRecord[] => {
     if (!parsed) {
       return createDefaultWorkspacePlaybooks();
     }
-
-    if (!Array.isArray(parsed)) {
-      return createDefaultWorkspacePlaybooks();
-    }
-
-    const playbooks = parsed
-      .filter(isPlaybookRecord)
-      .map((playbook) => ({
-        ...playbook,
-        name: typeof playbook.name === "string" ? playbook.name : "",
-        aliases: Array.isArray((playbook as { aliases?: unknown }).aliases)
-          ? ((playbook as { aliases?: unknown[] }).aliases ?? []).filter(
-              (value): value is string => typeof value === "string"
-            )
-          : [playbook.name],
-        status: isPlaybookStatus((playbook as { status?: unknown }).status)
-          ? (playbook as { status: PlaybookStatus }).status
-          : getFallbackPlaybookStatus(),
-        screenshotUrls: Array.isArray((playbook as { screenshotUrls?: unknown }).screenshotUrls)
-          ? ((playbook as { screenshotUrls?: unknown[] }).screenshotUrls ?? []).filter(
-              (value): value is string => typeof value === "string"
-            )
-          : [],
-        aPlusExamples: Array.isArray((playbook as { aPlusExamples?: unknown }).aPlusExamples)
-          ? ((playbook as { aPlusExamples?: unknown[] }).aPlusExamples ?? [])
-              .filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object"))
-              .map((entry) => {
-                const now = new Date().toISOString();
-                const rating = entry.rating;
-                const notes = entry.notes as JSONContent | null | undefined;
-
-                return {
-                  id: typeof entry.id === "string" ? entry.id : `example-${Math.random().toString(16).slice(2)}`,
-                  tradeId: typeof entry.tradeId === "string" ? entry.tradeId : "",
-                  tradeDate: typeof entry.tradeDate === "string" ? entry.tradeDate : "",
-                  rating: isExampleRating(rating) ? rating : "A+",
-                  notes: hasJournalDocContent(notes) ? (notes as JSONContent) : createEmptyJournalDoc(),
-                  screenshotPaths: Array.isArray(entry.screenshotPaths)
-                    ? entry.screenshotPaths.filter((value): value is string => typeof value === "string")
-                    : [],
-                  recordingPath: typeof entry.recordingPath === "string" ? entry.recordingPath : "",
-                  createdAt: typeof entry.createdAt === "string" ? entry.createdAt : now,
-                  updatedAt: typeof entry.updatedAt === "string" ? entry.updatedAt : now
-                };
-              })
-          : [],
-        sections: playbook.sections
-          .filter((section) => !isLegacySection(section.id))
-          .map((section) => ({
-            ...section,
-            content: hasJournalDocContent(section.content)
-              ? section.content
-              : createEmptyJournalDoc()
-          }))
-      }));
-
-    const mergedPlaybooks = mergeWideSpreadOpenDriveVariants(playbooks);
-    return mergedPlaybooks.length > 0 ? mergedPlaybooks : createDefaultWorkspacePlaybooks();
+    return normalizePlaybooksValue(parsed);
   } catch {
     return createDefaultWorkspacePlaybooks();
   }
 };
 
-export const savePlaybooks = (playbooks: PlaybookRecord[]) => {
+const normalizePlaybooksValue = (value: unknown): PlaybookRecord[] => {
+  if (!Array.isArray(value)) {
+    return createDefaultWorkspacePlaybooks();
+  }
+
+  const playbooks = value
+    .filter(isPlaybookRecord)
+    .map((playbook) => ({
+      ...playbook,
+      name: typeof playbook.name === "string" ? playbook.name : "",
+      aliases: Array.isArray((playbook as { aliases?: unknown }).aliases)
+        ? ((playbook as { aliases?: unknown[] }).aliases ?? []).filter(
+            (entry): entry is string => typeof entry === "string"
+          )
+        : [playbook.name],
+      status: isPlaybookStatus((playbook as { status?: unknown }).status)
+        ? (playbook as { status: PlaybookStatus }).status
+        : getFallbackPlaybookStatus(),
+      screenshotUrls: Array.isArray((playbook as { screenshotUrls?: unknown }).screenshotUrls)
+        ? ((playbook as { screenshotUrls?: unknown[] }).screenshotUrls ?? []).filter(
+            (entry): entry is string => typeof entry === "string"
+          )
+        : [],
+      aPlusExamples: Array.isArray((playbook as { aPlusExamples?: unknown }).aPlusExamples)
+        ? ((playbook as { aPlusExamples?: unknown[] }).aPlusExamples ?? [])
+            .filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object"))
+            .map((entry) => {
+              const now = new Date().toISOString();
+              const rating = entry.rating;
+              const notes = entry.notes as JSONContent | null | undefined;
+
+              return {
+                id: typeof entry.id === "string" ? entry.id : `example-${Math.random().toString(16).slice(2)}`,
+                tradeId: typeof entry.tradeId === "string" ? entry.tradeId : "",
+                tradeDate: typeof entry.tradeDate === "string" ? entry.tradeDate : "",
+                rating: isExampleRating(rating) ? rating : "A+",
+                notes: hasJournalDocContent(notes) ? (notes as JSONContent) : createEmptyJournalDoc(),
+                screenshotPaths: Array.isArray(entry.screenshotPaths)
+                  ? entry.screenshotPaths.filter((value): value is string => typeof value === "string")
+                  : [],
+                recordingPath: typeof entry.recordingPath === "string" ? entry.recordingPath : "",
+                createdAt: typeof entry.createdAt === "string" ? entry.createdAt : now,
+                updatedAt: typeof entry.updatedAt === "string" ? entry.updatedAt : now
+              };
+            })
+        : [],
+      sections: playbook.sections
+        .filter((section) => !isLegacySection(section.id))
+        .map((section) => ({
+          ...section,
+          content: hasJournalDocContent(section.content) ? section.content : createEmptyJournalDoc()
+        }))
+    }));
+
+  const mergedPlaybooks = mergeWideSpreadOpenDriveVariants(playbooks);
+  return mergedPlaybooks.length > 0 ? mergedPlaybooks : createDefaultWorkspacePlaybooks();
+};
+
+const getSerializedSize = (value: unknown): number => {
+  try {
+    return JSON.stringify(value).length;
+  } catch {
+    return 0;
+  }
+};
+
+const stableStringify = (value: unknown): string => {
+  if (value === null || value === undefined) {
+    return JSON.stringify(value);
+  }
+
+  if (typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
+};
+
+const isDefaultWorkspacePlaybooks = (playbooks: PlaybookRecord[]): boolean =>
+  stableStringify(playbooks) === stableStringify(createDefaultWorkspacePlaybooks());
+
+const getLatestTimestamp = (playbooks: PlaybookRecord[]): number =>
+  playbooks.reduce((latest, playbook) => {
+    const parsed = Date.parse(playbook.updatedAt || playbook.createdAt || "");
+    return Number.isFinite(parsed) ? Math.max(latest, parsed) : latest;
+  }, 0);
+
+const shouldUseDesktopPlaybooksForRecovery = (
+  localPlaybooks: PlaybookRecord[],
+  desktopPlaybooks: PlaybookRecord[]
+): boolean => {
+  if (desktopPlaybooks.length === 0) {
+    return false;
+  }
+
+  if (isDefaultWorkspacePlaybooks(localPlaybooks)) {
+    return true;
+  }
+
+  if (localPlaybooks.length === 0) {
+    return true;
+  }
+
+  if (desktopPlaybooks.length > localPlaybooks.length) {
+    return true;
+  }
+
+  const localSize = getSerializedSize(localPlaybooks);
+  const desktopSize = getSerializedSize(desktopPlaybooks);
+  if (desktopSize > localSize) {
+    return true;
+  }
+
+  return getLatestTimestamp(desktopPlaybooks) > getLatestTimestamp(localPlaybooks) && desktopSize >= localSize;
+};
+
+export const loadPlaybooksFromDesktopBackup = async (): Promise<PlaybookRecord[] | null> => {
+  if (!isTauri()) {
+    return null;
+  }
+
+  try {
+    const parsed = await invoke<unknown>("load_playbooks");
+    return normalizePlaybooksValue(parsed);
+  } catch {
+    return null;
+  }
+};
+
+export const recoverPlaybooksFromDesktopBackup = async (
+  localPlaybooks: PlaybookRecord[]
+): Promise<PlaybookRecord[] | null> => {
+  const activeUserId = syncStores.playbooks.getUserId();
+  if (!canUseMachineLegacyData(activeUserId)) {
+    return null;
+  }
+
+  const desktopPlaybooks = await loadPlaybooksFromDesktopBackup();
+  if (!desktopPlaybooks || !shouldUseDesktopPlaybooksForRecovery(localPlaybooks, desktopPlaybooks)) {
+    return null;
+  }
+
+  return desktopPlaybooks;
+};
+
+export const savePlaybooks = async (playbooks: PlaybookRecord[]): Promise<void> => {
   if (typeof window === "undefined") {
     return;
   }
 
-  void syncStores.playbooks.save(playbooks);
+  const syncPromise = syncStores.playbooks.save(playbooks);
+  const activeUserId = syncStores.playbooks.getUserId();
+
+  if (isTauri() && canUseMachineLegacyData(activeUserId)) {
+    try {
+      await invoke("save_playbooks", { playbooks });
+    } catch (error) {
+      console.warn("[playbooks] Failed to save desktop playbook backup.", error);
+    }
+  }
+
+  await syncPromise;
 };
 
 export const updatePlaybookSectionContent = (
