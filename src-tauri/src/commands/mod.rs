@@ -41,4 +41,5 @@ pub use workspace_transfer::{
     export_workspace_bundle,
     import_workspace_bundle,
     pick_workspace_bundle_file,
+    preview_workspace_bundle,
 };

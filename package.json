@@ -7,6 +7,7 @@
     "dev": "vite",
     "desktop:doctor": "powershell -ExecutionPolicy Bypass -File scripts/check-desktop-prereqs.ps1",
     "desktop:dev": "powershell -ExecutionPolicy Bypass -File scripts/run-tauri-dev.ps1",
+    "desktop:work-pc": "powershell -ExecutionPolicy Bypass -File scripts/build-work-pc-package.ps1",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"

@@ -12,6 +12,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             pick_export_folder,
             pick_workspace_bundle_file,
+            preview_workspace_bundle,
             save_export_csv,
             export_workspace_bundle,
             import_workspace_bundle,

@@ -183,6 +183,52 @@ const toImportedSettings = (value: unknown, currentSettings: Settings): Settings
   ...(isRecord(value) ? (value as Partial<Settings>) : {})
 });
 
+type WorkspaceTransferPreviewScope = "full" | "since-date" | "date-range" | "selected-dates";
+
+interface WorkspaceTransferBundlePreview {
+  scope: WorkspaceTransferPreviewScope;
+  exportedAt: string;
+  startDate?: string;
+  endDate?: string;
+  selectedDates: string[];
+  attachmentCount: number;
+}
+
+const formatWorkspaceTransferExportedAt = (value: string): string => {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+
+  return parsed.toLocaleString();
+};
+
+const buildWorkspaceImportConfirmationMessage = (
+  preview: WorkspaceTransferBundlePreview
+): string => {
+  const scopeLabel = getWorkspaceTransferRangeLabel(
+    preview.selectedDates,
+    preview.startDate,
+    preview.endDate
+  );
+  const exportedAtLabel = formatWorkspaceTransferExportedAt(preview.exportedAt);
+  const exportedAtLine = exportedAtLabel ? `This transfer file was exported on ${exportedAtLabel}. ` : "";
+  const attachmentLine =
+    preview.attachmentCount > 0
+      ? ` It also includes ${preview.attachmentCount} attachment${preview.attachmentCount === 1 ? "" : "s"}.`
+      : "";
+
+  switch (preview.scope) {
+    case "selected-dates":
+    case "since-date":
+    case "date-range":
+      return `${exportedAtLine}This transfer file contains workspace updates${scopeLabel}. Importing it will merge only those dated records into this computer and leave other dates alone.${attachmentLine} This machine keeps its own saved API keys. Continue?`;
+    case "full":
+    default:
+      return `${exportedAtLine}This transfer file is a full workspace export. Importing it will replace imported workspace data on this computer.${attachmentLine} This machine keeps its own saved API keys. Continue?`;
+  }
+};
+
 interface CreateSettingsPageActionsOptions {
   settings: Settings;
   tradeTagOptions: TradeTagOptionsRecord;
@@ -513,22 +559,24 @@ export const createSettingsPageActions = ({
       return "Workspace file import only works in the desktop app.";
     }
 
-    const shouldImport = window.confirm(
-      "Importing a workspace file will apply that workspace to this computer. Full exports replace imported data, while date-filtered and exact-date exports merge dated records only. This machine keeps its own saved API keys. Continue?"
-    );
-    if (!shouldImport) {
-      const canceledMessage = "Workspace import canceled.";
-      setMessage(canceledMessage);
-      return canceledMessage;
-    }
-
     setSyncing(true);
     try {
-      await flushWorkspaceToLocalStores();
       const selectedPath = await invoke<string | null>("pick_workspace_bundle_file");
       if (!selectedPath) {
         return "No workspace file selected.";
       }
+
+      const preview = await invoke<WorkspaceTransferBundlePreview>("preview_workspace_bundle", {
+        path: selectedPath
+      });
+      const shouldImport = window.confirm(buildWorkspaceImportConfirmationMessage(preview));
+      if (!shouldImport) {
+        const canceledMessage = "Workspace import canceled.";
+        setMessage(canceledMessage);
+        return canceledMessage;
+      }
+
+      await flushWorkspaceToLocalStores();
 
       const result = await invoke<WorkspaceTransferImportResult>("import_workspace_bundle", {
         path: selectedPath

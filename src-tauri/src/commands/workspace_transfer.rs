@@ -66,6 +66,17 @@ pub struct WorkspaceTransferImportResult {
     skipped_attachment_paths: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceTransferBundlePreview {
+    scope: WorkspaceTransferScope,
+    exported_at: String,
+    start_date: Option<String>,
+    end_date: Option<String>,
+    selected_dates: Vec<String>,
+    attachment_count: usize,
+}
+
 fn bytes_to_hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -101,6 +112,19 @@ fn normalize_bundle(mut bundle: WorkspaceTransferBundle) -> WorkspaceTransferBun
         bundle.scope = Some(WorkspaceTransferScope::Full);
     }
     bundle
+}
+
+fn read_workspace_transfer_bundle(path: &Path) -> Result<WorkspaceTransferBundle, String> {
+    if !path.exists() {
+        return Err("The selected workspace bundle could not be found.".to_string());
+    }
+
+    let raw_bundle = fs::read_to_string(path)
+        .map_err(|_| "The workspace bundle could not be read.".to_string())?;
+    let bundle = serde_json::from_str::<WorkspaceTransferBundle>(raw_bundle.trim_start_matches('\u{feff}'))
+        .map_err(|_| "The workspace bundle could not be parsed.".to_string())?;
+
+    Ok(normalize_bundle(bundle))
 }
 
 fn sanitize_relative_path(raw: &str) -> Option<PathBuf> {
@@ -148,6 +172,22 @@ pub fn pick_workspace_bundle_file() -> Option<String> {
         .add_filter("Trade Engine Workspace", &["json"])
         .pick_file()
         .map(|path| path.display().to_string())
+}
+
+#[tauri::command]
+pub fn preview_workspace_bundle(path: String) -> Result<WorkspaceTransferBundlePreview, String> {
+    let bundle_path = PathBuf::from(path.trim());
+    let bundle = read_workspace_transfer_bundle(&bundle_path)?;
+    let scope = bundle.scope.clone().unwrap_or(WorkspaceTransferScope::Full);
+
+    Ok(WorkspaceTransferBundlePreview {
+        scope,
+        exported_at: bundle.exported_at,
+        start_date: bundle.start_date,
+        end_date: bundle.end_date,
+        selected_dates: bundle.selected_dates,
+        attachment_count: bundle.attachments.len(),
+    })
 }
 
 #[tauri::command]
@@ -245,15 +285,7 @@ pub fn import_workspace_bundle(
     path: String,
 ) -> Result<WorkspaceTransferImportResult, String> {
     let bundle_path = PathBuf::from(path.trim());
-    if !bundle_path.exists() {
-        return Err("The selected workspace bundle could not be found.".to_string());
-    }
-
-    let raw_bundle = fs::read_to_string(&bundle_path)
-        .map_err(|_| "The workspace bundle could not be read.".to_string())?;
-    let mut bundle = serde_json::from_str::<WorkspaceTransferBundle>(raw_bundle.trim_start_matches('\u{feff}'))
-        .map_err(|_| "The workspace bundle could not be parsed.".to_string())?;
-    bundle = normalize_bundle(bundle);
+    let mut bundle = read_workspace_transfer_bundle(&bundle_path)?;
 
     let attachments_root = playbook_attachments_dir(&app_handle)?;
     let mut restored_attachment_count = 0usize;

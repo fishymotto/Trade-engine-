@@ -48,6 +48,22 @@ https://developer.microsoft.com/en-us/microsoft-edge/webview2/
 
 If `npm run desktop:dev` still fails on a new machine, run `npm run desktop:doctor` first. The preflight script now checks for Node, npm, Cargo, the MSVC Rust toolchain, Visual Studio Build Tools, WebView2, and whether this repo's dependencies have been installed.
 
+## Shipping This Build To Another Windows PC
+
+If you want to run this exact version on another Windows computer without setting up the full dev toolchain there:
+
+1. On your current machine, run `npm run desktop:work-pc`.
+2. After the build finishes, open `dist/work-pc/Trade-Engine-<version>/`.
+3. Copy that whole folder to the other PC.
+4. On the other PC, install WebView2 if needed, then run the included `*-setup.exe` installer. Use the `.msi` instead if your workplace prefers MSI deployment.
+5. Open `WORK-PC-INSTALL.txt` in that folder for the exact install + data-transfer checklist.
+
+Notes:
+- If `.env.local` contains `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`, the packaged app can sign in and sync across devices after install.
+- If those env vars are missing when you build, the packaged app still runs in local-only mode, but login/cloud sync stay disabled until you rebuild with the env vars present.
+- `exportFolder` is intentionally machine-local, so set it again on the work PC after install.
+- If you want to move local-only data instead of relying on Supabase sync, open the `Imports` page and use `Send Workspace` on the current PC, then `Receive Workspace` on the work PC.
+
 ## Cross-Device Data Sync (Supabase)
 
 This app supports syncing your workspace (sessions, journal pages, settings, tags, reviews, charts, playbooks, library notes, etc.) across machines via Supabase.
