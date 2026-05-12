@@ -164,6 +164,24 @@ const parseTimestamp = (value: string): number => {
 };
 
 const cloneValue = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+const stableStringify = (value: unknown): string => {
+  if (value === null || value === undefined) {
+    return JSON.stringify(value);
+  }
+
+  if (typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
+};
+
 const JOURNAL_EDITOR_DRAFT_STORAGE_PREFIX = "trade-engine-journal-editor-draft::";
 type RecoverableJournalDraftField =
   | "morningChecklistContent"
@@ -526,7 +544,7 @@ function App() {
     setHistoricalBarSets(recoveredHistoricalBarSets ?? localHistoricalBarSets);
     setHistoricalBarSetsLoaded(true);
 
-    setJournalPages(recoverJournalPagesFromStoredDrafts(loadedJournalPages));
+    setJournalPages(recoverJournalPagesFromStoredDrafts(dedupeJournalPages(loadedJournalPages)));
     setJournalPagesLoaded(true);
 
     setJournalChecklistTemplates(recoveredJournalChecklistTemplates ?? localJournalChecklistTemplates);
@@ -537,6 +555,8 @@ function App() {
   };
 
   const journalPagesForSave = useMemo(() => dedupeJournalPages(journalPages), [journalPages]);
+  const journalPagesSignature = useMemo(() => stableStringify(journalPages), [journalPages]);
+  const journalPagesForSaveSignature = useMemo(() => stableStringify(journalPagesForSave), [journalPagesForSave]);
   const loadedTradeDates = useMemo(
     () => Array.from(new Set(trades.map((trade) => trade.tradeDate))).sort(),
     [trades]
@@ -676,10 +696,10 @@ function App() {
       return;
     }
 
-    if (journalPagesForSave.length !== journalPages.length) {
+    if (journalPagesForSaveSignature !== journalPagesSignature) {
       setJournalPages(journalPagesForSave);
     }
-  }, [journalPages, journalPagesForSave, journalPagesLoaded]);
+  }, [journalPagesForSave, journalPagesForSaveSignature, journalPagesLoaded, journalPagesSignature]);
 
   useEffect(() => {
     if (!journalPagesLoaded || !tradeReviewsLoaded) {
