@@ -43,6 +43,20 @@ export interface JournalScreenshotTagRecord {
   taggedDate: string;
 }
 
+export interface JournalTradeNoteRecord {
+  id: string;
+  title: string;
+  content: JSONContent;
+  linkedTrades: JournalScreenshotTradeLink[];
+  linkedTradeId: string;
+  linkedTradeDate: string;
+  ticker: string;
+  playbook: string;
+  taggedDate: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface JournalPageRecord {
   id: string;
   title: string;
@@ -58,6 +72,7 @@ export interface JournalPageRecord {
   closeMood: string;
   screenshotUrls: string[];
   screenshotTags: JournalScreenshotTagRecord[];
+  tradeNotes: JournalTradeNoteRecord[];
   closingChecklistContent: JSONContent;
   morningChecklistContent: JSONContent;
   morningContent: JSONContent;

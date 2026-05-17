@@ -30,16 +30,7 @@ const normalizeTradeTagOptions = (value: unknown): TradeTagOptionsRecord => {
 };
 
 const loadTradeTagOptionsFromLocalStorage = (): TradeTagOptionsRecord => {
-  const raw = readLocalStorageItem(STORAGE_KEY);
-  if (!raw) {
-    return {};
-  }
-
-  try {
-    return normalizeTradeTagOptions(JSON.parse(raw));
-  } catch {
-    return {};
-  }
+  return normalizeTradeTagOptions(syncStores.tradeTagOptions.load<unknown>({}));
 };
 
 const hasTradeTagOptions = (options: TradeTagOptionsRecord): boolean =>

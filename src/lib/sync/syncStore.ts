@@ -1,4 +1,4 @@
-import { supabase } from '../auth';
+import { isSupabaseConfigured, supabase } from '../auth';
 
 export interface SyncStoreConfig {
   tableName: string;
@@ -27,6 +27,15 @@ export interface SyncHydrationResult {
   pushed: boolean;
   dirty: boolean;
   error?: string;
+}
+
+export interface SyncStoreStatus {
+  dirty: boolean;
+  localUpdatedAt?: string;
+  lastSyncedAt?: string;
+  lastSyncedUserId?: string;
+  lastSyncedHash?: string;
+  lastError?: string;
 }
 
 export const SYNC_HYDRATED_EVENT = 'trade-engine-sync-hydrated';
@@ -79,6 +88,13 @@ const isStorageQuotaExceededError = (error: unknown): boolean => {
 };
 
 const hasLocalStorage = (): boolean => typeof window !== 'undefined' && Boolean(window.localStorage);
+
+const normalizeLocalOnlyMetadata = (metadata: SyncMetadata): SyncMetadata => ({
+  ...metadata,
+  dirty: false,
+  lastError: undefined,
+  lastSyncedUserId: undefined,
+});
 
 const getMachineOwnerUserIdUnsafe = (): string | null => {
   if (!hasLocalStorage()) {
@@ -263,6 +279,24 @@ const getRecordRichnessScore = (value: unknown): number => {
         typeof tag.linkedTradeDate === 'string' &&
         tag.linkedTradeDate.trim().length > 0;
       score += tagLinks * 5 + (hasLegacyLink ? 5 : 0);
+    }
+  }
+
+  if (Array.isArray(record.tradeNotes)) {
+    for (const note of record.tradeNotes) {
+      if (!isPlainRecord(note)) {
+        continue;
+      }
+
+      if (typeof note.title === 'string') {
+        score += note.title.trim().length;
+      }
+
+      if (typeof note.linkedTradeId === 'string' && note.linkedTradeId.trim().length > 0) {
+        score += 10;
+      }
+
+      score += Math.min(200, countNonEmptyDocText(note.content));
     }
   }
 
@@ -507,6 +541,22 @@ export class HybridSyncStore {
     return this.config.userId;
   }
 
+  getStatus(): SyncStoreStatus {
+    return this.loadMetadata();
+  }
+
+  hasDirtyLocalData(): boolean {
+    return this.loadMetadata().dirty;
+  }
+
+  getLastError(): string | undefined {
+    return this.loadMetadata().lastError;
+  }
+
+  async waitForIdle(): Promise<void> {
+    await this.writeQueue.catch(() => undefined);
+  }
+
   /**
    * Load data from localStorage (cache)
    * Fast, works offline
@@ -554,7 +604,7 @@ export class HybridSyncStore {
       }
 
       const parsed = JSON.parse(raw) as Partial<SyncMetadata>;
-      return {
+      const metadata = {
         dirty: Boolean(parsed.dirty),
         localUpdatedAt: typeof parsed.localUpdatedAt === 'string' ? parsed.localUpdatedAt : undefined,
         lastSyncedAt: typeof parsed.lastSyncedAt === 'string' ? parsed.lastSyncedAt : undefined,
@@ -562,6 +612,7 @@ export class HybridSyncStore {
         lastSyncedHash: typeof parsed.lastSyncedHash === 'string' ? parsed.lastSyncedHash : undefined,
         lastError: typeof parsed.lastError === 'string' ? parsed.lastError : undefined,
       };
+      return isSupabaseConfigured ? metadata : normalizeLocalOnlyMetadata(metadata);
     } catch (err) {
       console.warn(`[sync] Failed to read sync metadata for ${this.config.tableName}:`, err);
       return { dirty: false };
@@ -673,7 +724,25 @@ export class HybridSyncStore {
     });
 
     if (!user) {
+      this.saveMetadata(normalizeLocalOnlyMetadata({
+        ...currentMetadata,
+        localUpdatedAt: now,
+        lastSyncedAt: now,
+        lastSyncedUserId: undefined,
+        lastSyncedHash: dataHash,
+      }));
       console.debug(`[sync] ${this.config.tableName}: saved locally; no user session for remote push`);
+      return;
+    }
+
+    if (!isSupabaseConfigured) {
+      this.saveMetadata(normalizeLocalOnlyMetadata({
+        ...currentMetadata,
+        localUpdatedAt: now,
+        lastSyncedAt: now,
+        lastSyncedHash: dataHash,
+      }));
+      console.debug(`[sync] ${this.config.tableName}: saved locally; remote sync disabled`);
       return;
     }
 
@@ -710,7 +779,7 @@ export class HybridSyncStore {
     defaultValue: T,
     options: SyncFromSupabaseOptions = {}
   ): Promise<{ value: T; result: SyncHydrationResult }> {
-    if (!userId) {
+    if (!userId || !isSupabaseConfigured) {
       const localValue = this.load(defaultValue);
       return {
         value: localValue,
@@ -997,6 +1066,10 @@ export class HybridSyncStore {
    * Internal: sync data to Supabase
    */
   private async syncToSupabase<T>(data: T, userId: string): Promise<void> {
+    if (!isSupabaseConfigured) {
+      throw new Error(`Remote sync is disabled for ${this.config.tableName}.`);
+    }
+
     let safeData = data;
     if (LOSSY_REMOTE_WRITE_GUARDED_TABLES.has(this.config.tableName)) {
       const { data: existingRow, error: readError } = await supabase
@@ -1048,6 +1121,10 @@ export class HybridSyncStore {
   }
 
   async forcePushRemote<T>(data: T, userId: string): Promise<void> {
+    if (!isSupabaseConfigured) {
+      throw new Error(`Cannot force-push ${this.config.tableName} because remote sync is disabled.`);
+    }
+
     if (!userId) {
       throw new Error(`Cannot force-push ${this.config.tableName} without a user id.`);
     }
@@ -1060,6 +1137,10 @@ export class HybridSyncStore {
   }
 
   async retryDirty<T>(defaultValue: T, userId?: string): Promise<boolean> {
+    if (!isSupabaseConfigured) {
+      return false;
+    }
+
     const user = userId || this.config.userId;
     if (!user) {
       return false;

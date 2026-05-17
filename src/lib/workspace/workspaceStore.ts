@@ -1,33 +1,105 @@
 import type { ChartInterval } from "../../types/chart";
 import type { AppRoute } from "../../types/app";
+import type { GroupedTrade } from "../../types/trade";
 import { canUseMachineLegacyData, syncStores } from "../sync/syncStore";
 import { loadDesktopStoreBackup, saveDesktopStoreBackup } from "../storage/desktopStoreBackup";
+
+export interface WorkspaceTradeFilters {
+  tradeDateStart: string;
+  tradeDateEnd: string;
+  playbook: string;
+  symbol: string;
+  status: string;
+  game: string;
+  execution: string;
+}
 
 export interface WorkspaceState {
   activeRoute: AppRoute;
   loadedTradeDates: string[];
+  loadedTrades: GroupedTrade[];
   fileName: string;
   isCurrentImportSaved: boolean;
   reviewChartInterval: ChartInterval;
   dayChartInterval: ChartInterval;
+  selectedJournalPageId: string;
+  focusedTradeId: string;
+  tradeFilters: WorkspaceTradeFilters;
 }
+
+export const defaultWorkspaceTradeFilters: WorkspaceTradeFilters = {
+  tradeDateStart: "",
+  tradeDateEnd: "",
+  playbook: "all",
+  symbol: "all",
+  status: "all",
+  game: "all",
+  execution: "all"
+};
 
 export const defaultWorkspaceState: WorkspaceState = {
   activeRoute: "dashboard",
   loadedTradeDates: [],
+  loadedTrades: [],
   fileName: "",
   isCurrentImportSaved: false,
   reviewChartInterval: "1m",
-  dayChartInterval: "1D"
+  dayChartInterval: "1D",
+  selectedJournalPageId: "",
+  focusedTradeId: "",
+  tradeFilters: defaultWorkspaceTradeFilters
+};
+
+const normalizeLoadedTradeDates = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0) : [];
+
+const normalizeLoadedTrades = (value: unknown): GroupedTrade[] =>
+  Array.isArray(value) ? value.filter((entry): entry is GroupedTrade => Boolean(entry && typeof entry === "object")) : [];
+
+const normalizeTradeFilters = (value: unknown): WorkspaceTradeFilters => {
+  if (!value || typeof value !== "object") {
+    return defaultWorkspaceTradeFilters;
+  }
+
+  const record = value as Partial<WorkspaceTradeFilters>;
+  return {
+    tradeDateStart: typeof record.tradeDateStart === "string" ? record.tradeDateStart : "",
+    tradeDateEnd: typeof record.tradeDateEnd === "string" ? record.tradeDateEnd : "",
+    playbook: typeof record.playbook === "string" && record.playbook.trim().length > 0 ? record.playbook : "all",
+    symbol: typeof record.symbol === "string" && record.symbol.trim().length > 0 ? record.symbol : "all",
+    status: typeof record.status === "string" && record.status.trim().length > 0 ? record.status : "all",
+    game: typeof record.game === "string" && record.game.trim().length > 0 ? record.game : "all",
+    execution:
+      typeof record.execution === "string" && record.execution.trim().length > 0 ? record.execution : "all"
+  };
+};
+
+const normalizeWorkspaceState = (state: unknown): WorkspaceState => {
+  const parsed = state && typeof state === "object" ? (state as Partial<WorkspaceState>) : {};
+  const loadedTrades = normalizeLoadedTrades(parsed.loadedTrades);
+  const loadedTradeDates = Array.from(
+    new Set([
+      ...normalizeLoadedTradeDates(parsed.loadedTradeDates),
+      ...loadedTrades
+        .map((trade) => trade.tradeDate)
+        .filter((tradeDate): tradeDate is string => typeof tradeDate === "string" && tradeDate.trim().length > 0)
+    ])
+  ).sort();
+
+  return {
+    ...defaultWorkspaceState,
+    ...parsed,
+    loadedTradeDates,
+    loadedTrades,
+    selectedJournalPageId:
+      typeof parsed.selectedJournalPageId === "string" ? parsed.selectedJournalPageId : "",
+    focusedTradeId: typeof parsed.focusedTradeId === "string" ? parsed.focusedTradeId : "",
+    tradeFilters: normalizeTradeFilters(parsed.tradeFilters)
+  };
 };
 
 export const loadWorkspaceState = (): WorkspaceState => {
-  const parsed = syncStores.workspaceState.load<WorkspaceState>(defaultWorkspaceState);
-  return {
-    ...defaultWorkspaceState,
-    ...(parsed && typeof parsed === "object" ? parsed : {}),
-    loadedTradeDates: Array.isArray(parsed?.loadedTradeDates) ? parsed.loadedTradeDates : []
-  };
+  return normalizeWorkspaceState(syncStores.workspaceState.load<WorkspaceState>(defaultWorkspaceState));
 };
 
 const stableStringify = (value: unknown): string => {
@@ -49,11 +121,7 @@ const stableStringify = (value: unknown): string => {
 };
 
 export const persistWorkspaceState = async (state: WorkspaceState): Promise<WorkspaceState> => {
-  const normalizedState: WorkspaceState = {
-    ...defaultWorkspaceState,
-    ...(state && typeof state === "object" ? state : {}),
-    loadedTradeDates: Array.isArray(state?.loadedTradeDates) ? state.loadedTradeDates : []
-  };
+  const normalizedState = normalizeWorkspaceState(state);
   const syncPromise = syncStores.workspaceState.save(normalizedState);
   const activeUserId = syncStores.workspaceState.getUserId();
 
@@ -82,11 +150,7 @@ export const recoverWorkspaceStateFromDesktopBackup = async (
     return null;
   }
 
-  const desktopState: WorkspaceState = {
-    ...defaultWorkspaceState,
-    ...(desktopStateRaw && typeof desktopStateRaw === "object" ? desktopStateRaw : {}),
-    loadedTradeDates: Array.isArray(desktopStateRaw.loadedTradeDates) ? desktopStateRaw.loadedTradeDates : []
-  };
+  const desktopState = normalizeWorkspaceState(desktopStateRaw);
 
   if (
     stableStringify(desktopState) === stableStringify(defaultWorkspaceState) ||

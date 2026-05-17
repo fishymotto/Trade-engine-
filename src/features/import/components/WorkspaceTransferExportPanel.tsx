@@ -7,6 +7,10 @@ const workspaceDateMonthFormatter = new Intl.DateTimeFormat(undefined, {
   year: "numeric",
   timeZone: "UTC"
 });
+const workspaceSyncTimestampFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short"
+});
 
 const formatWorkspaceDateMonth = (value: string): string => {
   const [yearText, monthText] = value.split("-");
@@ -18,6 +22,31 @@ const formatWorkspaceDateMonth = (value: string): string => {
   }
 
   return workspaceDateMonthFormatter.format(new Date(Date.UTC(year, month - 1, 1)));
+};
+
+const formatWorkspaceSyncTimestamp = (value: string): string => {
+  if (!value.trim()) {
+    return "";
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : workspaceSyncTimestampFormatter.format(parsed);
+};
+
+const toLocalDateInputValue = (value: string): string => {
+  if (!value.trim()) {
+    return "";
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 };
 
 interface WorkspaceTransferExportPanelProps {
@@ -60,6 +89,9 @@ export const WorkspaceTransferExportPanel = ({
     )
   ).sort();
   const displaySelectedWorkspaceExportDates = [...selectedWorkspaceExportDates].reverse();
+  const lastExportedLabel = formatWorkspaceSyncTimestamp(settings.workspaceTransferLastExportedAt);
+  const lastImportedLabel = formatWorkspaceSyncTimestamp(settings.workspaceTransferLastImportedAt);
+  const lastSyncStartDate = toLocalDateInputValue(settings.workspaceTransferLastExportedAt);
   const [workspaceTransferSelectionMode, setWorkspaceTransferSelectionMode] = useState<"window" | "specific">(() =>
     selectedWorkspaceExportDates.length > 0 ? "specific" : "window"
   );
@@ -104,7 +136,8 @@ export const WorkspaceTransferExportPanel = ({
         scopeLabel: "Specific Days",
         includedDayCount: selectedWorkspaceExportDates.length,
         coverageLabel: selectedDateSummary,
-        detailLabel: "Only the checked saved sessions will be included, along with related workspace records."
+        detailLabel:
+          "Only the checked saved sessions will be included, along with related workspace records and shared tags/templates."
       }
     : hasDateWindowScope
       ? {
@@ -113,8 +146,8 @@ export const WorkspaceTransferExportPanel = ({
           coverageLabel: `${settings.workspaceExportStartDate || "Beginning"} -> ${settings.workspaceExportEndDate || "Latest"}`,
           detailLabel:
             windowIncludedSavedTradeDates.length > 0
-              ? "Saved sessions inside the current window will be included."
-              : "No saved sessions currently fall inside the chosen window."
+              ? "Saved sessions inside the current window will be included, plus shared workspace definitions."
+              : "No saved sessions currently fall inside the chosen window, but shared workspace definitions can still sync."
         }
       : {
           scopeLabel: "Full Workspace",
@@ -123,7 +156,7 @@ export const WorkspaceTransferExportPanel = ({
             availableSavedTradeDates.length > 0
               ? `All ${availableSavedTradeDates.length.toLocaleString()} saved day${availableSavedTradeDates.length === 1 ? "" : "s"}`
               : "All workspace data",
-          detailLabel: "No date filter is active, so the transfer file will include the full workspace snapshot."
+          detailLabel: "No date filter is active, so the sync file will include the full workspace snapshot."
         };
   const workspaceTransferModeSummary =
     selectedWorkspaceExportDates.length > 0
@@ -141,6 +174,10 @@ export const WorkspaceTransferExportPanel = ({
       : settings.workspaceExportStartDate || settings.workspaceExportEndDate
         ? "Your current date window stays active until you pick at least one specific day."
         : "Pick one or more missing sessions. With nothing selected, the file stays a full workspace export.";
+  const syncHistoryLabel =
+    lastExportedLabel || lastImportedLabel
+      ? `Manual sync history: last sent ${lastExportedLabel || "not yet"}; last received ${lastImportedLabel || "not yet"}.`
+      : "Manual sync history starts after your first Send Workspace or Receive Workspace run on this machine.";
 
   const toggleWorkspaceExportDate = (tradeDate: string) => {
     const nextSelectedDates = selectedWorkspaceExportDates.includes(tradeDate)
@@ -158,10 +195,10 @@ export const WorkspaceTransferExportPanel = ({
   return (
     <section className="placeholder-panel import-workspace-panel">
       <div className="import-workspace-panel-copy">
-        <h2>Create Transfer File</h2>
-        <p className="import-workspace-lead">Build a workspace file to move selected data to another computer.</p>
+        <h2>Create Sync File</h2>
+        <p className="import-workspace-lead">Build a manual sync file to move recent workspace updates to the other computer.</p>
         <span className="import-workspace-note">
-          This is the send step. Export here, then switch to Receive Workspace on the other computer.
+          This is the send side of the manual sync. Export here, then import that file on the other computer.
         </span>
       </div>
 
@@ -180,6 +217,7 @@ export const WorkspaceTransferExportPanel = ({
         </div>
         <small>Used for both Trade CSV exports and workspace transfer files.</small>
       </label>
+      <small className="import-workspace-inline-note">{syncHistoryLabel}</small>
 
       {availableSavedTradeDates.length > 0 ? (
         <div className="settings-transfer-summary" aria-label="Workspace transfer date summary">
@@ -266,13 +304,30 @@ export const WorkspaceTransferExportPanel = ({
               <span>Best when the other computer is missing one continuous block of saved sessions.</span>
             </div>
             {availableSavedTradeDates.length > 0 ? (
-              <div className="settings-transfer-actions">
+            <div className="settings-transfer-actions">
+              {lastSyncStartDate ? (
                 <Button
                   type="button"
                   variant="secondary"
                   className="settings-transfer-quick-action"
                   onClick={() => {
                     setWorkspaceTransferSelectionMode("window");
+                    update({
+                      workspaceExportStartDate: lastSyncStartDate,
+                      workspaceExportEndDate: "",
+                      workspaceExportSelectedDates: []
+                    });
+                  }}
+                >
+                  Sync Since Last Send
+                </Button>
+              ) : null}
+              <Button
+                type="button"
+                variant={lastSyncStartDate ? "ghost" : "secondary"}
+                className="settings-transfer-quick-action"
+                onClick={() => {
+                  setWorkspaceTransferSelectionMode("window");
                     update({
                       workspaceExportStartDate: firstSavedTradeDate,
                       workspaceExportEndDate: lastSavedTradeDate,
@@ -467,7 +522,7 @@ export const WorkspaceTransferExportPanel = ({
           Use Full Workspace
         </Button>
         <Button type="button" variant="primary" onClick={() => void onExportWorkspaceBundle()}>
-          Create Transfer File
+          Create Sync File
         </Button>
       </div>
 

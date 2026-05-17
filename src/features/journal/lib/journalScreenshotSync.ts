@@ -1,5 +1,12 @@
+import type { JSONContent } from "@tiptap/core";
+import { createEmptyJournalDoc, hasJournalDocContent } from "../../../lib/journal/journalContent";
 import { dedupeJournalPages } from "../../../lib/journal/journalStore";
-import type { JournalPageRecord, JournalScreenshotTagRecord, JournalScreenshotTradeLink } from "../../../types/journal";
+import type {
+  JournalPageRecord,
+  JournalScreenshotTagRecord,
+  JournalScreenshotTradeLink,
+  JournalTradeNoteRecord
+} from "../../../types/journal";
 import type { TradeReviewRecord } from "../../../types/review";
 import type { GroupedTrade } from "../../../types/trade";
 import { normalizeJournalTradeDate } from "./journalPageActions";
@@ -9,6 +16,8 @@ export interface JournalTradeContext {
   symbol: string;
   playbook: string;
 }
+
+const TRADE_LINK_SEPARATOR = "::";
 
 const parseTimestamp = (value: string): number => {
   const parsed = Date.parse(value);
@@ -23,6 +32,206 @@ const createJournalScreenshotTag = (tradeDate: string): JournalScreenshotTagReco
   playbook: "",
   taggedDate: tradeDate
 });
+
+const createJournalTradeNote = (
+  tradeDate: string,
+  overrides: Partial<JournalTradeNoteRecord> = {}
+): JournalTradeNoteRecord => {
+  const timestamp = overrides.updatedAt ?? overrides.createdAt ?? new Date().toISOString();
+  const linkedTradeId = overrides.linkedTradeId?.trim() ?? "";
+  const linkedTradeDate = normalizeJournalTradeDate(overrides.linkedTradeDate ?? tradeDate);
+  const linkedTrades = dedupeTradeLinks([
+    ...(Array.isArray(overrides.linkedTrades) ? overrides.linkedTrades : []),
+    ...(linkedTradeId
+      ? [
+          {
+            tradeId: linkedTradeId,
+            tradeDate: linkedTradeDate
+          }
+        ]
+      : [])
+  ]);
+  const primaryLinkedTrade = linkedTrades[0] ?? null;
+
+  return {
+    id:
+      overrides.id?.trim() ||
+      (primaryLinkedTrade?.tradeId
+        ? `trade-note-${primaryLinkedTrade.tradeId}`
+        : `trade-note-${Math.random().toString(36).slice(2, 10)}`),
+    title: overrides.title ?? "",
+    content: overrides.content ?? createEmptyJournalDoc(),
+    linkedTrades,
+    linkedTradeId: primaryLinkedTrade?.tradeId ?? "",
+    linkedTradeDate: primaryLinkedTrade?.tradeDate ?? "",
+    ticker: overrides.ticker ?? "",
+    playbook: overrides.playbook ?? "",
+    taggedDate: overrides.taggedDate ?? tradeDate,
+    createdAt: overrides.createdAt ?? timestamp,
+    updatedAt: overrides.updatedAt ?? timestamp
+  };
+};
+
+const createTradeLinkKey = (tradeId: string, tradeDate: string) => `${tradeId}${TRADE_LINK_SEPARATOR}${tradeDate}`;
+
+const dedupeTradeLinks = (links: JournalScreenshotTradeLink[]): JournalScreenshotTradeLink[] => {
+  const unique = new Map<string, JournalScreenshotTradeLink>();
+  for (const link of links) {
+    const tradeId = typeof link.tradeId === "string" ? link.tradeId.trim() : "";
+    const tradeDate = normalizeJournalTradeDate(typeof link.tradeDate === "string" ? link.tradeDate : "");
+    if (!tradeId || !tradeDate) {
+      continue;
+    }
+
+    unique.set(createTradeLinkKey(tradeId, tradeDate), {
+      tradeId,
+      tradeDate
+    });
+  }
+
+  return Array.from(unique.values());
+};
+
+const collectTradeNoteLinks = (note: JournalTradeNoteRecord | undefined): JournalScreenshotTradeLink[] => {
+  if (!note) {
+    return [];
+  }
+
+  return dedupeTradeLinks([
+    ...(Array.isArray(note.linkedTrades) ? note.linkedTrades : []),
+    ...(note.linkedTradeId?.trim() && note.linkedTradeDate?.trim()
+      ? [
+          {
+            tradeId: note.linkedTradeId.trim(),
+            tradeDate: note.linkedTradeDate.trim()
+          }
+        ]
+      : [])
+  ]);
+};
+
+const noteHasTradeLink = (
+  note: JournalTradeNoteRecord,
+  tradeId: string,
+  tradeDate: string
+): boolean => collectTradeNoteLinks(note).some((link) => createTradeLinkKey(link.tradeId, link.tradeDate) === createTradeLinkKey(tradeId, tradeDate));
+
+const applyTradeLinksToNote = (
+  note: JournalTradeNoteRecord,
+  nextLinks: JournalScreenshotTradeLink[]
+): JournalTradeNoteRecord => {
+  const linkedTrades = dedupeTradeLinks(nextLinks);
+  const primaryLinkedTrade = linkedTrades[0] ?? null;
+
+  return {
+    ...note,
+    linkedTrades,
+    linkedTradeId: primaryLinkedTrade?.tradeId ?? "",
+    linkedTradeDate: primaryLinkedTrade?.tradeDate ?? ""
+  };
+};
+
+const consolidateTradeNoteGroup = (
+  tradeNotes: JournalTradeNoteRecord[],
+  targetIndex: number
+): { tradeNotes: JournalTradeNoteRecord[]; targetIndex: number; changed: boolean } => {
+  const targetNote = tradeNotes[targetIndex];
+  if (!targetNote || !hasJournalDocContent(targetNote.content)) {
+    return { tradeNotes, targetIndex, changed: false };
+  }
+
+  const matchingIndexes = tradeNotes
+    .map((note, index) =>
+      index !== targetIndex && hasJournalDocContent(note.content) && contentMatches(note.content, targetNote.content)
+        ? index
+        : -1
+    )
+    .filter((index) => index >= 0);
+
+  if (matchingIndexes.length === 0) {
+    return { tradeNotes, targetIndex, changed: false };
+  }
+
+  const mergedNotes = [targetNote, ...matchingIndexes.map((index) => tradeNotes[index]).filter(Boolean)];
+  const mergedLinks = dedupeTradeLinks(mergedNotes.flatMap((note) => collectTradeNoteLinks(note)));
+  const mergedNote = applyTradeLinksToNote(targetNote, mergedLinks);
+  const earliestCreatedAt = mergedNotes.reduce(
+    (current, note) => (parseTimestamp(note.createdAt) < parseTimestamp(current) ? note.createdAt : current),
+    targetNote.createdAt
+  );
+  const latestUpdatedAt = mergedNotes.reduce(
+    (current, note) => (parseTimestamp(note.updatedAt) > parseTimestamp(current) ? note.updatedAt : current),
+    targetNote.updatedAt
+  );
+  const fallbackTicker = mergedNotes.map((note) => note.ticker.trim()).find(Boolean) ?? "";
+  const fallbackPlaybook = mergedNotes.map((note) => note.playbook.trim()).find(Boolean) ?? "";
+  const fallbackTaggedDate = mergedNotes.map((note) => note.taggedDate.trim()).find(Boolean) ?? targetNote.taggedDate;
+  const nextTradeNotes = tradeNotes.filter((_, index) => index === targetIndex || !matchingIndexes.includes(index));
+  const nextTargetIndex = nextTradeNotes.findIndex((note) => note.id === targetNote.id);
+  nextTradeNotes[nextTargetIndex] = {
+    ...mergedNote,
+    ticker: mergedNote.ticker || fallbackTicker,
+    playbook: mergedNote.playbook || fallbackPlaybook,
+    taggedDate: mergedNote.taggedDate || fallbackTaggedDate,
+    createdAt: earliestCreatedAt,
+    updatedAt: latestUpdatedAt
+  };
+
+  return {
+    tradeNotes: nextTradeNotes,
+    targetIndex: nextTargetIndex,
+    changed: true
+  };
+};
+
+const stableStringify = (value: unknown): string => {
+  if (value === null || value === undefined) {
+    return JSON.stringify(value);
+  }
+
+  if (typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
+};
+
+const createJournalDocFromPlainText = (text: string): JSONContent => {
+  const normalized = text.replace(/\r\n/g, "\n");
+  if (!normalized.trim()) {
+    return createEmptyJournalDoc();
+  }
+
+  return {
+    type: "doc",
+    content: normalized.split("\n").map((line) =>
+      line.trim()
+        ? ({ type: "paragraph", content: [{ type: "text", text: line }] } satisfies JSONContent)
+        : ({ type: "paragraph" } satisfies JSONContent)
+    )
+  };
+};
+
+const normalizeReviewNotesContent = (value: TradeReviewRecord["notes"]): JSONContent => {
+  if (hasJournalDocContent(value as JSONContent)) {
+    return value as JSONContent;
+  }
+
+  if (typeof value === "string") {
+    return createJournalDocFromPlainText(value);
+  }
+
+  return createEmptyJournalDoc();
+};
+
+const contentMatches = (left: JSONContent, right: JSONContent): boolean =>
+  stableStringify(left) === stableStringify(right);
 
 const parseTradeContextFromTradeId = (
   tradeId: string
@@ -105,6 +314,33 @@ export const recoverReviewScreenshotsFromJournalPages = (
   return recovered;
 };
 
+export const recoverReviewNotesFromJournalPages = (
+  pages: JournalPageRecord[]
+): Map<string, { content: JSONContent; updatedAt: string }> => {
+  const recovered = new Map<string, { content: JSONContent; updatedAt: string }>();
+
+  for (const page of pages) {
+    for (const note of page.tradeNotes) {
+      const links = collectTradeNoteLinks(note);
+      if (links.length === 0 || !hasJournalDocContent(note.content)) {
+        continue;
+      }
+
+      for (const link of links) {
+        const current = recovered.get(link.tradeId);
+        if (!current || parseTimestamp(note.updatedAt) >= parseTimestamp(current.updatedAt)) {
+          recovered.set(link.tradeId, {
+            content: note.content,
+            updatedAt: note.updatedAt
+          });
+        }
+      }
+    }
+  }
+
+  return recovered;
+};
+
 export const buildJournalTradeContextById = (
   trades: Pick<GroupedTrade, "id" | "tradeDate" | "symbol" | "setups">[]
 ): Map<string, JournalTradeContext> => {
@@ -125,8 +361,9 @@ export const syncTradeReviewsFromJournalPages = (
   currentReviews: TradeReviewRecord[],
   journalPages: JournalPageRecord[]
 ): TradeReviewRecord[] => {
-  const recoveredByTradeId = recoverReviewScreenshotsFromJournalPages(journalPages);
-  if (recoveredByTradeId.size === 0) {
+  const recoveredScreenshotsByTradeId = recoverReviewScreenshotsFromJournalPages(journalPages);
+  const recoveredNotesByTradeId = recoverReviewNotesFromJournalPages(journalPages);
+  if (recoveredScreenshotsByTradeId.size === 0 && recoveredNotesByTradeId.size === 0) {
     return currentReviews;
   }
 
@@ -134,7 +371,7 @@ export const syncTradeReviewsFromJournalPages = (
   const indexByTradeId = new Map<string, number>(next.map((review, index) => [review.tradeId, index]));
   let changed = false;
 
-  for (const [tradeId, recovered] of recoveredByTradeId.entries()) {
+  for (const [tradeId, recovered] of recoveredScreenshotsByTradeId.entries()) {
     const reviewIndex = indexByTradeId.get(tradeId);
     if (reviewIndex === undefined) {
       next.push({
@@ -145,6 +382,7 @@ export const syncTradeReviewsFromJournalPages = (
         drawings: [],
         updatedAt: recovered.updatedAt
       });
+      indexByTradeId.set(tradeId, next.length - 1);
       changed = true;
       continue;
     }
@@ -161,6 +399,43 @@ export const syncTradeReviewsFromJournalPages = (
         parseTimestamp(recovered.updatedAt) > parseTimestamp(existing.updatedAt)
           ? recovered.updatedAt
           : existing.updatedAt
+    };
+    changed = true;
+  }
+
+  for (const [tradeId, recovered] of recoveredNotesByTradeId.entries()) {
+    const reviewIndex = indexByTradeId.get(tradeId);
+    if (reviewIndex === undefined) {
+      next.push({
+        tradeId,
+        notes: recovered.content,
+        chartContext: "",
+        screenshotUrl: recoveredScreenshotsByTradeId.get(tradeId)?.screenshotUrl ?? "",
+        drawings: [],
+        updatedAt: recovered.updatedAt
+      });
+      indexByTradeId.set(tradeId, next.length - 1);
+      changed = true;
+      continue;
+    }
+
+    const existing = next[reviewIndex];
+    if (!existing) {
+      continue;
+    }
+
+    const existingNotes = normalizeReviewNotesContent(existing.notes);
+    if (
+      parseTimestamp(recovered.updatedAt) <= parseTimestamp(existing.updatedAt) ||
+      contentMatches(existingNotes, recovered.content)
+    ) {
+      continue;
+    }
+
+    next[reviewIndex] = {
+      ...existing,
+      notes: recovered.content,
+      updatedAt: recovered.updatedAt
     };
     changed = true;
   }
@@ -261,13 +536,162 @@ export const syncJournalPagesFromTradeReviews = (
     }
 
     if (pageChanged) {
+      const nextUpdatedAt =
+        parseTimestamp(review.updatedAt) > parseTimestamp(page.updatedAt)
+          ? review.updatedAt
+          : new Date().toISOString();
+
       next[pageIndex] = {
         ...page,
         screenshotUrls,
-        screenshotTags
+        screenshotTags,
+        updatedAt: nextUpdatedAt
       };
       changed = true;
     }
+  }
+
+  for (const review of tradeReviews) {
+    const fromTradeMap = tradeContextById.get(review.tradeId);
+    const parsed = fromTradeMap ? null : parseTradeContextFromTradeId(review.tradeId);
+    const tradeDate = fromTradeMap?.tradeDate ?? parsed?.tradeDate ?? "";
+    if (!tradeDate) {
+      continue;
+    }
+
+    const pageIndex = indexByTradeDate.get(tradeDate);
+    if (pageIndex === undefined) {
+      continue;
+    }
+
+    const page = next[pageIndex];
+    if (!page) {
+      continue;
+    }
+
+    const reviewNotes = normalizeReviewNotesContent(review.notes);
+    const reviewTimestamp = parseTimestamp(review.updatedAt);
+    const reviewLink = {
+      tradeId: review.tradeId,
+      tradeDate
+    };
+    let tradeNotes = [...page.tradeNotes];
+    let pageChanged = false;
+    let targetIndex = tradeNotes.findIndex((note) => noteHasTradeLink(note, review.tradeId, tradeDate));
+
+    if (targetIndex === -1) {
+      if (!hasJournalDocContent(reviewNotes)) {
+        continue;
+      }
+
+      const mergeCandidateIndex = tradeNotes.findIndex(
+        (note) => hasJournalDocContent(note.content) && contentMatches(note.content, reviewNotes)
+      );
+
+      if (mergeCandidateIndex === -1) {
+        tradeNotes.push(
+          createJournalTradeNote(tradeDate, {
+            id: `trade-note-${review.tradeId}`,
+            content: reviewNotes,
+            linkedTrades: [reviewLink],
+            linkedTradeId: review.tradeId,
+            linkedTradeDate: tradeDate,
+            ticker: fromTradeMap?.symbol ?? parsed?.symbol ?? "",
+            playbook: fromTradeMap?.playbook ?? "",
+            taggedDate: tradeDate,
+            createdAt: review.updatedAt,
+            updatedAt: review.updatedAt
+          })
+        );
+        targetIndex = tradeNotes.length - 1;
+        pageChanged = true;
+      } else {
+        const existingNote = tradeNotes[mergeCandidateIndex];
+        if (!existingNote) {
+          continue;
+        }
+
+        const nextLinks = dedupeTradeLinks([...collectTradeNoteLinks(existingNote), reviewLink]);
+        const nextLinkedNote = applyTradeLinksToNote(existingNote, nextLinks);
+        const nextTicker = nextLinkedNote.ticker || fromTradeMap?.symbol || parsed?.symbol || "";
+        const nextPlaybook = nextLinkedNote.playbook || fromTradeMap?.playbook || "";
+        const nextUpdatedAt =
+          reviewTimestamp > parseTimestamp(existingNote.updatedAt) ? review.updatedAt : existingNote.updatedAt;
+
+        if (
+          nextLinks.length !== collectTradeNoteLinks(existingNote).length ||
+          nextTicker !== existingNote.ticker ||
+          nextPlaybook !== existingNote.playbook ||
+          nextUpdatedAt !== existingNote.updatedAt
+        ) {
+          tradeNotes[mergeCandidateIndex] = {
+            ...nextLinkedNote,
+            ticker: nextTicker,
+            playbook: nextPlaybook,
+            updatedAt: nextUpdatedAt
+          };
+          pageChanged = true;
+        }
+
+        targetIndex = mergeCandidateIndex;
+      }
+    } else {
+      const existingNote = tradeNotes[targetIndex];
+      if (!existingNote) {
+        continue;
+      }
+
+      const notesDiffer = !contentMatches(existingNote.content, reviewNotes);
+      const shouldHydrateEmptyNote =
+        !hasJournalDocContent(existingNote.content) &&
+        hasJournalDocContent(reviewNotes) &&
+        notesDiffer;
+      const shouldUpdateContent =
+        shouldHydrateEmptyNote ||
+        (reviewTimestamp > parseTimestamp(existingNote.updatedAt) && notesDiffer);
+      const nextLinks = dedupeTradeLinks([...collectTradeNoteLinks(existingNote), reviewLink]);
+      const nextLinkedNote = applyTradeLinksToNote(existingNote, nextLinks);
+      const nextTicker = nextLinkedNote.ticker || fromTradeMap?.symbol || parsed?.symbol || "";
+      const nextPlaybook = nextLinkedNote.playbook || fromTradeMap?.playbook || "";
+      const needsMetadataRepair =
+        nextLinkedNote.linkedTradeId !== existingNote.linkedTradeId ||
+        nextLinkedNote.linkedTradeDate !== existingNote.linkedTradeDate ||
+        nextLinkedNote.linkedTrades.length !== collectTradeNoteLinks(existingNote).length ||
+        nextTicker !== existingNote.ticker ||
+        nextPlaybook !== existingNote.playbook;
+
+      if (shouldUpdateContent || needsMetadataRepair) {
+        tradeNotes[targetIndex] = {
+          ...nextLinkedNote,
+          content: shouldUpdateContent ? reviewNotes : existingNote.content,
+          ticker: nextTicker,
+          playbook: nextPlaybook,
+          updatedAt: shouldUpdateContent ? review.updatedAt : existingNote.updatedAt
+        };
+        pageChanged = true;
+      }
+    }
+
+    const consolidated = consolidateTradeNoteGroup(tradeNotes, targetIndex);
+    if (consolidated.changed) {
+      tradeNotes = consolidated.tradeNotes;
+      targetIndex = consolidated.targetIndex;
+      pageChanged = true;
+    }
+
+    if (!pageChanged) {
+      continue;
+    }
+
+    next[pageIndex] = {
+      ...page,
+      tradeNotes,
+      updatedAt:
+        reviewTimestamp > parseTimestamp(page.updatedAt)
+          ? review.updatedAt
+          : page.updatedAt
+    };
+    changed = true;
   }
 
   return changed ? dedupeJournalPages(next) : currentPages;

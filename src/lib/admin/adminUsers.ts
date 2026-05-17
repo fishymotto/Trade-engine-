@@ -1,4 +1,4 @@
-import { supabase } from "../auth";
+import { isSupabaseConfigured, supabase } from "../auth";
 
 export interface AdminWorkspaceUserRecord {
   id: string;
@@ -10,6 +10,10 @@ export interface AdminWorkspaceUserRecord {
 }
 
 export const loadAdminWorkspaceUsers = async (): Promise<AdminWorkspaceUserRecord[]> => {
+  if (!isSupabaseConfigured) {
+    throw new Error("Workspace user admin tools are unavailable because remote sync is disabled.");
+  }
+
   const { data, error } = await supabase.rpc("list_workspace_users");
   if (error) {
     throw new Error(error.message);

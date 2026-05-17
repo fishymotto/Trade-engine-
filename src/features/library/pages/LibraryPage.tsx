@@ -534,6 +534,14 @@ const formatRelativeDeltaPercent = (delta: number, previous: number): string => 
   return `${relative >= 0 ? "+" : ""}${relative.toFixed(1)}%`;
 };
 
+const formatSignedPercentPoints = (value: number): string => {
+  if (value === 0) {
+    return "0.0 pp";
+  }
+
+  return `${value > 0 ? "+" : "-"}${Math.abs(value).toFixed(1)} pp`;
+};
+
 const buildReviewCompareCardData = ({
   currentValue,
   previousValue,
@@ -615,6 +623,18 @@ const buildReviewMoneyCardData = (
     favorableDirection: "increase",
     formatValue: formatSignedUsd,
     formatDeltaValue: formatSignedUsd
+  });
+
+const buildReviewPercentCardData = (
+  currentValue: number | null,
+  previousValue: number | null
+): ReviewCompareCardData =>
+  buildReviewCompareCardData({
+    currentValue,
+    previousValue,
+    favorableDirection: "increase",
+    formatValue: (value) => `${value.toFixed(1)}%`,
+    formatDeltaValue: formatSignedPercentPoints
   });
 
 type BookCellEditorState = {
@@ -1357,6 +1377,9 @@ export const LibraryPage = ({
 
     return {
       previousPeriodLabel: selectedReviewPeriod === "monthly" ? "Last month" : "Last week",
+      trades: buildReviewCountCardData(currentMetrics.tradeCount, previousMetrics.tradeCount, "increase"),
+      shares: buildReviewCountCardData(currentMetrics.shares, previousMetrics.shares, "increase"),
+      winRate: buildReviewPercentCardData(currentMetrics.winRate, previousMetrics.winRate),
       net: buildReviewMoneyCardData(currentMetrics.net, previousMetrics.net),
       gross: buildReviewMoneyCardData(currentMetrics.gross, previousMetrics.gross),
       redDays: buildReviewCountCardData(currentMetrics.redDays, previousMetrics.redDays, "decrease"),
@@ -3249,17 +3272,56 @@ export const LibraryPage = ({
                       <span>Closed Orders</span>
                       <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.closedOrders, "-")} />
                     </label>
-                    <label className="library-open-page-property">
+                    <label className="library-open-page-property library-open-page-property-compare">
                       <span>Trades</span>
-                      <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.trades, "-")} />
+                      <strong>
+                        {selectedReviewComparisonData?.trades.currentLabel ??
+                          renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.trades, "-")}
+                      </strong>
+                      {selectedReviewComparisonData ? (
+                        <small>
+                          {selectedReviewComparisonData.previousPeriodLabel} {selectedReviewComparisonData.trades.previousLabel}
+                        </small>
+                      ) : null}
+                      {selectedReviewComparisonData?.trades.deltaLabel ? (
+                        <em className={`report-period-delta report-period-delta-${selectedReviewComparisonData.trades.deltaTone}`}>
+                          {selectedReviewComparisonData.trades.deltaLabel}
+                        </em>
+                      ) : null}
                     </label>
-                    <label className="library-open-page-property">
+                    <label className="library-open-page-property library-open-page-property-compare">
                       <span>Shares</span>
-                      <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.shares, "-")} />
+                      <strong>
+                        {selectedReviewComparisonData?.shares.currentLabel ??
+                          renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.shares, "-")}
+                      </strong>
+                      {selectedReviewComparisonData ? (
+                        <small>
+                          {selectedReviewComparisonData.previousPeriodLabel} {selectedReviewComparisonData.shares.previousLabel}
+                        </small>
+                      ) : null}
+                      {selectedReviewComparisonData?.shares.deltaLabel ? (
+                        <em className={`report-period-delta report-period-delta-${selectedReviewComparisonData.shares.deltaTone}`}>
+                          {selectedReviewComparisonData.shares.deltaLabel}
+                        </em>
+                      ) : null}
                     </label>
-                    <label className="library-open-page-property">
+                    <label className="library-open-page-property library-open-page-property-compare">
                       <span>Win Rate</span>
-                      <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.winRate, "-")} />
+                      <strong>
+                        {selectedReviewComparisonData?.winRate.currentLabel ??
+                          renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.winRate, "-")}
+                      </strong>
+                      {selectedReviewComparisonData ? (
+                        <small>
+                          {selectedReviewComparisonData.previousPeriodLabel} {selectedReviewComparisonData.winRate.previousLabel}
+                        </small>
+                      ) : null}
+                      {selectedReviewComparisonData?.winRate.deltaLabel ? (
+                        <em className={`report-period-delta report-period-delta-${selectedReviewComparisonData.winRate.deltaTone}`}>
+                          {selectedReviewComparisonData.winRate.deltaLabel}
+                        </em>
+                      ) : null}
                     </label>
 
                     <label className="library-open-page-property library-open-page-property-compare">

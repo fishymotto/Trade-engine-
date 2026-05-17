@@ -56,6 +56,20 @@ interface ImportPageProps {
 type ImportPageTab = "trade-csv" | "send-workspace" | "receive-workspace";
 type ImportResultTone = "info" | "success" | "warning" | "danger";
 
+const workspaceSyncTimestampFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short"
+});
+
+const formatWorkspaceSyncTimestamp = (value: string): string => {
+  if (!value.trim()) {
+    return "";
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : workspaceSyncTimestampFormatter.format(parsed);
+};
+
 const classifyWorkspaceTransferResult = (message: string): ImportResultTone => {
   const normalized = message.toLowerCase();
 
@@ -109,6 +123,8 @@ export const ImportPage = ({
   } | null>(null);
   const isTradeCsvTab = activeTab === "trade-csv";
   const isSendWorkspaceTab = activeTab === "send-workspace";
+  const lastExportedLabel = formatWorkspaceSyncTimestamp(settings.workspaceTransferLastExportedAt);
+  const lastImportedLabel = formatWorkspaceSyncTimestamp(settings.workspaceTransferLastImportedAt);
   const importHeroCopy =
     activeTab === "trade-csv"
       ? {
@@ -118,14 +134,14 @@ export const ImportPage = ({
         }
       : activeTab === "send-workspace"
         ? {
-            title: "Create Workspace Transfer Files",
+            title: "Create Workspace Sync Files",
             description:
-              "Package a full workspace, a date window, or specific saved days into one transfer file for another computer."
+              "Package a full workspace or recent updates into one manual sync file for the other computer."
           }
         : {
-            title: "Receive Workspace Transfer Files",
+            title: "Receive Workspace Sync Files",
             description:
-              "Import a transfer file from another computer to merge missing sessions or restore a full exported workspace."
+              "Import a sync file from the other computer to merge missing sessions or restore a full exported workspace."
           };
 
   const handleDrop = (event: DragEvent<HTMLElement>) => {
@@ -180,7 +196,7 @@ export const ImportPage = ({
           aria-pressed={isSendWorkspaceTab}
         >
           <strong>Send Workspace</strong>
-          <span>Create a transfer file for the other computer.</span>
+          <span>Create a sync file for the other computer.</span>
         </button>
         <button
           type="button"
@@ -191,7 +207,7 @@ export const ImportPage = ({
           aria-pressed={activeTab === "receive-workspace"}
         >
           <strong>Receive Workspace</strong>
-          <span>Apply a transfer file from another computer.</span>
+          <span>Apply a sync file from another computer.</span>
         </button>
       </div>
       {isTradeCsvTab ? (
@@ -267,19 +283,19 @@ export const ImportPage = ({
       ) : (
         <section className="placeholder-panel import-workspace-panel">
           <div className="import-workspace-panel-copy">
-            <h2>Receive Transfer File</h2>
+            <h2>Receive Sync File</h2>
             <p className="import-workspace-lead">
-              Apply a workspace file exported from the other computer.
+              Apply a workspace sync file exported from the other computer.
             </p>
             <span className="import-workspace-note">
-              This is the receive step. Import here after creating the file from Send Workspace on the source machine.
+              This is the receive side of the manual sync. Import here after creating the file from Send Workspace on the source machine.
             </span>
           </div>
           <div className="import-workspace-summary">
             <div className="import-workspace-summary-card">
               <span>Date-Filtered Files</span>
               <strong>Merge only the included dates</strong>
-              <small>Best for missing sessions exported as a date window or specific picked days.</small>
+              <small>Best for missing sessions plus shared tags, templates, and workspace definitions.</small>
             </div>
             <div className="import-workspace-summary-card">
               <span>Full Files</span>
@@ -291,10 +307,19 @@ export const ImportPage = ({
               <strong>Saved API keys</strong>
               <small>Notion and Twelve Data keys stay local even after a workspace file import.</small>
             </div>
+            <div className="import-workspace-summary-card">
+              <span>Last Received</span>
+              <strong>{lastImportedLabel || "Not yet"}</strong>
+              <small>
+                {lastExportedLabel
+                  ? `This machine last sent updates on ${lastExportedLabel}.`
+                  : "This machine has not sent a sync file yet."}
+              </small>
+            </div>
           </div>
           <div className="import-workspace-actions">
             <Button variant="primary" onClick={() => void handleReceiveWorkspaceImport()}>
-              Import Transfer File
+              Import Sync File
             </Button>
           </div>
           {receiveWorkspaceResult ? (

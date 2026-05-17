@@ -3,6 +3,7 @@ import type { WorkspaceIconKey } from "../lib/ui/workspaceIcons";
 export type AppRoute =
   | "dashboard"
   | "trades"
+  | "trade-database"
   | "journal"
   | "library"
   | "playbooks"

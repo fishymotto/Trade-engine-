@@ -25,6 +25,7 @@ export type JournalPageUpdates = Partial<
     | "closeMood"
     | "screenshotUrls"
     | "screenshotTags"
+    | "tradeNotes"
   >
 >;
 
@@ -48,6 +49,7 @@ interface CreateMissingJournalPagesOptions {
 
 export interface JournalPageActions {
   createJournalPage: (tradeDate: string) => void;
+  createJournalPages: (tradeDates: string[]) => void;
   updateJournalPage: (pageId: string, updates: JournalPageUpdates) => void;
   updateJournalContent: (
     pageId: string,
@@ -83,6 +85,7 @@ const buildJournalTemplate = (checklistTemplates: JournalChecklistTemplates) => 
   closeMood: "",
   screenshotUrls: [],
   screenshotTags: [],
+  tradeNotes: [],
   closingChecklistContent: getDefaultChecklistContent(checklistTemplates, "closing"),
   morningChecklistContent: getDefaultChecklistContent(checklistTemplates, "morning"),
   morningContent: createEmptyJournalDoc(),
@@ -98,6 +101,18 @@ const getTemplateKey = (type: JournalChecklistTemplateType): JournalChecklistTem
 
 const getTemplateLabel = (type: JournalChecklistTemplateType): string =>
   type === "morning" ? "Morning" : type === "closing" ? "Closing" : "MPP";
+
+const formatTradeDateRangeLabel = (tradeDates: string[]): string => {
+  if (tradeDates.length === 0) {
+    return "";
+  }
+
+  if (tradeDates.length === 1) {
+    return tradeDates[0];
+  }
+
+  return `${tradeDates[0]} through ${tradeDates[tradeDates.length - 1]}`;
+};
 
 export const normalizeJournalTradeDate = (value: string): string => {
   if (!value) {
@@ -138,6 +153,7 @@ export const createJournalPageRecord = (
     closeMood: templateContent.closeMood,
     screenshotUrls: templateContent.screenshotUrls,
     screenshotTags: templateContent.screenshotTags,
+    tradeNotes: templateContent.tradeNotes,
     closingChecklistContent: templateContent.closingChecklistContent,
     morningChecklistContent: templateContent.morningChecklistContent,
     morningContent: templateContent.morningContent,
@@ -187,6 +203,59 @@ export const createJournalPageActions = ({
   setJournalChecklistTemplates,
   setMessage
 }: CreateJournalPageActionsOptions): JournalPageActions => {
+  const createJournalPages = (tradeDates: string[]) => {
+    const normalizedTradeDates = Array.from(
+      new Set(
+        tradeDates
+          .map((tradeDate) => normalizeJournalTradeDate(tradeDate.trim()))
+          .filter((tradeDate) => tradeDate.length > 0)
+      )
+    ).sort((left, right) => left.localeCompare(right));
+
+    if (normalizedTradeDates.length === 0) {
+      return;
+    }
+
+    const currentPages = getJournalPages();
+    const missingPages = createMissingJournalPages({
+      currentPages,
+      tradeDates: normalizedTradeDates,
+      checklistTemplates: journalChecklistTemplates,
+      startTimestamp: Date.now()
+    });
+    const nextPages =
+      missingPages.length > 0 ? sortJournalPagesByTradeDateDesc([...currentPages, ...missingPages]) : currentPages;
+    const pageToSelect =
+      nextPages.find((page) => page.tradeDate === normalizedTradeDates[0]) ??
+      missingPages[0] ??
+      null;
+
+    if (missingPages.length > 0) {
+      persistJournalPages(nextPages);
+    }
+
+    if (pageToSelect) {
+      setSelectedJournalPageId(pageToSelect.id);
+    }
+
+    if (normalizedTradeDates.length <= 1) {
+      return;
+    }
+
+    const rangeLabel = formatTradeDateRangeLabel(normalizedTradeDates);
+    if (missingPages.length === 0) {
+      setMessage(`Journal pages for ${rangeLabel} already exist.`);
+      return;
+    }
+
+    const existingCount = normalizedTradeDates.length - missingPages.length;
+    setMessage(
+      existingCount > 0
+        ? `Added ${missingPages.length} journal pages for ${rangeLabel}. ${existingCount} already existed.`
+        : `Added ${missingPages.length} journal pages for ${rangeLabel}.`
+    );
+  };
+
   const createJournalPage = (tradeDate: string) => {
     const normalizedTradeDate = normalizeJournalTradeDate(tradeDate.trim());
     if (!normalizedTradeDate) {
@@ -209,17 +278,19 @@ export const createJournalPageActions = ({
 
   const updateJournalPage = (pageId: string, updates: JournalPageUpdates) => {
     setSelectedJournalPageId(pageId);
+    const nextTradeDate = updates.tradeDate ? normalizeJournalTradeDate(updates.tradeDate) : null;
     const nextPages = getJournalPages().map((page) =>
       page.id === pageId
         ? {
             ...page,
             ...updates,
-            tradeDate: updates.tradeDate ? normalizeJournalTradeDate(updates.tradeDate) : page.tradeDate,
+            tradeDate: nextTradeDate ?? page.tradeDate,
             updatedAt: new Date().toISOString()
           }
         : page
     );
-    persistJournalPages(sortJournalPagesByTradeDateDesc(nextPages));
+    const shouldResort = nextTradeDate !== null;
+    persistJournalPages(shouldResort ? sortJournalPagesByTradeDateDesc(nextPages) : nextPages);
   };
 
   const updateJournalContent = (
@@ -318,6 +389,7 @@ export const createJournalPageActions = ({
 
   return {
     createJournalPage,
+    createJournalPages,
     updateJournalPage,
     updateJournalContent,
     saveJournalChecklistTemplateAs,

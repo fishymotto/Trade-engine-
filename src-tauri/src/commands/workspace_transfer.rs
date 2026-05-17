@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -27,6 +28,9 @@ pub struct WorkspaceTransferAttachmentRecord {
     original_path: Option<String>,
     #[serde(default)]
     byte_length: Option<usize>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    content_base64: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     content_hex: String,
 }
 
@@ -77,12 +81,8 @@ pub struct WorkspaceTransferBundlePreview {
     attachment_count: usize,
 }
 
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push_str(&format!("{:02x}", byte));
-    }
-    output
+fn encode_base64(bytes: &[u8]) -> String {
+    BASE64_STANDARD.encode(bytes)
 }
 
 fn decode_hex(hex: &str) -> Option<Vec<u8>> {
@@ -103,6 +103,18 @@ fn decode_hex(hex: &str) -> Option<Vec<u8>> {
     Some(output)
 }
 
+fn decode_base64(value: &str) -> Option<Vec<u8>> {
+    BASE64_STANDARD.decode(value.trim()).ok()
+}
+
+fn decode_attachment_content(attachment: &WorkspaceTransferAttachmentRecord) -> Option<Vec<u8>> {
+    if !attachment.content_base64.trim().is_empty() {
+        return decode_base64(&attachment.content_base64);
+    }
+
+    decode_hex(&attachment.content_hex)
+}
+
 fn normalize_bundle(mut bundle: WorkspaceTransferBundle) -> WorkspaceTransferBundle {
     bundle.version = WORKSPACE_BUNDLE_VERSION;
     if bundle.source.trim().is_empty() {
@@ -121,8 +133,9 @@ fn read_workspace_transfer_bundle(path: &Path) -> Result<WorkspaceTransferBundle
 
     let raw_bundle = fs::read_to_string(path)
         .map_err(|_| "The workspace bundle could not be read.".to_string())?;
-    let bundle = serde_json::from_str::<WorkspaceTransferBundle>(raw_bundle.trim_start_matches('\u{feff}'))
-        .map_err(|_| "The workspace bundle could not be parsed.".to_string())?;
+    let bundle =
+        serde_json::from_str::<WorkspaceTransferBundle>(raw_bundle.trim_start_matches('\u{feff}'))
+            .map_err(|_| "The workspace bundle could not be parsed.".to_string())?;
 
     Ok(normalize_bundle(bundle))
 }
@@ -175,164 +188,183 @@ pub fn pick_workspace_bundle_file() -> Option<String> {
 }
 
 #[tauri::command]
-pub fn preview_workspace_bundle(path: String) -> Result<WorkspaceTransferBundlePreview, String> {
-    let bundle_path = PathBuf::from(path.trim());
-    let bundle = read_workspace_transfer_bundle(&bundle_path)?;
-    let scope = bundle.scope.clone().unwrap_or(WorkspaceTransferScope::Full);
+pub async fn preview_workspace_bundle(
+    path: String,
+) -> Result<WorkspaceTransferBundlePreview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let bundle_path = PathBuf::from(path.trim());
+        let bundle = read_workspace_transfer_bundle(&bundle_path)?;
+        let scope = bundle.scope.clone().unwrap_or(WorkspaceTransferScope::Full);
 
-    Ok(WorkspaceTransferBundlePreview {
-        scope,
-        exported_at: bundle.exported_at,
-        start_date: bundle.start_date,
-        end_date: bundle.end_date,
-        selected_dates: bundle.selected_dates,
-        attachment_count: bundle.attachments.len(),
+        Ok(WorkspaceTransferBundlePreview {
+            scope,
+            exported_at: bundle.exported_at,
+            start_date: bundle.start_date,
+            end_date: bundle.end_date,
+            selected_dates: bundle.selected_dates,
+            attachment_count: bundle.attachments.len(),
+        })
     })
+    .await
+    .map_err(|_| "The workspace bundle preview could not be loaded.".to_string())?
 }
 
 #[tauri::command]
-pub fn export_workspace_bundle(
+pub async fn export_workspace_bundle(
     app_handle: tauri::AppHandle,
     export_folder: String,
     file_name: String,
     bundle: WorkspaceTransferBundle,
     attachment_paths: Vec<String>,
 ) -> Result<WorkspaceTransferExportResult, String> {
-    let folder_path = PathBuf::from(&export_folder);
-    if !folder_path.exists() {
-        fs::create_dir_all(&folder_path)
-            .map_err(|_| "The workspace export folder could not be created.".to_string())?;
-    }
-
-    let attachments_root = fs::canonicalize(playbook_attachments_dir(&app_handle)?)
-        .map_err(|_| "Could not validate the workspace attachments directory.".to_string())?;
-    let mut normalized_bundle = normalize_bundle(bundle);
-    let mut skipped_attachment_paths: Vec<String> = Vec::new();
-    let mut seen_paths = HashSet::new();
-    let mut serialized_attachments: Vec<WorkspaceTransferAttachmentRecord> = Vec::new();
-
-    for original_path in attachment_paths {
-        let trimmed = original_path.trim();
-        if trimmed.is_empty() {
-            continue;
+    tauri::async_runtime::spawn_blocking(move || {
+        let folder_path = PathBuf::from(&export_folder);
+        if !folder_path.exists() {
+            fs::create_dir_all(&folder_path)
+                .map_err(|_| "The workspace export folder could not be created.".to_string())?;
         }
 
-        let dedupe_key = trimmed.to_ascii_lowercase();
-        if !seen_paths.insert(dedupe_key) {
-            continue;
-        }
+        let attachments_root = fs::canonicalize(playbook_attachments_dir(&app_handle)?)
+            .map_err(|_| "Could not validate the workspace attachments directory.".to_string())?;
+        let mut normalized_bundle = normalize_bundle(bundle);
+        let mut skipped_attachment_paths: Vec<String> = Vec::new();
+        let mut seen_paths = HashSet::new();
+        let mut serialized_attachments: Vec<WorkspaceTransferAttachmentRecord> = Vec::new();
 
-        let candidate_path = PathBuf::from(trimmed);
-        if !candidate_path.is_absolute() || !candidate_path.exists() {
-            skipped_attachment_paths.push(trimmed.to_string());
-            continue;
-        }
+        for original_path in attachment_paths {
+            let trimmed = original_path.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
 
-        let canonical_path = match fs::canonicalize(&candidate_path) {
-            Ok(path) => path,
-            Err(_) => {
+            let dedupe_key = trimmed.to_ascii_lowercase();
+            if !seen_paths.insert(dedupe_key) {
+                continue;
+            }
+
+            let candidate_path = PathBuf::from(trimmed);
+            if !candidate_path.is_absolute() || !candidate_path.exists() {
                 skipped_attachment_paths.push(trimmed.to_string());
                 continue;
             }
-        };
 
-        if !canonical_path.starts_with(&attachments_root) {
-            skipped_attachment_paths.push(trimmed.to_string());
-            continue;
+            let canonical_path = match fs::canonicalize(&candidate_path) {
+                Ok(path) => path,
+                Err(_) => {
+                    skipped_attachment_paths.push(trimmed.to_string());
+                    continue;
+                }
+            };
+
+            if !canonical_path.starts_with(&attachments_root) {
+                skipped_attachment_paths.push(trimmed.to_string());
+                continue;
+            }
+
+            let relative_path = match canonical_path.strip_prefix(&attachments_root) {
+                Ok(relative) => relative.to_string_lossy().replace('\\', "/"),
+                Err(_) => {
+                    skipped_attachment_paths.push(trimmed.to_string());
+                    continue;
+                }
+            };
+
+            let bytes = match fs::read(&canonical_path) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    skipped_attachment_paths.push(trimmed.to_string());
+                    continue;
+                }
+            };
+
+            serialized_attachments.push(WorkspaceTransferAttachmentRecord {
+                relative_path,
+                original_path: Some(trimmed.to_string()),
+                byte_length: Some(bytes.len()),
+                content_base64: encode_base64(&bytes),
+                content_hex: String::new(),
+            });
         }
 
-        let relative_path = match canonical_path.strip_prefix(&attachments_root) {
-            Ok(relative) => relative.to_string_lossy().replace('\\', "/"),
-            Err(_) => {
-                skipped_attachment_paths.push(trimmed.to_string());
-                continue;
-            }
-        };
+        normalized_bundle.attachments = serialized_attachments;
 
-        let bytes = match fs::read(&canonical_path) {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                skipped_attachment_paths.push(trimmed.to_string());
-                continue;
-            }
-        };
+        let file_path = folder_path.join(file_name);
+        let raw_bundle = serde_json::to_vec(&normalized_bundle)
+            .map_err(|_| "The workspace bundle could not be serialized.".to_string())?;
+        fs::write(&file_path, raw_bundle)
+            .map_err(|_| "The workspace bundle could not be saved.".to_string())?;
 
-        serialized_attachments.push(WorkspaceTransferAttachmentRecord {
-            relative_path,
-            original_path: Some(trimmed.to_string()),
-            byte_length: Some(bytes.len()),
-            content_hex: bytes_to_hex(&bytes),
-        });
-    }
-
-    normalized_bundle.attachments = serialized_attachments;
-
-    let file_path = folder_path.join(file_name);
-    let raw_bundle = serde_json::to_string_pretty(&normalized_bundle)
-        .map_err(|_| "The workspace bundle could not be serialized.".to_string())?;
-    fs::write(&file_path, raw_bundle).map_err(|_| "The workspace bundle could not be saved.".to_string())?;
-
-    Ok(WorkspaceTransferExportResult {
-        saved_path: file_path.display().to_string(),
-        attachment_count: normalized_bundle.attachments.len(),
-        skipped_attachment_paths,
+        Ok(WorkspaceTransferExportResult {
+            saved_path: file_path.display().to_string(),
+            attachment_count: normalized_bundle.attachments.len(),
+            skipped_attachment_paths,
+        })
     })
+    .await
+    .map_err(|_| "The workspace bundle export could not be completed.".to_string())?
 }
 
 #[tauri::command]
-pub fn import_workspace_bundle(
+pub async fn import_workspace_bundle(
     app_handle: tauri::AppHandle,
     path: String,
 ) -> Result<WorkspaceTransferImportResult, String> {
-    let bundle_path = PathBuf::from(path.trim());
-    let mut bundle = read_workspace_transfer_bundle(&bundle_path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let bundle_path = PathBuf::from(path.trim());
+        let mut bundle = read_workspace_transfer_bundle(&bundle_path)?;
 
-    let attachments_root = playbook_attachments_dir(&app_handle)?;
-    let mut restored_attachment_count = 0usize;
-    let mut skipped_attachment_paths: Vec<String> = Vec::new();
-    let mut replacements: HashMap<String, String> = HashMap::new();
+        let attachments_root = playbook_attachments_dir(&app_handle)?;
+        let mut restored_attachment_count = 0usize;
+        let mut skipped_attachment_paths: Vec<String> = Vec::new();
+        let mut replacements: HashMap<String, String> = HashMap::new();
 
-    for attachment in &bundle.attachments {
-        let Some(relative_path) = sanitize_relative_path(&attachment.relative_path) else {
-            if let Some(original_path) = &attachment.original_path {
-                skipped_attachment_paths.push(original_path.clone());
+        for attachment in &bundle.attachments {
+            let Some(relative_path) = sanitize_relative_path(&attachment.relative_path) else {
+                if let Some(original_path) = &attachment.original_path {
+                    skipped_attachment_paths.push(original_path.clone());
+                }
+                continue;
+            };
+
+            let Some(bytes) = decode_attachment_content(attachment) else {
+                if let Some(original_path) = &attachment.original_path {
+                    skipped_attachment_paths.push(original_path.clone());
+                }
+                continue;
+            };
+
+            let destination_path = attachments_root.join(relative_path);
+            if let Some(parent_dir) = destination_path.parent() {
+                fs::create_dir_all(parent_dir)
+                    .map_err(|_| "Could not create imported attachment folders.".to_string())?;
             }
-            continue;
-        };
 
-        let Some(bytes) = decode_hex(&attachment.content_hex) else {
+            fs::write(&destination_path, bytes)
+                .map_err(|_| "Could not restore an imported workspace attachment.".to_string())?;
+            restored_attachment_count += 1;
+
             if let Some(original_path) = &attachment.original_path {
-                skipped_attachment_paths.push(original_path.clone());
+                replacements.insert(
+                    original_path.clone(),
+                    destination_path.display().to_string(),
+                );
             }
-            continue;
-        };
-
-        let destination_path = attachments_root.join(relative_path);
-        if let Some(parent_dir) = destination_path.parent() {
-            fs::create_dir_all(parent_dir)
-                .map_err(|_| "Could not create imported attachment folders.".to_string())?;
         }
 
-        fs::write(&destination_path, bytes)
-            .map_err(|_| "Could not restore an imported workspace attachment.".to_string())?;
-        restored_attachment_count += 1;
-
-        if let Some(original_path) = &attachment.original_path {
-            replacements.insert(original_path.clone(), destination_path.display().to_string());
+        if !replacements.is_empty() {
+            for value in bundle.local_storage.values_mut() {
+                replace_strings_in_value(value, &replacements);
+            }
         }
-    }
 
-    if !replacements.is_empty() {
-        for value in bundle.local_storage.values_mut() {
-            replace_strings_in_value(value, &replacements);
-        }
-    }
+        bundle.attachments.clear();
 
-    bundle.attachments.clear();
-
-    Ok(WorkspaceTransferImportResult {
-        bundle,
-        restored_attachment_count,
-        skipped_attachment_paths,
+        Ok(WorkspaceTransferImportResult {
+            bundle,
+            restored_attachment_count,
+            skipped_attachment_paths,
+        })
     })
+    .await
+    .map_err(|_| "The workspace bundle import could not be completed.".to_string())?
 }

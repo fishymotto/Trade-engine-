@@ -19,6 +19,8 @@ export interface Settings {
   workspaceExportStartDate: string;
   workspaceExportEndDate: string;
   workspaceExportSelectedDates: string[];
+  workspaceTransferLastExportedAt: string;
+  workspaceTransferLastImportedAt: string;
   twelveDataApiKey: string;
   brlToUsdRate: number;
   brlTickerList: string;

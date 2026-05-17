@@ -1,24 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-const env = (import.meta as { env?: Record<string, string | undefined> }).env;
-const SUPABASE_URL = env?.VITE_SUPABASE_URL?.trim();
-const SUPABASE_ANON_KEY = env?.VITE_SUPABASE_ANON_KEY?.trim();
-const hasSupabaseEnv = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
-const SUPABASE_FALLBACK_URL = 'https://placeholder.supabase.co';
-const SUPABASE_FALLBACK_ANON_KEY = 'placeholder-anon-key';
-
-if (!hasSupabaseEnv) {
-  console.warn(
-    'Missing Supabase environment variables (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY). Running in local-only mode.'
-  );
-}
-
-export const supabase: SupabaseClient = createClient(
-  SUPABASE_URL ?? SUPABASE_FALLBACK_URL,
-  SUPABASE_ANON_KEY ?? SUPABASE_FALLBACK_ANON_KEY
-);
-export const isSupabaseConfigured = hasSupabaseEnv;
-
 export type AuthUser = {
   id: string;
   email: string;
@@ -28,11 +9,40 @@ export type AuthUser = {
 
 export type User = AuthUser;
 
+export const OFFLINE_WORKSPACE_USER: AuthUser = {
+  id: 'local-workspace',
+  email: '',
+  username: 'Offline Workspace',
+  isAdmin: false,
+};
+
+const env = (import.meta as { env?: Record<string, string | undefined> }).env;
+const SUPABASE_URL = env?.VITE_SUPABASE_URL?.trim();
+const SUPABASE_ANON_KEY = env?.VITE_SUPABASE_ANON_KEY?.trim();
+const hasSupabaseEnv = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+const REMOTE_SYNC_ENABLED = false;
+const SUPABASE_FALLBACK_URL = 'https://placeholder.supabase.co';
+const SUPABASE_FALLBACK_ANON_KEY = 'placeholder-anon-key';
+
+if (!REMOTE_SYNC_ENABLED) {
+  console.warn('Supabase integration is disabled for this build. Trade Engine will stay in offline workspace mode.');
+} else if (!hasSupabaseEnv) {
+  console.warn(
+    'Remote sync is not configured for this build. Trade Engine will continue in offline workspace mode.'
+  );
+}
+
+export const supabase: SupabaseClient = createClient(
+  SUPABASE_URL ?? SUPABASE_FALLBACK_URL,
+  SUPABASE_ANON_KEY ?? SUPABASE_FALLBACK_ANON_KEY
+);
+export const isSupabaseConfigured = REMOTE_SYNC_ENABLED && hasSupabaseEnv;
+
 export class AuthService {
   private ensureSupabaseConfigured(): void {
     if (!isSupabaseConfigured) {
       throw new Error(
-        'Supabase is not configured for this build. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env.local, then restart npm run desktop:dev (or rebuild the desktop app).'
+        'Remote sync is disabled for this build. Trade Engine saves locally on this device. Use Send Workspace and Receive Workspace on the Imports page to move data between computers.'
       );
     }
   }

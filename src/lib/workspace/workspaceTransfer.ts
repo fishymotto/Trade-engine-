@@ -11,7 +11,8 @@ export interface WorkspaceTransferAttachmentRecord {
   relativePath: string;
   originalPath?: string;
   byteLength?: number;
-  contentHex: string;
+  contentBase64?: string;
+  contentHex?: string;
 }
 
 export interface WorkspaceTransferBundle {
@@ -79,18 +80,15 @@ const PREFIX_STORAGE_KEYS = [
   "trade-engine-journal-editor-draft::",
   "playbook-aplus-dismissed:"
 ] as const;
+const EXACT_STORAGE_KEY_SET = new Set<string>(EXACT_STORAGE_KEYS);
 
 const SETTINGS_STORAGE_KEY = "trade-engine-settings";
 const PORTABLE_SECRET_SETTING_FIELDS = ["notionToken", "twelveDataApiKey"] as const;
 const WORKSPACE_ATTACHMENT_FOLDER_TOKEN = "playbook-attachments";
+// Keep machine-local settings and transient workspace UI state out of incremental sync files.
 const DATE_RANGE_SKIPPED_STORAGE_KEYS = new Set<string>([
   SETTINGS_STORAGE_KEY,
-  "trade-engine-trade-tag-options",
-  "trade-engine-journal-checklist-templates",
-  "trade-engine-workspace",
-  "trade-engine-trade-tag-catalog",
-  "trade-engine-select-option-additions",
-  "trade-engine-review-templates"
+  "trade-engine-workspace"
 ]);
 const DATE_RANGE_SKIPPED_PREFIXES = ["playbook-aplus-dismissed:"] as const;
 
@@ -776,6 +774,44 @@ export const clearWorkspaceTransferLocalStorage = (): void => {
   }
 };
 
+const isPrefixedWorkspaceTransferStorageKey = (storageKey: string): boolean =>
+  PREFIX_STORAGE_KEYS.some((prefix) => storageKey.startsWith(prefix));
+
+export const applyWorkspaceTransferPrefixLocalStorage = (
+  snapshot: Record<string, unknown>
+): void => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const prefixKeysToRemove: string[] = [];
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const storageKey = window.localStorage.key(index);
+    if (!storageKey || !isPrefixedWorkspaceTransferStorageKey(storageKey)) {
+      continue;
+    }
+
+    if (!(storageKey in snapshot)) {
+      prefixKeysToRemove.push(storageKey);
+    }
+  }
+
+  for (const storageKey of prefixKeysToRemove) {
+    removeLocalStorageItem(storageKey, { label: storageKey });
+  }
+
+  for (const [storageKey, value] of Object.entries(snapshot)) {
+    if (!isPrefixedWorkspaceTransferStorageKey(storageKey)) {
+      continue;
+    }
+
+    writeLocalStorageItem(storageKey, JSON.stringify(value), {
+      label: storageKey,
+      suppressQuotaWarning: true
+    });
+  }
+};
+
 export const applyWorkspaceTransferBundle = (bundle: WorkspaceTransferBundle): void => {
   if (typeof window === "undefined") {
     return;
@@ -789,6 +825,8 @@ export const applyWorkspaceTransferBundle = (bundle: WorkspaceTransferBundle): v
       label: storageKey,
       suppressQuotaWarning: true
     });
-    removeLocalStorageItem(`${storageKey}::sync-meta`, { label: `${storageKey} sync metadata` });
+    if (EXACT_STORAGE_KEY_SET.has(storageKey)) {
+      removeLocalStorageItem(`${storageKey}::sync-meta`, { label: `${storageKey} sync metadata` });
+    }
   }
 };

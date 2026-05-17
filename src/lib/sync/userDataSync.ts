@@ -1,4 +1,5 @@
 import { SYNC_HYDRATED_EVENT, syncStores, type SyncHydrationResult } from './syncStore';
+import { isSupabaseConfigured } from '../auth';
 import type { TradeSessionRecord } from '../../types/session';
 import type { JournalPageRecord } from '../../types/journal';
 import type { TradeTagOptionsRecord, TradeTagOverrideRecord } from '../../types/tradeTags';
@@ -39,6 +40,15 @@ const dispatchHydrationEvent = (summary: UserDataSyncSummary): void => {
  * Syncs all user data from Supabase to localStorage after login
  */
 export const syncUserDataOnLogin = async (userId: string): Promise<UserDataSyncSummary> => {
+  if (!isSupabaseConfigured) {
+    setUserIdForSync(undefined);
+    return {
+      userId,
+      forcePushLocal: false,
+      results: [],
+    };
+  }
+
   setUserIdForSync(userId);
   migrateSettingsCacheToSyncedShape();
   const forcePushLocal = readLocalStorageItem(FORCE_LOCAL_TO_CLOUD_KEY) === '1';
@@ -98,6 +108,10 @@ export const syncUserDataOnLogin = async (userId: string): Promise<UserDataSyncS
 };
 
 export const forcePushLocalDataToCloud = async (userId: string): Promise<void> => {
+  if (!isSupabaseConfigured) {
+    throw new Error('Cloud sync is disabled for this build.');
+  }
+
   writeLocalStorageItem(FORCE_LOCAL_TO_CLOUD_KEY, '1', {
     label: 'cloud seed flag',
     suppressQuotaWarning: true
@@ -111,6 +125,10 @@ export const forcePushLocalDataToCloud = async (userId: string): Promise<void> =
 };
 
 export const retryDirtyUserData = async (userId: string): Promise<void> => {
+  if (!isSupabaseConfigured) {
+    return;
+  }
+
   setUserIdForSync(userId);
   await Promise.all([
     syncStores.tradeSessions.retryDirty<TradeSessionRecord[]>([], userId),
@@ -143,6 +161,10 @@ export const setUserIdForSync = (userId?: string): void => {
 if (typeof window !== 'undefined') {
   window.addEventListener('online', () => {
     void (async () => {
+      if (!isSupabaseConfigured) {
+        return;
+      }
+
       const {
         data: { session },
       } = await import('../auth').then(({ supabase }) => supabase.auth.getSession());

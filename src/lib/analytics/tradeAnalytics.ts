@@ -203,8 +203,12 @@ export const getHourlyBreakdown = (trades: GroupedTrade[]): PerformanceRow[] => 
   const grouped = new Map<string, GroupedTrade[]>();
 
   for (const trade of trades) {
-    const hour = trade.openTime.split(":")[0] ?? "--";
-    const key = `${hour}:00`;
+    const [rawHour = "", rawMinute = "0"] = trade.openTime.split(":");
+    const hour = Number(rawHour);
+    const minute = Number(rawMinute);
+    const key = Number.isFinite(hour)
+      ? `${String(hour).padStart(2, "0")}:${Number.isFinite(minute) && minute >= 30 ? "30" : "00"}`
+      : "--";
     const current = grouped.get(key) ?? [];
     current.push(trade);
     grouped.set(key, current);

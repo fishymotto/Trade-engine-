@@ -69,6 +69,7 @@ const sanitizeHeadlineUrl = (rawUrl: string): string | null => {
 };
 
 type LegacyHeadlineItem = Omit<HeadlineItem, "journalDate"> & { journalDate?: string };
+type NormalizedHeadlineItem = HeadlineItem & { __hasExplicitJournalDate: boolean };
 
 const isHeadlineItem = (value: unknown): value is LegacyHeadlineItem => {
   if (!value || typeof value !== "object") {
@@ -107,22 +108,32 @@ const inferHeadlineTradeDate = (item: LegacyHeadlineItem, fallbackTradeDate: str
   return normalizeTradeDate(fallbackTradeDate) || fallbackTradeDate.trim();
 };
 
-const normalizeHeadlineItem = (item: LegacyHeadlineItem, tradeDate: string): HeadlineItem => ({
-  ...item,
-  journalDate: inferHeadlineTradeDate(item, tradeDate),
-  title: item.title.trim(),
-  source: item.source.trim(),
-  url: sanitizeHeadlineUrl(item.url) ?? item.url.trim(),
-  ticker: item.ticker?.trim() || undefined
-});
+const normalizeHeadlineItem = (item: LegacyHeadlineItem, tradeDate: string): NormalizedHeadlineItem => {
+  const explicitTradeDate = normalizeTradeDate(item.journalDate ?? "");
 
-const normalizeHeadlineList = (items: unknown[], fallbackTradeDate: string): HeadlineItem[] =>
+  return {
+    ...item,
+    journalDate: explicitTradeDate || inferHeadlineTradeDate(item, tradeDate),
+    title: item.title.trim(),
+    source: item.source.trim(),
+    url: sanitizeHeadlineUrl(item.url) ?? item.url.trim(),
+    ticker: item.ticker?.trim() || undefined,
+    __hasExplicitJournalDate: Boolean(explicitTradeDate)
+  };
+};
+
+const normalizeHeadlineList = (items: unknown[], fallbackTradeDate: string): NormalizedHeadlineItem[] =>
   items.filter(isHeadlineItem).map((item) => normalizeHeadlineItem(item, fallbackTradeDate));
+
+const stripHeadlineRuntimeMetadata = (item: NormalizedHeadlineItem | HeadlineItem): HeadlineItem => {
+  const { __hasExplicitJournalDate: _hasExplicitJournalDate, ...headline } = item as NormalizedHeadlineItem;
+  return headline;
+};
 
 const getHeadlineDateSignal = (item: HeadlineItem): string =>
   normalizeTradeDate(item.createdAt) || normalizeTradeDate(item.updatedAt);
 
-const repairBucketTradeDate = (tradeDate: string, items: HeadlineItem[]): HeadlineItem[] => {
+const repairBucketTradeDate = (tradeDate: string, items: NormalizedHeadlineItem[]): NormalizedHeadlineItem[] => {
   const normalizedTradeDate = normalizeTradeDate(tradeDate) || tradeDate.trim();
   if (!normalizedTradeDate || items.length === 0) {
     return items;
@@ -144,12 +155,12 @@ const repairBucketTradeDate = (tradeDate: string, items: HeadlineItem[]): Headli
   }
 
   return items.map((item, index) => {
-    const explicitTradeDate = normalizeTradeDate(item.journalDate ?? "");
     if (signalDates[index] !== signalTradeDate) {
       return item;
     }
 
-    if (explicitTradeDate && explicitTradeDate !== normalizedTradeDate) {
+    // Trust headlines that were explicitly assigned to a journal day.
+    if (item.__hasExplicitJournalDate) {
       return item;
     }
 
@@ -160,7 +171,10 @@ const repairBucketTradeDate = (tradeDate: string, items: HeadlineItem[]): Headli
   });
 };
 
-const choosePreferredHeadline = (existing: HeadlineItem, candidate: HeadlineItem): HeadlineItem => {
+const choosePreferredHeadline = (
+  existing: NormalizedHeadlineItem | HeadlineItem,
+  candidate: NormalizedHeadlineItem | HeadlineItem
+): NormalizedHeadlineItem | HeadlineItem => {
   const existingDateSignal = getHeadlineDateSignal(existing);
   const candidateDateSignal = getHeadlineDateSignal(candidate);
   const existingMatchesSignal = Boolean(existingDateSignal) && existing.journalDate === existingDateSignal;
@@ -181,22 +195,26 @@ const choosePreferredHeadline = (existing: HeadlineItem, candidate: HeadlineItem
   return candidateCompleteness >= existingCompleteness ? candidate : existing;
 };
 
-const upsertGroupedHeadline = (grouped: HeadlinesByTradeDate, item: HeadlineItem): void => {
-  const current = grouped[item.journalDate] ?? [];
-  const existingIndex = current.findIndex((entry) => entry.id === item.id);
+const upsertGroupedHeadline = (
+  grouped: HeadlinesByTradeDate,
+  item: NormalizedHeadlineItem | HeadlineItem
+): void => {
+  const headline = stripHeadlineRuntimeMetadata(item);
+  const current = grouped[headline.journalDate] ?? [];
+  const existingIndex = current.findIndex((entry) => entry.id === headline.id);
 
   if (existingIndex === -1) {
-    grouped[item.journalDate] = [...current, item];
+    grouped[headline.journalDate] = [...current, headline];
     return;
   }
 
   const existing = current[existingIndex];
-  const replacement = item.updatedAt.localeCompare(existing.updatedAt) >= 0 ? item : existing;
-  grouped[item.journalDate] = current.map((entry, index) => (index === existingIndex ? replacement : entry));
+  const replacement = headline.updatedAt.localeCompare(existing.updatedAt) >= 0 ? headline : existing;
+  grouped[headline.journalDate] = current.map((entry, index) => (index === existingIndex ? replacement : entry));
 };
 
 const normalizeHeadlinesRecord = (value: Partial<HeadlinesByTradeDate>): HeadlinesByTradeDate => {
-  const dedupedById = new Map<string, HeadlineItem>();
+  const dedupedById = new Map<string, NormalizedHeadlineItem | HeadlineItem>();
 
   for (const [tradeDate, items] of Object.entries(value)) {
     if (!Array.isArray(items)) {

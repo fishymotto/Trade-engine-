@@ -26,6 +26,7 @@ import type {
 import type { Settings } from "../../../types/trade";
 import type { EditableTradeRow, EditableTradeTagField } from "../../../types/tradeTags";
 import { HeadlinesBar } from "../../headlines/components/HeadlinesBar";
+import { JournalTradeNotesPanel } from "../components/JournalTradeNotesPanel";
 
 interface JournalPageProps {
   pages: JournalPageRecord[];
@@ -38,6 +39,7 @@ interface JournalPageProps {
   onSelectPage: (pageId: string) => void;
   onSelectTrade: (tradeId: string, tradeDate: string) => void;
   onCreatePage: (tradeDate: string) => void;
+  onCreatePages: (tradeDates: string[]) => void;
   onUpdatePage: (
     pageId: string,
     updates: Partial<
@@ -55,6 +57,7 @@ interface JournalPageProps {
         | "closeMood"
         | "screenshotUrls"
         | "screenshotTags"
+        | "tradeNotes"
       >
     >
   ) => void;
@@ -353,6 +356,23 @@ const formatJournalDate = (tradeDate: string) => {
   });
 };
 
+const journalListWeekdayFormatter = new Intl.DateTimeFormat(undefined, { weekday: "long" });
+const journalListDayFormatter = new Intl.DateTimeFormat(undefined, { day: "numeric" });
+
+const formatJournalListDate = (tradeDate: string) => {
+  if (!tradeDate) {
+    return "No Date";
+  }
+
+  const normalized = `${tradeDate}T00:00:00`;
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) {
+    return formatJournalDate(tradeDate);
+  }
+
+  return `${journalListWeekdayFormatter.format(parsed)} ${journalListDayFormatter.format(parsed)}`;
+};
+
 const getSortableTimestamp = (value: string) => {
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? 0 : parsed;
@@ -387,6 +407,35 @@ const normalizeDateForInput = (value: string) => {
   }
 
   return parsed.toISOString().slice(0, 10);
+};
+
+const formatDateInputValue = (value: Date) => {
+  const year = value.getFullYear();
+  const month = `${value.getMonth() + 1}`.padStart(2, "0");
+  const day = `${value.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const getNextWeekTradeDates = (anchorTradeDate: string): string[] => {
+  const normalizedAnchorTradeDate = normalizeDateForInput(anchorTradeDate);
+  if (!normalizedAnchorTradeDate) {
+    return [];
+  }
+
+  const anchorDate = new Date(`${normalizedAnchorTradeDate}T00:00:00`);
+  if (Number.isNaN(anchorDate.getTime())) {
+    return [];
+  }
+
+  const mondayOffset = (anchorDate.getDay() + 6) % 7;
+  const nextWeekMonday = new Date(anchorDate);
+  nextWeekMonday.setDate(anchorDate.getDate() - mondayOffset + 7);
+
+  return Array.from({ length: 5 }, (_, index) => {
+    const nextDate = new Date(nextWeekMonday);
+    nextDate.setDate(nextWeekMonday.getDate() + index);
+    return formatDateInputValue(nextDate);
+  });
 };
 
 const getMonthKey = (tradeDate: string) => (tradeDate && tradeDate.length >= 7 ? tradeDate.slice(0, 7) : "No Date"); // "2026-04"
@@ -429,6 +478,7 @@ export const JournalPage = ({
   onSelectPage,
   onSelectTrade,
   onCreatePage,
+  onCreatePages,
   onUpdatePage,
   onUpdateContent,
   onSaveChecklistTemplateAs,
@@ -736,6 +786,17 @@ export const JournalPage = ({
     onCreatePage(normalized);
   };
 
+  const handleAddNextWeekPages = () => {
+    const nextWeekTradeDates = getNextWeekTradeDates(draftTradeDate);
+    if (nextWeekTradeDates.length === 0) {
+      window.alert("Please choose a valid journal date first.");
+      return;
+    }
+
+    setDraftTradeDate(nextWeekTradeDates[0]);
+    onCreatePages(nextWeekTradeDates);
+  };
+
   const linkedTrades = useMemo(
     () =>
       selectedPage
@@ -761,6 +822,9 @@ export const JournalPage = ({
             {
               netPnl: summary.totalNetPnl,
               tradeCount: summary.totalTrades,
+              winRate: summary.winRate,
+              avgTrade: summary.avgTrade,
+              totalSharesTraded: summary.totalSharesTraded,
               tickers: Array.from(new Set(pageTrades.map((trade) => trade.symbol))).sort()
             }
           ];
@@ -1148,21 +1212,23 @@ export const JournalPage = ({
     });
   };
 
-  const syncLinkedTradeScreenshot = (
-    screenshotUrl: string,
+  const getLinkedTradeIdsForScreenshotTag = (
     screenshotTag: JournalScreenshotTagRecord | undefined
-  ) => {
+  ): string[] => {
     if (!screenshotTag) {
-      return;
+      return [];
     }
 
-    const tradeIds = Array.from(
+    return Array.from(
       new Set(
         getScreenshotTradeLinks(screenshotTag)
           .map((link) => linkedTradeByLink.get(serializeTradeLink(link.tradeId, link.tradeDate))?.id ?? "")
           .filter(Boolean)
       )
     );
+  };
+
+  const syncLinkedTradeScreenshot = (tradeIds: string[], screenshotUrl: string) => {
     for (const tradeId of tradeIds) {
       onAttachScreenshotToTrade(tradeId, screenshotUrl);
     }
@@ -1176,11 +1242,32 @@ export const JournalPage = ({
       return;
     }
 
-    syncLinkedTradeScreenshot(screenshotUrl, screenshotTag);
+    syncLinkedTradeScreenshot(getLinkedTradeIdsForScreenshotTag(screenshotTag), screenshotUrl);
   };
 
   const clearScreenshotIfLinked = (screenshotTag: JournalScreenshotTagRecord | undefined) => {
-    syncLinkedTradeScreenshot("", screenshotTag);
+    syncLinkedTradeScreenshot(getLinkedTradeIdsForScreenshotTag(screenshotTag), "");
+  };
+
+  const attachScreenshotForNewTradeLinks = (
+    screenshotUrl: string,
+    previousTag: JournalScreenshotTagRecord,
+    nextTag: JournalScreenshotTagRecord
+  ) => {
+    if (!screenshotUrl) {
+      return;
+    }
+
+    const previousTradeIds = new Set(getLinkedTradeIdsForScreenshotTag(previousTag));
+    const addedTradeIds = getLinkedTradeIdsForScreenshotTag(nextTag).filter(
+      (tradeId) => !previousTradeIds.has(tradeId)
+    );
+
+    if (addedTradeIds.length === 0) {
+      return;
+    }
+
+    syncLinkedTradeScreenshot(addedTradeIds, screenshotUrl);
   };
 
   const handleScreenshotTagUpdate = (
@@ -1196,7 +1283,11 @@ export const JournalPage = ({
     nextTags[screenshotIndex] = normalizeScreenshotTag(updater(currentTag));
 
     updateSelectedPageScreenshots(selectedPage.screenshotUrls, nextTags);
-    attachScreenshotIfLinked(selectedPage.screenshotUrls[screenshotIndex] ?? "", nextTags[screenshotIndex]);
+    attachScreenshotForNewTradeLinks(
+      selectedPage.screenshotUrls[screenshotIndex] ?? "",
+      currentTag,
+      nextTags[screenshotIndex]
+    );
   };
 
   return (
@@ -1233,6 +1324,10 @@ export const JournalPage = ({
                 <WorkspaceIcon icon="journal" alt="Create journal icon" className="mini-action-icon" />
                 New Journal
               </button>
+              <button type="button" className="mini-action journal-create-button" onClick={handleAddNextWeekPages}>
+                <WorkspaceIcon icon="plan" alt="Add next week journals icon" className="mini-action-icon" />
+                Add Next Week
+              </button>
             </div>
           </div>
           <div className="journal-page-section">
@@ -1262,6 +1357,8 @@ export const JournalPage = ({
                             const pageSummary = journalPageSummaries.get(page.id);
                             const gradeLabel = page.dayGrade || "No Grade";
                             const netPnl = pageSummary?.netPnl ?? 0;
+                            const tradeCount = pageSummary?.tradeCount ?? 0;
+                            const winRate = pageSummary?.winRate ?? 0;
                             const tickers = pageSummary?.tickers ?? [];
                             return (
                               <button
@@ -1273,21 +1370,24 @@ export const JournalPage = ({
                                 <div className="journal-page-row">
                                   <div className="journal-page-title">
                                     <WorkspaceIcon icon="journal" alt="Journal page icon" className="journal-page-icon" />
-                                    <strong>{formatJournalDate(page.tradeDate)}</strong>
+                                    <strong>{formatJournalListDate(page.tradeDate)}</strong>
                                   </div>
-                                  <span className={`journal-grade-pill${page.dayGrade ? "" : " journal-grade-pill-empty"}`}>
-                                    {gradeLabel}
-                                  </span>
+                                  <div className="journal-page-row-meta">
+                                    <span className={`journal-grade-pill${page.dayGrade ? "" : " journal-grade-pill-empty"}`}>
+                                      {gradeLabel}
+                                    </span>
+                                    <strong
+                                      className={`journal-page-pnl ${
+                                        netPnl >= 0 ? "journal-page-pnl-positive" : "journal-page-pnl-negative"
+                                      }`}
+                                    >
+                                      {formatSignedMoney(netPnl)}
+                                    </strong>
+                                  </div>
                                 </div>
                                 <div className="journal-page-meta">
-                                  <span
-                                    className={`journal-page-pnl ${
-                                      netPnl >= 0 ? "journal-page-pnl-positive" : "journal-page-pnl-negative"
-                                    }`}
-                                  >
-                                    {netPnl >= 0 ? "+" : ""}${netPnl.toFixed(2)}
-                                  </span>
-                                  <span>{pageSummary?.tradeCount ?? 0} trades</span>
+                                  <span>{tradeCount} trades</span>
+                                  <span>{winRate.toFixed(1)}% WR</span>
                                 </div>
                                 {tickers.length > 0 ? (
                                   <div className="journal-page-tickers">
@@ -1734,7 +1834,7 @@ export const JournalPage = ({
                   <section className="journal-writing-section">
                   <div className="journal-writing-header">
                     <div className="journal-writing-header-title">
-                      <WorkspaceIcon icon="checklist" alt="Morning checklist icon" className="mini-action-icon" />
+                      <WorkspaceIcon icon="journal-checklist" alt="Morning checklist icon" className="mini-action-icon" />
                       <strong>Morning Checklist</strong>
                     </div>
                     <div className="journal-writing-header-actions journal-template-disclosure-wrap">
@@ -1848,7 +1948,7 @@ export const JournalPage = ({
                   <section className="journal-writing-section">
                     <div className="journal-writing-header">
                       <div className="journal-writing-header-title">
-                        <WorkspaceIcon icon="text" alt="Morning journal icon" className="mini-action-icon" />
+                        <WorkspaceIcon icon="journal-notebook" alt="Morning journal icon" className="mini-action-icon" />
                         <strong>Morning Journal</strong>
                       </div>
                     </div>
@@ -1877,7 +1977,7 @@ export const JournalPage = ({
                   <section className="journal-writing-section">
                   <div className="journal-writing-header">
                     <div className="journal-writing-header-title">
-                      <WorkspaceIcon icon="checklist" alt="Closing checklist icon" className="mini-action-icon" />
+                      <WorkspaceIcon icon="journal-checklist" alt="Closing checklist icon" className="mini-action-icon" />
                       <strong>Closing Checklist</strong>
                     </div>
                     <div className="journal-writing-header-actions journal-template-disclosure-wrap">
@@ -1991,7 +2091,7 @@ export const JournalPage = ({
                   <section className="journal-writing-section">
                     <div className="journal-writing-header">
                       <div className="journal-writing-header-title">
-                        <WorkspaceIcon icon="text" alt="Closing journal icon" className="mini-action-icon" />
+                        <WorkspaceIcon icon="journal-notebook" alt="Closing journal icon" className="mini-action-icon" />
                         <strong>Closing Journal</strong>
                       </div>
                     </div>
@@ -2137,7 +2237,7 @@ export const JournalPage = ({
                 <section className="journal-writing-section">
                   <div className="journal-writing-header">
                     <div className="journal-writing-header-title">
-                      <WorkspaceIcon icon="journal" alt="Trader reach outs icon" className="mini-action-icon" />
+                      <WorkspaceIcon icon="journal-notebook" alt="Trader reach outs icon" className="mini-action-icon" />
                       <strong>Trader Reach Outs</strong>
                     </div>
                   </div>
@@ -2157,7 +2257,7 @@ export const JournalPage = ({
                 <section className="journal-writing-section">
                   <div className="journal-writing-header">
                     <div className="journal-writing-header-title">
-                      <WorkspaceIcon icon="text" alt="Day notes icon" className="mini-action-icon" />
+                      <WorkspaceIcon icon="journal-notebook" alt="Day notes icon" className="mini-action-icon" />
                       <strong>Day Notes</strong>
                     </div>
                   </div>
@@ -2178,7 +2278,7 @@ export const JournalPage = ({
                 <section className="journal-writing-section">
                   <div className="journal-writing-header">
                     <div className="journal-writing-header-title">
-                      <WorkspaceIcon icon="journal" alt="Chart screenshots icon" className="mini-action-icon" />
+                      <WorkspaceIcon icon="chart-gallery" alt="Chart screenshots icon" className="mini-action-icon" />
                       <div className="journal-screenshot-section-title">
                         <strong>Chart Screenshots</strong>
                         <span>Open, close, and context charts for this trading day.</span>
@@ -2210,7 +2310,7 @@ export const JournalPage = ({
                         screenshotInputRef.current?.click();
                       }}
                     >
-                      <WorkspaceIcon icon="camera" alt="Upload screenshot icon" className="mini-action-icon" />
+                      <WorkspaceIcon icon="chart-screenshots" alt="Upload screenshot icon" className="mini-action-icon" />
                       Add Screenshots
                     </button>
                     <button
@@ -2232,7 +2332,7 @@ export const JournalPage = ({
                         onUpdatePage(selectedPage.id, { screenshotUrls: [], screenshotTags: [] });
                       }}
                     >
-                      <WorkspaceIcon icon="data" alt="Clear screenshots icon" className="mini-action-icon" />
+                      <WorkspaceIcon icon="clear-screenshots" alt="Clear screenshots icon" className="mini-action-icon" />
                       Clear All
                     </button>
                     </div>
@@ -2552,6 +2652,17 @@ export const JournalPage = ({
                 </div>
               </section>
 
+              <JournalTradeNotesPanel
+                page={selectedPage}
+                linkedTrades={linkedTrades}
+                tagOptionsByField={tagOptionsByField}
+                onUpdatePage={onUpdatePage}
+                onSelectTrade={onSelectTrade}
+                onCreateTradeTagOption={onCreateTradeTagOption}
+                onRenameTradeTagOption={onRenameTradeTagOption}
+                onDeleteTradeTagOption={onDeleteTradeTagOption}
+              />
+
               <section className="placeholder-panel journal-trade-database-panel">
                 <div className="journal-sidebar-header">
                   <div>
@@ -2623,16 +2734,23 @@ export const JournalPage = ({
               linkedTrades.map((trade) => {
                 const tickerIcon = getTickerIconSrc(trade.symbol);
                 const tickerSector = getTickerSector(trade.symbol);
+                const primaryPlaybook = trade.setups.find((setup) => setup.trim().length > 0) ?? "";
+                const isSelected = selectedJournalTradeId === trade.id;
 
                 return (
                   <button
                     key={trade.id}
                     type="button"
-                    className="linked-trade-card linked-trade-card-button"
+                    className={`linked-trade-card linked-trade-card-button${isSelected ? " linked-trade-card-active" : ""}`}
                     onClick={() => onSelectTrade(trade.id, trade.tradeDate)}
                   >
-                    <div className="linked-trade-title">
-                      <strong>{trade.name}</strong>
+                    <div className="linked-trade-card-top">
+                      <div className="linked-trade-title">
+                        <strong>{trade.name}</strong>
+                      </div>
+                      <strong className={trade.netPnlUsd >= 0 ? "positive-value" : "negative-value"}>
+                        {formatSignedMoney(trade.netPnlUsd)}
+                      </strong>
                     </div>
                     <div className="linked-trade-meta">
                       {tickerIcon ? (
@@ -2644,12 +2762,40 @@ export const JournalPage = ({
                       ) : (
                         <WorkspaceIcon icon="trades" alt={`${trade.symbol} ticker icon`} className="linked-trade-icon" />
                       )}
-                      <span>
-                        {trade.symbol} - {trade.side} - {trade.status}
+                      <span>{trade.symbol}</span>
+                    </div>
+                    <div className="linked-trade-chip-row">
+                      <span className="linked-trade-chip linked-trade-chip-side">{trade.side}</span>
+                      <span
+                        className={`linked-trade-chip linked-trade-chip-status ${
+                          trade.status === "Win" ? "linked-trade-chip-status-win" : "linked-trade-chip-status-loss"
+                        }`}
+                      >
+                        {trade.status}
+                      </span>
+                      {primaryPlaybook ? (
+                        <span className={`linked-trade-chip tag-option-pill tag-option-pill-${getTagToneIndex(primaryPlaybook)}`}>
+                          {primaryPlaybook}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="linked-trade-stat-grid">
+                      <span className="linked-trade-stat">
+                        <strong>Time</strong>
+                        <span className="linked-trade-stat-value-wrap">
+                          <span>{trade.openTime}</span>
+                          <span className="linked-trade-stat-value-soft">{trade.closeTime}</span>
+                        </span>
+                      </span>
+                      <span className="linked-trade-stat">
+                        <strong>Hold</strong>
+                        <span>{trade.holdTime || "-"}</span>
+                      </span>
+                      <span className="linked-trade-stat">
+                        <strong>Size</strong>
+                        <span>{trade.size.toLocaleString()}</span>
                       </span>
                     </div>
-                    <span>{trade.openTime} to {trade.closeTime}</span>
-                    <span>{trade.netPnlUsd >= 0 ? "+" : ""}{trade.netPnlUsd.toFixed(2)} net</span>
                   </button>
                 );
               })

@@ -9,7 +9,8 @@ import { TagDrawer } from "../../../components/TagDrawer";
 import { TradeChart, type TradeChartLayerVisibility } from "../../../components/TradeChart";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
 import { TradeExecutionsTable } from "../components/TradeExecutionsTable";
-import { tradeTagFieldLabels, tradeTagFields, tradeTagOptionsByField as defaultTradeTagOptionsByField } from "../../../lib/trades/tradeTagCatalog";
+import { tradeTagFieldLabels, tradeTagOptionsByField as defaultTradeTagOptionsByField } from "../../../lib/trades/tradeTagCatalog";
+import { getTradePlaybookOptions, tradeHasPlaybook } from "../../../lib/trades/playbookFilters";
 import { createEmptyJournalDoc } from "../../../lib/journal/journalContent";
 import { saveWorkspaceInlineImage } from "../../../lib/workspace/workspaceAttachmentClient";
 import type { ChartInterval, HistoricalBarSet } from "../../../types/chart";
@@ -19,7 +20,6 @@ import type { GroupedTrade } from "../../../types/trade";
 import type { EditableTradeRow, EditableTradeTagField } from "../../../types/tradeTags";
 
 interface TradesPageProps {
-  trades: EditableTradeRow[];
   databaseTrades: EditableTradeRow[];
   externalTradeDateFilterStart?: string;
   externalTradeDateFilterEnd?: string;
@@ -28,6 +28,15 @@ interface TradesPageProps {
   externalStatusFilter?: string;
   externalGameFilter?: string;
   externalExecutionFilter?: string;
+  onFiltersChange?: (filters: {
+    startValue: string;
+    endValue: string;
+    playbook: string;
+    symbol: string;
+    status: string;
+    game: string;
+    execution: string;
+  }) => void;
   externalSelectedTradeId?: string;
   externalSelectedTradeRequestId?: number;
   reviews: TradeReviewRecord[];
@@ -48,7 +57,6 @@ interface TradesPageProps {
   onChangeReviewChartInterval: (interval: ChartInterval) => void;
   onChangeDayChartInterval: (interval: ChartInterval) => void;
   onUpdateTradeTag: (trade: EditableTradeRow, field: EditableTradeTagField, value: string | string[] | null) => void;
-  onBulkUpdateTradeTags: (tradeIds: string[], field: EditableTradeTagField, value: string | string[] | null) => void;
   onCreateTradeTagOption: (field: EditableTradeTagField, value: string) => void;
   onRenameTradeTagOption: (field: EditableTradeTagField, currentValue: string, nextValue: string) => void;
   onDeleteTradeTagOption: (field: EditableTradeTagField, value: string) => void;
@@ -142,7 +150,6 @@ const getReviewNotesContent = (review: TradeReviewRecord | null | undefined): JS
 };
 
 export const TradesPage = ({
-  trades,
   databaseTrades,
   externalTradeDateFilterStart = "",
   externalTradeDateFilterEnd = "",
@@ -151,6 +158,7 @@ export const TradesPage = ({
   externalStatusFilter = "all",
   externalGameFilter = "all",
   externalExecutionFilter = "all",
+  onFiltersChange,
   externalSelectedTradeId = "",
   externalSelectedTradeRequestId = 0,
   reviews,
@@ -168,14 +176,12 @@ export const TradesPage = ({
   onChangeReviewChartInterval,
   onChangeDayChartInterval,
   onUpdateTradeTag,
-  onBulkUpdateTradeTags,
   onCreateTradeTagOption,
   onRenameTradeTagOption,
   onDeleteTradeTagOption,
   onClearExternalSelectedTrade
 }: TradesPageProps) => {
   const [selectedTradeId, setSelectedTradeId] = useState<string>("");
-  const [selectedTradeIds, setSelectedTradeIds] = useState<string[]>([]);
   const [selectedTradeDateFilterStart, setSelectedTradeDateFilterStart] = useState(externalTradeDateFilterStart);
   const [selectedTradeDateFilterEnd, setSelectedTradeDateFilterEnd] = useState(externalTradeDateFilterEnd);
   const [selectedPlaybookFilter, setSelectedPlaybookFilter] = useState(externalPlaybookFilter);
@@ -185,22 +191,11 @@ export const TradesPage = ({
   const [selectedExecutionFilter, setSelectedExecutionFilter] = useState(externalExecutionFilter);
   const [chartLayerVisibility, setChartLayerVisibility] = useState<TradeChartLayerVisibility>(defaultChartLayerVisibility);
   const [showAllTickerDayTrades, setShowAllTickerDayTrades] = useState(false);
-  const [showUntaggedPlaybookOnly, setShowUntaggedPlaybookOnly] = useState(false);
-  const [showUntaggedMistakesOnly, setShowUntaggedMistakesOnly] = useState(false);
-  const [bulkField, setBulkField] = useState<EditableTradeTagField>("playbook");
-  const [isBulkEditorOpen, setIsBulkEditorOpen] = useState(false);
-  const [bulkEditorSearchQuery, setBulkEditorSearchQuery] = useState("");
   const [quickTagEditorField, setQuickTagEditorField] = useState<EditableTradeTagField | null>(null);
   const [quickTagEditorSearchQuery, setQuickTagEditorSearchQuery] = useState("");
   const [autoFetchingTradeKey, setAutoFetchingTradeKey] = useState<string | null>(null);
   const barsInputRef = useRef<HTMLInputElement | null>(null);
   const autoFetchAttemptedKeysRef = useRef<Set<string>>(new Set());
-  const activeTagFields = useMemo(
-    () => tradeTagFields.filter((field) => tagOptionsByField[field].length > 0),
-    [tagOptionsByField]
-  );
-  const isPlaybookTagEnabled = tagOptionsByField.playbook.length > 0;
-  const isMistakeTagEnabled = tagOptionsByField.mistake.length > 0;
   const quickTagLabels: Partial<Record<EditableTradeTagField, string>> = useMemo(
     () => ({
       game: "Game",
@@ -217,12 +212,6 @@ export const TradesPage = ({
       slotKey: "review-notes",
       file
     });
-
-  useEffect(() => {
-    if (activeTagFields.length > 0 && !activeTagFields.includes(bulkField)) {
-      setBulkField(activeTagFields[0]);
-    }
-  }, [activeTagFields, bulkField]);
 
   const lastHandledExternalSelectionRef = useRef<number | null>(null);
 
@@ -241,15 +230,12 @@ export const TradesPage = ({
     }
   };
 
-  const getToneIndex = (value: string): number =>
-    value.split("").reduce((sum, character) => sum + character.charCodeAt(0), 0) % 6;
-
   const selectTradeAndReveal = (trade: EditableTradeRow) => {
     setSelectedTradeId(trade.id);
     setSelectedTradeDateFilterStart(trade.tradeDate);
     setSelectedTradeDateFilterEnd(trade.tradeDate);
 
-    if (selectedPlaybookFilter !== "all" && (trade.setups[0] ?? "") !== selectedPlaybookFilter) {
+    if (selectedPlaybookFilter !== "all" && !tradeHasPlaybook(trade, selectedPlaybookFilter)) {
       setSelectedPlaybookFilter("all");
     }
 
@@ -268,9 +254,6 @@ export const TradesPage = ({
     if (selectedExecutionFilter !== "all" && !trade.execution.includes(selectedExecutionFilter)) {
       setSelectedExecutionFilter("all");
     }
-
-    setShowUntaggedPlaybookOnly(false);
-    setShowUntaggedMistakesOnly(false);
   };
 
   useEffect(() => {
@@ -302,6 +285,27 @@ export const TradesPage = ({
   }, [externalExecutionFilter]);
 
   useEffect(() => {
+    onFiltersChange?.({
+      startValue: selectedTradeDateFilterStart,
+      endValue: selectedTradeDateFilterEnd,
+      playbook: selectedPlaybookFilter,
+      symbol: selectedSymbolFilter,
+      status: selectedStatusFilter,
+      game: selectedGameFilter,
+      execution: selectedExecutionFilter
+    });
+  }, [
+    onFiltersChange,
+    selectedExecutionFilter,
+    selectedGameFilter,
+    selectedPlaybookFilter,
+    selectedStatusFilter,
+    selectedSymbolFilter,
+    selectedTradeDateFilterEnd,
+    selectedTradeDateFilterStart
+  ]);
+
+  useEffect(() => {
     if (externalSelectedTradeId) {
       if (lastHandledExternalSelectionRef.current === externalSelectedTradeRequestId) {
         return;
@@ -329,8 +333,6 @@ export const TradesPage = ({
         setSelectedStatusFilter("all");
         setSelectedGameFilter("all");
         setSelectedExecutionFilter("all");
-        setShowUntaggedPlaybookOnly(false);
-        setShowUntaggedMistakesOnly(false);
         onClearExternalSelectedTrade?.();
         return;
       }
@@ -352,14 +354,7 @@ export const TradesPage = ({
   );
 
   const playbookOptions = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          databaseTrades
-            .map((trade) => trade.setups[0] ?? "")
-            .filter((value) => value.trim().length > 0)
-        )
-      ).sort((left, right) => left.localeCompare(right)),
+    () => getTradePlaybookOptions(databaseTrades),
     [databaseTrades]
   );
 
@@ -406,12 +401,6 @@ export const TradesPage = ({
     );
   }, [databaseTrades]);
 
-  useEffect(() => {
-    setSelectedTradeIds((current) =>
-      current.filter((tradeId) => databaseTrades.some((trade) => trade.id === tradeId))
-    );
-  }, [databaseTrades]);
-
   const matchesReviewSliceFilters = useCallback(
     (trade: EditableTradeRow) => {
       if (selectedTradeDateFilterStart && trade.tradeDate < selectedTradeDateFilterStart) {
@@ -422,7 +411,7 @@ export const TradesPage = ({
         return false;
       }
 
-      if (selectedPlaybookFilter !== "all" && (trade.setups[0] ?? "") !== selectedPlaybookFilter) {
+      if (selectedPlaybookFilter !== "all" && !tradeHasPlaybook(trade, selectedPlaybookFilter)) {
         return false;
       }
 
@@ -442,14 +431,6 @@ export const TradesPage = ({
         return false;
       }
 
-      if (showUntaggedPlaybookOnly && trade.setups[0]) {
-        return false;
-      }
-
-      if (showUntaggedMistakesOnly && trade.mistakes[0]) {
-        return false;
-      }
-
       return true;
     },
     [
@@ -459,9 +440,7 @@ export const TradesPage = ({
       selectedStatusFilter,
       selectedSymbolFilter,
       selectedTradeDateFilterEnd,
-      selectedTradeDateFilterStart,
-      showUntaggedMistakesOnly,
-      showUntaggedPlaybookOnly
+      selectedTradeDateFilterStart
     ]
   );
 
@@ -611,6 +590,15 @@ export const TradesPage = ({
     [filteredTrades]
   );
 
+  const hasExplicitReviewSliceFilters =
+    !!selectedTradeDateFilterStart ||
+    !!selectedTradeDateFilterEnd ||
+    selectedPlaybookFilter !== "all" ||
+    selectedSymbolFilter !== "all" ||
+    selectedStatusFilter !== "all" ||
+    selectedGameFilter !== "all" ||
+    selectedExecutionFilter !== "all";
+
   const activeFilters = [
     selectedTradeDateFilterStart || selectedTradeDateFilterEnd
       ? {
@@ -633,12 +621,6 @@ export const TradesPage = ({
       : null,
     selectedExecutionFilter !== "all"
       ? { key: "execution", label: "Execution", value: selectedExecutionFilter }
-      : null,
-    showUntaggedPlaybookOnly
-      ? { key: "untagged-playbook", label: "Playbook", value: "Untagged only" }
-      : null,
-    showUntaggedMistakesOnly
-      ? { key: "untagged-mistakes", label: "Mistakes", value: "Untagged only" }
       : null
   ].filter((value): value is { key: string; label: string; value: string } => value !== null);
 
@@ -650,57 +632,38 @@ export const TradesPage = ({
     setSelectedStatusFilter("all");
     setSelectedGameFilter("all");
     setSelectedExecutionFilter("all");
-    setShowUntaggedPlaybookOnly(false);
-    setShowUntaggedMistakesOnly(false);
   };
 
   const relatedTrades = useMemo(() => {
-    const selectedTradeIdValue = selectedTrade?.id ?? "";
-    const relationshipPlaybook =
-      selectedPlaybookFilter !== "all" ? selectedPlaybookFilter : (selectedTrade?.setups[0] ?? "");
+    const fallbackTradeDate = !hasExplicitReviewSliceFilters ? selectedTrade?.tradeDate ?? "" : "";
 
-    let matchingTrades: EditableTradeRow[] = [];
+    return databaseTrades
+      .filter((trade) => {
+        if (selectedTrade && trade.id === selectedTrade.id) {
+          return false;
+        }
 
-    if (relationshipPlaybook) {
-      matchingTrades = databaseTrades.filter(
-        (trade) => trade.id !== selectedTradeIdValue && trade.setups.includes(relationshipPlaybook)
-      );
-    } else if (selectedTrade) {
-      matchingTrades = databaseTrades.filter(
-        (trade) =>
-          trade.tradeDate === selectedTrade.tradeDate &&
-          trade.symbol === selectedTrade.symbol &&
-          trade.id !== selectedTrade.id
-      );
-    } else if (selectedSymbolFilter !== "all") {
-      matchingTrades = databaseTrades.filter(
-        (trade) => trade.id !== selectedTradeIdValue && trade.symbol === selectedSymbolFilter
-      );
-    } else {
-      return [];
-    }
+        if (hasExplicitReviewSliceFilters) {
+          return matchesReviewSliceFilters(trade);
+        }
 
-    return matchingTrades
-      .filter(matchesReviewSliceFilters)
+        return trade.tradeDate === fallbackTradeDate;
+      })
       .sort(
-      (left, right) =>
-        right.tradeDate.localeCompare(left.tradeDate) ||
-        left.openTime.localeCompare(right.openTime) ||
-        left.closeTime.localeCompare(right.closeTime) ||
-        left.name.localeCompare(right.name)
-    );
-  }, [databaseTrades, matchesReviewSliceFilters, selectedPlaybookFilter, selectedSymbolFilter, selectedTrade]);
+        (left, right) =>
+          right.tradeDate.localeCompare(left.tradeDate) ||
+          left.openTime.localeCompare(right.openTime) ||
+          left.closeTime.localeCompare(right.closeTime) ||
+          left.name.localeCompare(right.name)
+      );
+  }, [databaseTrades, hasExplicitReviewSliceFilters, matchesReviewSliceFilters, selectedTrade]);
 
   const relatedTradesDescription =
-    selectedPlaybookFilter !== "all"
-      ? `Other trades tagged ${selectedPlaybookFilter}.`
-      : selectedTrade?.setups[0]
-        ? `Other trades tagged ${selectedTrade.setups[0]}.`
-        : selectedTrade
-          ? "No playbook tagged yet, showing other trades from this symbol and date."
-          : selectedSymbolFilter !== "all"
-            ? `Other trades for ${selectedSymbolFilter} in the current slice.`
-            : "";
+    hasExplicitReviewSliceFilters
+      ? "Other trades in the current review slice."
+      : selectedTrade
+        ? `Other trades from ${selectedTrade.tradeDate}.`
+        : "";
   const selectedTradeGatewaySummary = selectedTrade ? summarizeTaggedValues(selectedTrade.gateways) : "None";
   const selectedTradeMistakeDetails =
     selectedTrade && selectedTrade.mistakes.length > 0
@@ -720,7 +683,7 @@ export const TradesPage = ({
           <section className="trade-view-filter-panel page-hero-review-slice-embedded">
             <div className="trade-view-filter-header">
               <div className="panel-header">
-                <WorkspaceIcon icon="filter" alt="Trade filters icon" className="panel-header-icon" />
+                <WorkspaceIcon icon="review-slice" alt="Review slice icon" className="panel-header-icon" />
                 <h2>Review Slice</h2>
               </div>
               <button type="button" className="mini-action" onClick={clearFilters}>
@@ -858,7 +821,7 @@ export const TradesPage = ({
           />
           <div className="chart-panel-header">
             <div className="panel-header">
-              <WorkspaceIcon icon="trades" alt="Chart area icon" className="panel-header-icon" />
+              <WorkspaceIcon icon="review-workspace" alt="Review workspace icon" className="panel-header-icon" />
               <h2>Review Workspace</h2>
             </div>
           </div>
@@ -1157,9 +1120,41 @@ export const TradesPage = ({
             />
           )}
         </article> */}
+        <article className="placeholder-panel trade-review-dock trade-review-bottom">
+          <div className="panel-header">
+            <WorkspaceIcon icon="journal" alt="Trade review icon" className="panel-header-icon" />
+            <h2>Review Notes</h2>
+          </div>
+          {selectedTrade ? (
+            <div className="trade-review-form">
+              <label className="review-field">
+                <span>Review Notes</span>
+                <JournalRichTextEditor
+                  key={`${selectedTrade.id}-trade-review-notes`}
+                  content={getReviewNotesContent(selectedReview)}
+                  onChange={(content) => onUpdateReview(selectedTrade.id, { notes: content })}
+                  onImageInsert={createTradeReviewImageInsertHandler(selectedTrade.id)}
+                  placeholder="Capture execution notes, emotions, and what to improve next time."
+                  compact
+                  blockActionsVisibility="focus"
+                />
+              </label>
+              {selectedReview ? (
+                <div className="review-meta">
+                  <span>Last updated {new Date(selectedReview.updatedAt).toLocaleString()}</span>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <PlaceholderPanel
+              title="No Review Loaded"
+              description="Choose a trade to add review notes."
+            />
+          )}
+        </article>
         <article className="placeholder-panel related-trades-panel">
           <div className="panel-header">
-            <WorkspaceIcon icon="reports" alt="Related trades icon" className="panel-header-icon" />
+            <WorkspaceIcon icon="related-trades" alt="Related trades icon" className="panel-header-icon" />
             <h2>Related Trades</h2>
           </div>
           {selectedTrade ? <span className="related-trades-context">{relatedTradesDescription}</span> : null}
@@ -1181,165 +1176,7 @@ export const TradesPage = ({
             }
           />
         </article>
-        <article className="placeholder-panel trade-review-dock trade-review-bottom">
-          <div className="panel-header">
-            <WorkspaceIcon icon="journal" alt="Trade review icon" className="panel-header-icon" />
-            <h2>Review Notes</h2>
-          </div>
-          {selectedTrade ? (
-            <div className="trade-review-form">
-              <label className="review-field">
-                <span>Review Notes</span>
-                <JournalRichTextEditor
-                  key={`${selectedTrade.id}-trade-review-notes`}
-                  content={getReviewNotesContent(selectedReview)}
-                  onChange={(content) => onUpdateReview(selectedTrade.id, { notes: content })}
-                  onImageInsert={createTradeReviewImageInsertHandler(selectedTrade.id)}
-                  placeholder="Capture execution notes, emotions, and what to improve next time."
-                  compact
-                />
-              </label>
-              {selectedReview ? (
-                <div className="review-meta">
-                  <span>Last updated {new Date(selectedReview.updatedAt).toLocaleString()}</span>
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <PlaceholderPanel
-              title="No Review Loaded"
-              description="Choose a trade to add review notes."
-            />
-          )}
-        </article>
       </section>
-      <section className="placeholder-panel analytics-panel trade-database-panel">
-        <div className="trade-database-toolbar">
-          <div className="panel-header">
-            <WorkspaceIcon icon="data" alt="Trade database icon" className="panel-header-icon" />
-            <h2>Trade Database</h2>
-          </div>
-          <div className="trade-database-filters">
-            {isPlaybookTagEnabled ? (
-              <label className="trade-filter-toggle">
-                <input
-                  type="checkbox"
-                  checked={showUntaggedPlaybookOnly}
-                  onChange={(event) => setShowUntaggedPlaybookOnly(event.target.checked)}
-                />
-                <span>Untagged Playbook</span>
-              </label>
-            ) : null}
-            {isMistakeTagEnabled ? (
-              <label className="trade-filter-toggle">
-                <input
-                  type="checkbox"
-                  checked={showUntaggedMistakesOnly}
-                  onChange={(event) => setShowUntaggedMistakesOnly(event.target.checked)}
-                />
-                <span>Untagged Mistakes</span>
-              </label>
-            ) : null}
-          </div>
-          <div className="bulk-tag-toolbar">
-            <span>{selectedTradeIds.length} selected</span>
-            <select
-              className="calendar-date-select"
-              value={bulkField}
-              disabled={activeTagFields.length === 0}
-              onChange={(event) => setBulkField(event.target.value as EditableTradeTagField)}
-            >
-              {activeTagFields.map((field) => (
-                <option key={field} value={field}>
-                  {tradeTagFieldLabels[field]}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              className="mini-action"
-              disabled={selectedTradeIds.length === 0 || activeTagFields.length === 0}
-              onClick={() => {
-                setBulkEditorSearchQuery("");
-                setIsBulkEditorOpen(true);
-              }}
-            >
-              Apply Bulk Tag
-            </button>
-            <button
-              type="button"
-              className="mini-action"
-              disabled={selectedTradeIds.length === 0 || activeTagFields.length === 0}
-              onClick={() => onBulkUpdateTradeTags(selectedTradeIds, bulkField, null)}
-            >
-              Clear Field
-            </button>
-          </div>
-        </div>
-        <PreviewTable
-          trades={filteredTrades}
-          tagOptionsByField={tagOptionsByField}
-          selectedTradeId={selectedTradeId}
-          selectedTradeIds={selectedTradeIds}
-          onSelectTrade={(trade) => selectTradeAndReveal(trade)}
-          onToggleTradeSelection={(tradeId) =>
-            setSelectedTradeIds((current) =>
-              current.includes(tradeId)
-                ? current.filter((id) => id !== tradeId)
-                : [...current, tradeId]
-            )
-          }
-          onToggleSelectAll={(tradeIds) =>
-            setSelectedTradeIds((current) =>
-              tradeIds.every((tradeId) => current.includes(tradeId))
-                ? current.filter((tradeId) => !tradeIds.includes(tradeId))
-                : Array.from(new Set([...current, ...tradeIds]))
-            )
-          }
-          onUpdateTradeTag={onUpdateTradeTag}
-          onCreateTradeTagOption={onCreateTradeTagOption}
-          onRenameTradeTagOption={onRenameTradeTagOption}
-          onDeleteTradeTagOption={onDeleteTradeTagOption}
-        />
-      </section>
-      {isBulkEditorOpen ? (
-        <TagDrawer
-          isOpen={isBulkEditorOpen}
-          title={`Bulk Update - ${tradeTagFieldLabels[bulkField]}`}
-          options={tagOptionsByField[bulkField]}
-          currentValue=""
-          allowClear
-          clearLabel={bulkField === "mistake" ? "No mistakes" : `Clear ${tradeTagFieldLabels[bulkField]}`}
-          searchValue={bulkEditorSearchQuery}
-          onSearchChange={setBulkEditorSearchQuery}
-          onSelect={(value) => {
-            onBulkUpdateTradeTags(selectedTradeIds, bulkField, value);
-            setIsBulkEditorOpen(false);
-            setBulkEditorSearchQuery("");
-          }}
-          onCreateOption={(value) => {
-            onCreateTradeTagOption(bulkField, value);
-            onBulkUpdateTradeTags(selectedTradeIds, bulkField, value);
-            setIsBulkEditorOpen(false);
-            setBulkEditorSearchQuery("");
-          }}
-          onRenameOption={(currentValue, nextValue) => {
-            onRenameTradeTagOption(bulkField, currentValue, nextValue);
-          }}
-          onDeleteOption={(value) => {
-            onDeleteTradeTagOption(bulkField, value);
-          }}
-          canManageOption={(value) =>
-            !defaultTradeTagOptionsByField[bulkField].some(
-              (option) => option.toLowerCase() === value.toLowerCase()
-            )
-          }
-          onClose={() => {
-            setIsBulkEditorOpen(false);
-            setBulkEditorSearchQuery("");
-          }}
-        />
-      ) : null}
       {quickTagEditorField && selectedTrade ? (
         <TagDrawer
           isOpen={!!quickTagEditorField}

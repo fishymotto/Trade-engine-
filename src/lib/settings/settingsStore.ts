@@ -36,6 +36,8 @@ export const defaultSettings: Settings = {
   workspaceExportStartDate: "",
   workspaceExportEndDate: "",
   workspaceExportSelectedDates: [],
+  workspaceTransferLastExportedAt: "",
+  workspaceTransferLastImportedAt: "",
   twelveDataApiKey: "",
   brlToUsdRate: 0,
   brlTickerList: DEFAULT_BRL_TICKER_LIST,
@@ -55,7 +57,12 @@ export const defaultSettings: Settings = {
 
 export type SyncedSettings = Omit<
   Settings,
-  "exportFolder" | "workspaceExportStartDate" | "workspaceExportEndDate" | "workspaceExportSelectedDates"
+  | "exportFolder"
+  | "workspaceExportStartDate"
+  | "workspaceExportEndDate"
+  | "workspaceExportSelectedDates"
+  | "workspaceTransferLastExportedAt"
+  | "workspaceTransferLastImportedAt"
 >;
 
 interface MachineSettings {
@@ -63,14 +70,18 @@ interface MachineSettings {
   workspaceExportStartDate: string;
   workspaceExportEndDate: string;
   workspaceExportSelectedDates: string[];
+  workspaceTransferLastExportedAt: string;
+  workspaceTransferLastImportedAt: string;
 }
 
-const toSyncedSettings = (settings: Settings): SyncedSettings => {
+export const toSyncedSettings = (settings: Settings): SyncedSettings => {
   const {
     exportFolder: _exportFolder,
     workspaceExportStartDate: _workspaceExportStartDate,
     workspaceExportEndDate: _workspaceExportEndDate,
     workspaceExportSelectedDates: _workspaceExportSelectedDates,
+    workspaceTransferLastExportedAt: _workspaceTransferLastExportedAt,
+    workspaceTransferLastImportedAt: _workspaceTransferLastImportedAt,
     ...syncedSettings
   } = settings;
   return syncedSettings;
@@ -158,12 +169,28 @@ const normalizeWorkspaceExportSelectedDates = (value: unknown): string[] => {
   return normalized.sort();
 };
 
+const normalizeWorkspaceTransferTimestamp = (value: unknown): string => {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const parsed = Date.parse(trimmed);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : "";
+};
+
 const loadMachineSettings = (): MachineSettings => {
   const fallback: MachineSettings = {
     exportFolder: "",
     workspaceExportStartDate: "",
     workspaceExportEndDate: "",
-    workspaceExportSelectedDates: []
+    workspaceExportSelectedDates: [],
+    workspaceTransferLastExportedAt: "",
+    workspaceTransferLastImportedAt: ""
   };
 
   try {
@@ -176,6 +203,12 @@ const loadMachineSettings = (): MachineSettings => {
         workspaceExportEndDate: normalizeWorkspaceExportEndDate(parsed.workspaceExportEndDate),
         workspaceExportSelectedDates: normalizeWorkspaceExportSelectedDates(
           parsed.workspaceExportSelectedDates
+        ),
+        workspaceTransferLastExportedAt: normalizeWorkspaceTransferTimestamp(
+          parsed.workspaceTransferLastExportedAt
+        ),
+        workspaceTransferLastImportedAt: normalizeWorkspaceTransferTimestamp(
+          parsed.workspaceTransferLastImportedAt
         )
       };
     }
@@ -189,6 +222,12 @@ const loadMachineSettings = (): MachineSettings => {
         workspaceExportEndDate: normalizeWorkspaceExportEndDate(legacy.workspaceExportEndDate),
         workspaceExportSelectedDates: normalizeWorkspaceExportSelectedDates(
           legacy.workspaceExportSelectedDates
+        ),
+        workspaceTransferLastExportedAt: normalizeWorkspaceTransferTimestamp(
+          legacy.workspaceTransferLastExportedAt
+        ),
+        workspaceTransferLastImportedAt: normalizeWorkspaceTransferTimestamp(
+          legacy.workspaceTransferLastImportedAt
         )
       };
     }
@@ -225,6 +264,12 @@ export const migrateSettingsCacheToSyncedShape = (): void => {
         workspaceExportEndDate: normalizeWorkspaceExportEndDate(parsed.workspaceExportEndDate),
         workspaceExportSelectedDates: normalizeWorkspaceExportSelectedDates(
           parsed.workspaceExportSelectedDates
+        ),
+        workspaceTransferLastExportedAt: normalizeWorkspaceTransferTimestamp(
+          parsed.workspaceTransferLastExportedAt
+        ),
+        workspaceTransferLastImportedAt: normalizeWorkspaceTransferTimestamp(
+          parsed.workspaceTransferLastImportedAt
         )
       });
     }
@@ -246,6 +291,12 @@ const normalizeSettings = (settings: Partial<Settings>): Settings => ({
   workspaceExportSelectedDates: normalizeWorkspaceExportSelectedDates(
     settings.workspaceExportSelectedDates
   ),
+  workspaceTransferLastExportedAt: normalizeWorkspaceTransferTimestamp(
+    settings.workspaceTransferLastExportedAt
+  ),
+  workspaceTransferLastImportedAt: normalizeWorkspaceTransferTimestamp(
+    settings.workspaceTransferLastImportedAt
+  ),
   dailyShutdownRiskUsd: Number(settings.dailyShutdownRiskUsd) || 0,
   mppLockInSteps: normalizeMppLockInSteps(settings.mppLockInSteps),
   desktopBackupIntervalMinutes: normalizeBackupIntervalMinutes(settings.desktopBackupIntervalMinutes),
@@ -256,16 +307,7 @@ const normalizeSettings = (settings: Partial<Settings>): Settings => ({
 });
 
 const loadSettingsFromLocalStorage = (): Settings => {
-  const raw = readLocalStorageItem(STORAGE_KEY);
-  if (!raw) {
-    return defaultSettings;
-  }
-
-  try {
-    return normalizeSettings(JSON.parse(raw) as Partial<Settings>);
-  } catch {
-    return defaultSettings;
-  }
+  return normalizeSettings(syncStores.settings.load<Partial<Settings>>(defaultSyncedSettings));
 };
 
 const loadSettingsFromDesktopBackup = async (): Promise<Settings | null> => {
@@ -280,7 +322,9 @@ const loadSettingsFromDesktopBackup = async (): Promise<Settings | null> => {
       exportFolder: normalized.exportFolder,
       workspaceExportStartDate: normalized.workspaceExportStartDate,
       workspaceExportEndDate: normalized.workspaceExportEndDate,
-      workspaceExportSelectedDates: normalized.workspaceExportSelectedDates
+      workspaceExportSelectedDates: normalized.workspaceExportSelectedDates,
+      workspaceTransferLastExportedAt: normalized.workspaceTransferLastExportedAt,
+      workspaceTransferLastImportedAt: normalized.workspaceTransferLastImportedAt
     });
     writeLocalStorageItem(STORAGE_KEY, JSON.stringify(toSyncedSettings(normalized)), {
       label: "synced settings cache"
@@ -296,7 +340,9 @@ const hasMeaningfulLocalSettings = (settings: Settings, machineSettings: Machine
     machineSettings.exportFolder.trim().length > 0 ||
     machineSettings.workspaceExportStartDate.trim().length > 0 ||
     machineSettings.workspaceExportEndDate.trim().length > 0 ||
-    machineSettings.workspaceExportSelectedDates.length > 0
+    machineSettings.workspaceExportSelectedDates.length > 0 ||
+    machineSettings.workspaceTransferLastExportedAt.trim().length > 0 ||
+    machineSettings.workspaceTransferLastImportedAt.trim().length > 0
   ) {
     return true;
   }
@@ -318,7 +364,9 @@ export const loadSettings = async (): Promise<Settings> => {
       exportFolder: machineSettings.exportFolder,
       workspaceExportStartDate: machineSettings.workspaceExportStartDate,
       workspaceExportEndDate: machineSettings.workspaceExportEndDate,
-      workspaceExportSelectedDates: machineSettings.workspaceExportSelectedDates
+      workspaceExportSelectedDates: machineSettings.workspaceExportSelectedDates,
+      workspaceTransferLastExportedAt: machineSettings.workspaceTransferLastExportedAt,
+      workspaceTransferLastImportedAt: machineSettings.workspaceTransferLastImportedAt
     };
   }
 
@@ -328,7 +376,9 @@ export const loadSettings = async (): Promise<Settings> => {
       exportFolder: machineSettings.exportFolder,
       workspaceExportStartDate: machineSettings.workspaceExportStartDate,
       workspaceExportEndDate: machineSettings.workspaceExportEndDate,
-      workspaceExportSelectedDates: machineSettings.workspaceExportSelectedDates
+      workspaceExportSelectedDates: machineSettings.workspaceExportSelectedDates,
+      workspaceTransferLastExportedAt: machineSettings.workspaceTransferLastExportedAt,
+      workspaceTransferLastImportedAt: machineSettings.workspaceTransferLastImportedAt
     };
   }
 
@@ -338,7 +388,9 @@ export const loadSettings = async (): Promise<Settings> => {
       exportFolder: machineSettings.exportFolder,
       workspaceExportStartDate: machineSettings.workspaceExportStartDate,
       workspaceExportEndDate: machineSettings.workspaceExportEndDate,
-      workspaceExportSelectedDates: machineSettings.workspaceExportSelectedDates
+      workspaceExportSelectedDates: machineSettings.workspaceExportSelectedDates,
+      workspaceTransferLastExportedAt: machineSettings.workspaceTransferLastExportedAt,
+      workspaceTransferLastImportedAt: machineSettings.workspaceTransferLastImportedAt
     };
   }
 
@@ -352,7 +404,11 @@ export const loadSettings = async (): Promise<Settings> => {
       workspaceExportSelectedDates:
         desktopSettings.workspaceExportSelectedDates.length > 0
           ? desktopSettings.workspaceExportSelectedDates
-          : machineSettings.workspaceExportSelectedDates
+          : machineSettings.workspaceExportSelectedDates,
+      workspaceTransferLastExportedAt:
+        desktopSettings.workspaceTransferLastExportedAt || machineSettings.workspaceTransferLastExportedAt,
+      workspaceTransferLastImportedAt:
+        desktopSettings.workspaceTransferLastImportedAt || machineSettings.workspaceTransferLastImportedAt
     };
   }
 
@@ -361,7 +417,9 @@ export const loadSettings = async (): Promise<Settings> => {
     exportFolder: machineSettings.exportFolder,
     workspaceExportStartDate: machineSettings.workspaceExportStartDate,
     workspaceExportEndDate: machineSettings.workspaceExportEndDate,
-    workspaceExportSelectedDates: machineSettings.workspaceExportSelectedDates
+    workspaceExportSelectedDates: machineSettings.workspaceExportSelectedDates,
+    workspaceTransferLastExportedAt: machineSettings.workspaceTransferLastExportedAt,
+    workspaceTransferLastImportedAt: machineSettings.workspaceTransferLastImportedAt
   };
 };
 
@@ -370,7 +428,9 @@ export const saveSettings = async (settings: Settings): Promise<void> => {
     exportFolder: settings.exportFolder,
     workspaceExportStartDate: settings.workspaceExportStartDate,
     workspaceExportEndDate: settings.workspaceExportEndDate,
-    workspaceExportSelectedDates: settings.workspaceExportSelectedDates
+    workspaceExportSelectedDates: settings.workspaceExportSelectedDates,
+    workspaceTransferLastExportedAt: settings.workspaceTransferLastExportedAt,
+    workspaceTransferLastImportedAt: settings.workspaceTransferLastImportedAt
   });
   const syncPromise = syncStores.settings.save(toSyncedSettings(settings));
 

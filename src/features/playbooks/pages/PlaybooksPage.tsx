@@ -51,6 +51,15 @@ interface PlaybookCardData {
   searchText: string;
 }
 
+interface FilteredPlaybookCardData extends PlaybookCardData {
+  filteredTrades: GroupedTrade[];
+  filteredSummary: ReturnType<typeof getTradeSummary>;
+  filteredTopSymbols: string[];
+  filteredUniqueSymbolCount: number;
+  filteredAverageWinner: number;
+  filteredAverageLoser: number;
+}
+
 interface TaggedPlaybookChartData {
   id: string;
   screenshotUrl: string;
@@ -164,8 +173,18 @@ const formatLinkedTradeLabel = (trade: GroupedTrade): string => {
 };
 
 const normalizePlaybookName = (value: string): string => value.trim().toLowerCase();
+const normalizeTickerValue = (value: string): string => value.trim().toUpperCase();
 const toSafeText = (value: unknown): string => (typeof value === "string" ? value : "");
 const toSafeArray = <T,>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
+
+const filterTradesByTicker = (trades: GroupedTrade[], ticker: string): GroupedTrade[] => {
+  const normalizedTicker = normalizeTickerValue(ticker);
+  if (!normalizedTicker || normalizedTicker === "ALL") {
+    return trades;
+  }
+
+  return trades.filter((trade) => normalizeTickerValue(toSafeText(trade.symbol)) === normalizedTicker);
+};
 
 const toTradeLinkKey = (tradeId: string, tradeDate: string): string =>
   tradeId && tradeDate ? `${tradeId}${TRADE_LINK_SEPARATOR}${tradeDate}` : "";
@@ -753,44 +772,65 @@ export const PlaybooksPage = ({
   );
 
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
-  const filteredPlaybookCards = useMemo(
+  const filteredPlaybookCards = useMemo<FilteredPlaybookCardData[]>(
     () =>
-      playbookCardsInWindow.filter((entry) => {
-        if (statusFilter !== "all" && entry.status !== statusFilter) {
-          return false;
-        }
+      playbookCardsInWindow
+        .map((entry) => {
+          const filteredTrades = filterTradesByTicker(entry.trades, tickerFilter);
+          const filteredSymbols = Array.from(
+            new Set(
+              filteredTrades
+                .map((trade) => toSafeText(trade.symbol).trim())
+                .filter((symbol) => symbol.length > 0)
+            )
+          );
 
-        if (tickerFilter !== "all" && !entry.trades.some((trade) => trade.symbol === tickerFilter)) {
-          return false;
-        }
+          return {
+            ...entry,
+            filteredTrades,
+            filteredSummary: getTradeSummary(filteredTrades),
+            filteredTopSymbols: getTopSymbols(filteredTrades),
+            filteredUniqueSymbolCount: filteredSymbols.length,
+            filteredAverageWinner: getAverageWinner(filteredTrades),
+            filteredAverageLoser: getAverageLoser(filteredTrades)
+          };
+        })
+        .filter((entry) => {
+          if (statusFilter !== "all" && entry.status !== statusFilter) {
+            return false;
+          }
 
-        if (
-          setupTypeFilter !== "all" &&
-          !entry.setupTypes.some(
-            (setupType) => normalizePlaybookName(setupType) === normalizePlaybookName(setupTypeFilter)
-          )
-        ) {
-          return false;
-        }
+          if (tickerFilter !== "all" && entry.filteredTrades.length === 0) {
+            return false;
+          }
 
-        if (confidenceFilter !== "all" && entry.confidence !== confidenceFilter) {
-          return false;
-        }
+          if (
+            setupTypeFilter !== "all" &&
+            !entry.setupTypes.some(
+              (setupType) => normalizePlaybookName(setupType) === normalizePlaybookName(setupTypeFilter)
+            )
+          ) {
+            return false;
+          }
 
-        if (netPnlFilter === "positive" && entry.summary.totalNetPnl <= 0) {
-          return false;
-        }
+          if (confidenceFilter !== "all" && entry.confidence !== confidenceFilter) {
+            return false;
+          }
 
-        if (netPnlFilter === "negative" && entry.summary.totalNetPnl >= 0) {
-          return false;
-        }
+          if (netPnlFilter === "positive" && entry.filteredSummary.totalNetPnl <= 0) {
+            return false;
+          }
 
-        if (!normalizedSearchQuery) {
-          return true;
-        }
+          if (netPnlFilter === "negative" && entry.filteredSummary.totalNetPnl >= 0) {
+            return false;
+          }
 
-        return entry.searchText.includes(normalizedSearchQuery);
-      }),
+          if (!normalizedSearchQuery) {
+            return true;
+          }
+
+          return entry.searchText.includes(normalizedSearchQuery);
+        }),
     [
       playbookCardsInWindow,
       statusFilter,
@@ -803,7 +843,7 @@ export const PlaybooksPage = ({
   );
 
   const totalTaggedTrades = useMemo(
-    () => filteredPlaybookCards.reduce((sum, entry) => sum + entry.trades.length, 0),
+    () => filteredPlaybookCards.reduce((sum, entry) => sum + entry.filteredTrades.length, 0),
     [filteredPlaybookCards]
   );
 
@@ -816,27 +856,27 @@ export const PlaybooksPage = ({
   );
 
   const playbooksWithTrades = useMemo(
-    () => filteredPlaybookCards.filter((entry) => entry.trades.length > 0),
+    () => filteredPlaybookCards.filter((entry) => entry.filteredTrades.length > 0),
     [filteredPlaybookCards]
   );
 
   const heroTradesInWindow = useMemo(
-    () => playbooksWithTrades.reduce((sum, entry) => sum + entry.trades.length, 0),
+    () => playbooksWithTrades.reduce((sum, entry) => sum + entry.filteredTrades.length, 0),
     [playbooksWithTrades]
   );
 
   const heroWinsInWindow = useMemo(
-    () => playbooksWithTrades.reduce((sum, entry) => sum + entry.summary.winCount, 0),
+    () => playbooksWithTrades.reduce((sum, entry) => sum + entry.filteredSummary.winCount, 0),
     [playbooksWithTrades]
   );
 
   const heroLossesInWindow = useMemo(
-    () => playbooksWithTrades.reduce((sum, entry) => sum + entry.summary.lossCount, 0),
+    () => playbooksWithTrades.reduce((sum, entry) => sum + entry.filteredSummary.lossCount, 0),
     [playbooksWithTrades]
   );
 
   const heroNetPnlInWindow = useMemo(
-    () => playbooksWithTrades.reduce((sum, entry) => sum + entry.summary.totalNetPnl, 0),
+    () => playbooksWithTrades.reduce((sum, entry) => sum + entry.filteredSummary.totalNetPnl, 0),
     [playbooksWithTrades]
   );
 
@@ -852,12 +892,12 @@ export const PlaybooksPage = ({
     }
 
     return [...playbooksWithTrades].sort((left, right) => {
-      const pnlCompare = right.summary.totalNetPnl - left.summary.totalNetPnl;
+      const pnlCompare = right.filteredSummary.totalNetPnl - left.filteredSummary.totalNetPnl;
       if (pnlCompare !== 0) {
         return pnlCompare;
       }
 
-      const tradeCompare = right.trades.length - left.trades.length;
+      const tradeCompare = right.filteredTrades.length - left.filteredTrades.length;
       if (tradeCompare !== 0) {
         return tradeCompare;
       }
@@ -872,12 +912,12 @@ export const PlaybooksPage = ({
     }
 
     return [...playbooksWithTrades].sort((left, right) => {
-      const tradeCompare = right.trades.length - left.trades.length;
+      const tradeCompare = right.filteredTrades.length - left.filteredTrades.length;
       if (tradeCompare !== 0) {
         return tradeCompare;
       }
 
-      const pnlCompare = right.summary.totalNetPnl - left.summary.totalNetPnl;
+      const pnlCompare = right.filteredSummary.totalNetPnl - left.filteredSummary.totalNetPnl;
       if (pnlCompare !== 0) {
         return pnlCompare;
       }
@@ -890,13 +930,13 @@ export const PlaybooksPage = ({
     ? bestPlaybook.playbook.name
     : "No playbook data";
   const bestPlaybookMetaLabel = bestPlaybook
-    ? `${formatSignedMoney(bestPlaybook.summary.totalNetPnl)} net`
+    ? `${formatSignedMoney(bestPlaybook.filteredSummary.totalNetPnl)} net`
     : "Tag trades to surface leaders";
   const mostTradedPlaybookLabel = mostTradedPlaybook
     ? mostTradedPlaybook.playbook.name
     : "No playbook data";
   const mostTradedPlaybookMetaLabel = mostTradedPlaybook
-    ? `${mostTradedPlaybook.trades.length} trade${mostTradedPlaybook.trades.length === 1 ? "" : "s"} tagged`
+    ? `${mostTradedPlaybook.filteredTrades.length} trade${mostTradedPlaybook.filteredTrades.length === 1 ? "" : "s"} tagged`
     : "Tag trades to surface leaders";
 
   const sortedPlaybookCards = useMemo(() => {
@@ -906,7 +946,7 @@ export const PlaybooksPage = ({
         return updatedCompare;
       }
 
-      const tradeCompare = right.trades.length - left.trades.length;
+      const tradeCompare = right.filteredTrades.length - left.filteredTrades.length;
       if (tradeCompare !== 0) {
         return tradeCompare;
       }
@@ -1065,7 +1105,7 @@ export const PlaybooksPage = ({
               <strong>{bestPlaybookLabel}</strong>
               <small
                 className={
-                  bestPlaybook ? getSignedValueClassName(bestPlaybook.summary.totalNetPnl) : undefined
+                  bestPlaybook ? getSignedValueClassName(bestPlaybook.filteredSummary.totalNetPnl) : undefined
                 }
               >
                 {bestPlaybookMetaLabel}
@@ -1177,10 +1217,10 @@ export const PlaybooksPage = ({
               <tbody>
                 {sortedPlaybookCards.length > 0 ? (
                   sortedPlaybookCards.map((entry) => {
-                    const { playbook, trades: matchedTrades, summary } = entry;
+                    const { playbook, filteredTrades, filteredSummary } = entry;
                     const overflowSymbols = Math.max(
                       0,
-                      entry.uniqueSymbolCount - entry.topSymbols.length
+                      entry.filteredUniqueSymbolCount - entry.filteredTopSymbols.length
                     );
 
                     return (
@@ -1216,22 +1256,22 @@ export const PlaybooksPage = ({
                             {entry.confidence}
                           </span>
                         </td>
-                        <td>{matchedTrades.length}</td>
-                        <td>{summary.totalTrades > 0 ? `${summary.winRate.toFixed(1)}%` : "-"}</td>
+                        <td>{filteredTrades.length}</td>
+                        <td>{filteredSummary.totalTrades > 0 ? `${filteredSummary.winRate.toFixed(1)}%` : "-"}</td>
                         <td
-                          className={summary.totalTrades > 0 ? getSignedValueClassName(summary.totalNetPnl) : ""}
+                          className={filteredSummary.totalTrades > 0 ? getSignedValueClassName(filteredSummary.totalNetPnl) : ""}
                         >
-                          {summary.totalTrades > 0 ? formatSignedMoney(summary.totalNetPnl) : "-"}
+                          {filteredSummary.totalTrades > 0 ? formatSignedMoney(filteredSummary.totalNetPnl) : "-"}
                         </td>
                         <td>
                           {getAverageWinnerLoserLabel(
-                            entry.averageWinner,
-                            entry.averageLoser,
-                            matchedTrades.length
+                            entry.filteredAverageWinner,
+                            entry.filteredAverageLoser,
+                            filteredTrades.length
                           )}
                         </td>
                         <td className="playbook-symbol-cell">
-                          <SymbolPills symbols={entry.topSymbols} overflowCount={overflowSymbols} />
+                          <SymbolPills symbols={entry.filteredTopSymbols} overflowCount={overflowSymbols} />
                         </td>
                         <td>{formatUpdatedAt(playbook.updatedAt)}</td>
                       </tr>
@@ -1253,18 +1293,19 @@ export const PlaybooksPage = ({
       </Shell>
     );
   }
-  const summary = getTradeSummary(selectedPlaybook.trades);
-  const symbolCount = new Set(selectedPlaybook.trades.map((trade) => trade.symbol)).size;
-  const topSymbols = getTopSymbols(selectedPlaybook.trades);
-  const averageWinner = getAverageWinner(selectedPlaybook.trades);
-  const averageLoser = getAverageLoser(selectedPlaybook.trades);
+  const scopedSelectedTrades = filterTradesByTicker(selectedPlaybook.trades, tickerFilter);
+  const summary = getTradeSummary(scopedSelectedTrades);
+  const symbolCount = new Set(scopedSelectedTrades.map((trade) => trade.symbol)).size;
+  const topSymbols = getTopSymbols(scopedSelectedTrades);
+  const averageWinner = getAverageWinner(scopedSelectedTrades);
+  const averageLoser = getAverageLoser(scopedSelectedTrades);
   const recentMatchLabel =
-    selectedPlaybook.trades.length > 0
-      ? ([...selectedPlaybook.trades].sort(
+    scopedSelectedTrades.length > 0
+      ? ([...scopedSelectedTrades].sort(
           (left, right) => toSafeText(right.tradeDate).localeCompare(toSafeText(left.tradeDate))
         )[0]?.tradeDate ?? "No matches yet")
       : "No matches yet";
-  const taggedTrades = [...selectedPlaybook.trades]
+  const taggedTrades = [...scopedSelectedTrades]
     .sort(
       (left, right) =>
         toSafeText(right.tradeDate).localeCompare(toSafeText(left.tradeDate)) ||
@@ -1314,6 +1355,7 @@ export const PlaybooksPage = ({
             {selectedPlaybook.confidence}
           </span>
           <span className="playbook-meta-pill">Setup: {selectedPlaybook.setupType}</span>
+          {tickerFilter !== "all" ? <span className="playbook-meta-pill">Ticker: {tickerFilter}</span> : null}
           <span className="playbook-meta-pill">
             Updated: {formatUpdatedAt(selectedPlaybook.playbook.updatedAt)}
           </span>
@@ -1658,7 +1700,7 @@ export const PlaybooksPage = ({
         ) : (
           <APlusExampleLibrary
             playbook={selectedPlaybook.playbook}
-            matchedTrades={selectedPlaybook.trades}
+            matchedTrades={scopedSelectedTrades}
             taggedCharts={taggedCharts}
             onSelectTrade={onSelectTrade}
             onExpandImage={setExpandedScreenshotUrl}

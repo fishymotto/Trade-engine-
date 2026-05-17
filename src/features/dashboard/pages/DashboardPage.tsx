@@ -24,6 +24,7 @@ import {
   getTradeSummary,
   getVisibleMonthNavigation
 } from "../../../lib/analytics/tradeAnalytics";
+import { getTradePlaybookOptions, tradeHasPlaybook } from "../../../lib/trades/playbookFilters";
 import { getTickerIcon, getTickerSector } from "../../../lib/tickers/tickerIcons";
 import type { GroupedTrade } from "../../../types/trade";
 
@@ -353,14 +354,7 @@ export const DashboardPage = ({
   );
 
   const playbookOptions = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          trades
-            .map((trade) => trade.setups[0] ?? "")
-            .filter((value) => value.trim().length > 0)
-        )
-      ).sort((left, right) => left.localeCompare(right)),
+    () => getTradePlaybookOptions(trades),
     [trades]
   );
 
@@ -405,7 +399,7 @@ export const DashboardPage = ({
           return false;
         }
 
-        if (selectedPlaybookFilter !== "all" && (trade.setups[0] ?? "") !== selectedPlaybookFilter) {
+        if (selectedPlaybookFilter !== "all" && !tradeHasPlaybook(trade, selectedPlaybookFilter)) {
           return false;
         }
 
@@ -445,7 +439,7 @@ export const DashboardPage = ({
   const attributeFilteredTrades = useMemo(
     () =>
       trades.filter((trade) => {
-        if (selectedPlaybookFilter !== "all" && (trade.setups[0] ?? "") !== selectedPlaybookFilter) {
+        if (selectedPlaybookFilter !== "all" && !tradeHasPlaybook(trade, selectedPlaybookFilter)) {
           return false;
         }
 
@@ -665,7 +659,7 @@ export const DashboardPage = ({
           <section className="trade-view-filter-panel page-hero-review-slice-embedded">
             <div className="trade-view-filter-header">
               <div className="panel-header">
-                <WorkspaceIcon icon="filter" alt="Dashboard filters icon" className="panel-header-icon" />
+                <WorkspaceIcon icon="review-slice" alt="Review slice icon" className="panel-header-icon" />
                 <h2>Review Slice</h2>
               </div>
               <button type="button" className="mini-action" onClick={clearFilters}>
@@ -906,7 +900,7 @@ export const DashboardPage = ({
         <article className="placeholder-panel analytics-panel month-browser-panel">
           <div className="calendar-toolbar">
             <div className="panel-header">
-              <WorkspaceIcon icon="dashboard" alt="Month browser icon" className="panel-header-icon" />
+              <WorkspaceIcon icon="month-browser" alt="Month browser icon" className="panel-header-icon" />
               <h2>{formatMonthLabel(visibleMonthKey)}</h2>
             </div>
             <div className="calendar-toolbar-actions">
@@ -1033,6 +1027,7 @@ export const DashboardPage = ({
                 {selectedDayTrades.map((trade) => {
                   const tickerIcon = getTickerIcon(trade.symbol);
                   const tickerSector = getTickerSector(trade.symbol);
+                  const primaryPlaybook = trade.setups.find((setup) => setup.trim().length > 0) ?? "";
 
                   return (
                   <button
@@ -1045,7 +1040,12 @@ export const DashboardPage = ({
                     }`}
                     onClick={() => onSelectTrade?.(trade.id, trade.tradeDate)}
                   >
-                    <strong>{trade.name}</strong>
+                    <div className="selected-session-card-top">
+                      <strong>{trade.name}</strong>
+                      <strong className={trade.netPnlUsd >= 0 ? "selected-session-pnl-positive" : "selected-session-pnl-negative"}>
+                        {formatSignedMoney(trade.netPnlUsd)}
+                      </strong>
+                    </div>
                     <span className="selected-session-symbol-line">
                       {tickerIcon ? (
                         <img
@@ -1131,9 +1131,9 @@ export const DashboardPage = ({
           </div>
           <AnalyticsTable
             rows={hourlyBreakdown}
-            emptyMessage="Save sessions to see entry-hour performance."
+            emptyMessage="Save sessions to see 30-minute performance."
             columns={[
-              { key: "label", label: "Hour", render: (row) => row.label },
+              { key: "label", label: "30 Min", render: (row) => row.label },
               { key: "trades", label: "Trades", render: (row) => row.trades, align: "right" },
               { key: "winRate", label: "Win Rate", render: (row) => `${row.winRate.toFixed(1)}%`, align: "right" },
               {
@@ -1192,7 +1192,7 @@ export const DashboardPage = ({
         <article className="placeholder-panel analytics-panel">
           <div className="panel-header">
             <WorkspaceIcon icon="money" alt="Hourly pnl icon" className="panel-header-icon" />
-            <h2>Hourly P&L</h2>
+            <h2>30-Min P&L</h2>
           </div>
           {hourlyBreakdown.length > 0 ? (
             <div className="hourly-pnl-chart">
@@ -1201,7 +1201,9 @@ export const DashboardPage = ({
                   <span className="hourly-pnl-label">{row.label}</span>
                   <div className="hourly-pnl-track">
                     <div
-                      className={`hourly-pnl-bar ${row.netPnl >= 0 ? "hourly-pnl-bar-positive" : "hourly-pnl-bar-negative"}`}
+                      className={`hourly-pnl-bar hourly-pnl-bar-primary ${
+                        row.netPnl >= 0 ? "hourly-pnl-bar-positive" : "hourly-pnl-bar-negative"
+                      }`}
                       style={{ width: `${(Math.abs(row.netPnl) / maxHourlyMagnitude) * 100}%` }}
                     />
                   </div>
@@ -1210,7 +1212,7 @@ export const DashboardPage = ({
               ))}
             </div>
           ) : (
-            <div className="empty-state">Save sessions to see entry-hour P&L bars.</div>
+            <div className="empty-state">Save sessions to see 30-minute P&L bars.</div>
           )}
         </article>
       </section>

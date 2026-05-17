@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { authService, type AuthUser } from '../lib/auth';
+import { OFFLINE_WORKSPACE_USER, authService, isSupabaseConfigured, type AuthUser } from '../lib/auth';
 
 interface AuthModalProps {
   externalError?: string | null;
@@ -14,6 +14,31 @@ export const AuthModal = ({ externalError = null, onAuthenticated }: AuthModalPr
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+
+  if (!isSupabaseConfigured) {
+    return (
+      <div className="auth-modal">
+        <div className="auth-card">
+          <h1>Offline Workspace</h1>
+          <p className="auth-subtitle">
+            Trade Engine saves locally on this computer. Use Send Workspace and Receive Workspace on the Imports page
+            to move your journal data to another device.
+          </p>
+
+          <div className="auth-info">
+            Remote account sync is disabled for this build. Trades, notes, tags, filters, and settings stay in this
+            workspace until you export or transfer them.
+          </div>
+
+          {externalError ? <div className="auth-error">{externalError}</div> : null}
+
+          <button type="button" className="auth-submit" onClick={() => void onAuthenticated(OFFLINE_WORKSPACE_USER)}>
+            Open Offline Workspace
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -48,18 +73,14 @@ export const AuthModal = ({ externalError = null, onAuthenticated }: AuthModalPr
   return (
     <div className="auth-modal">
       <div className="auth-card">
-        <h1>{isSignup ? 'Create Account' : 'Sign In'}</h1>
+        <h1>{isSignup ? 'Create Sync Account' : 'Sign In'}</h1>
         <p className="auth-subtitle">
           {isSignup
-            ? 'Join Trade Engine to sync your data across devices'
-            : 'Access your trades and journals from any device'}
+            ? 'Trade Engine already saves locally. Create a sync account only if you explicitly want remote sync.'
+            : 'Trade Engine is running in local-first mode. Sign in only if you intentionally enabled remote sync.'}
         </p>
 
-        {success && (
-          <div className="success-message">
-            ✓ Account created! Sign in with your email and password.
-          </div>
-        )}
+        {success ? <div className="success-message">Account created. Sign in with your email and password.</div> : null}
 
         <form onSubmit={handleSubmit}>
           <div className="form-group">
@@ -75,7 +96,7 @@ export const AuthModal = ({ externalError = null, onAuthenticated }: AuthModalPr
             />
           </div>
 
-          {isSignup && (
+          {isSignup ? (
             <div className="form-group">
               <label htmlFor="username">Username (optional)</label>
               <input
@@ -87,7 +108,7 @@ export const AuthModal = ({ externalError = null, onAuthenticated }: AuthModalPr
                 disabled={loading}
               />
             </div>
-          )}
+          ) : null}
 
           <div className="form-group">
             <label htmlFor="password">Password</label>
@@ -103,17 +124,15 @@ export const AuthModal = ({ externalError = null, onAuthenticated }: AuthModalPr
             />
           </div>
 
-          {(error || externalError) && <div className="auth-error">{error || externalError}</div>}
+          {error || externalError ? <div className="auth-error">{error || externalError}</div> : null}
 
           <button type="submit" disabled={loading} className="auth-submit">
-            {loading ? 'Loading...' : isSignup ? 'Create Account' : 'Sign In'}
+            {loading ? 'Loading...' : isSignup ? 'Create Sync Account' : 'Sign In'}
           </button>
         </form>
 
         <div className="auth-toggle">
-          <span>
-            {isSignup ? 'Already have an account?' : "Don't have an account?"}
-          </span>
+          <span>{isSignup ? 'Already have a sync account?' : 'Need a sync account?'}</span>
           <button
             type="button"
             onClick={() => {
@@ -124,7 +143,7 @@ export const AuthModal = ({ externalError = null, onAuthenticated }: AuthModalPr
             disabled={loading}
             className="auth-toggle-btn"
           >
-            {isSignup ? 'Sign In' : 'Sign Up'}
+            {isSignup ? 'Sign In' : 'Create One'}
           </button>
         </div>
       </div>

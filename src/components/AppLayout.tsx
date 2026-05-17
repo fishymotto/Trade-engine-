@@ -19,7 +19,7 @@ export const AppLayout = ({ activeRoute, navItems, onNavigate, accountLabel, onS
       <header className="top-nav">
         <div className="brand-lockup">
           <span className="brand-pill">Trade Engine</span>
-          <span className="brand-subtitle">Trading workspace</span>
+          <span className="brand-subtitle">Offline trading workspace</span>
         </div>
         <nav className="top-nav-links" aria-label="Primary">
           {navItems.map((item) => (

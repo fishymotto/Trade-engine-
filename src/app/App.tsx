@@ -1,7 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { AppLayout } from "../components/AppLayout";
-import type { User } from "../lib/auth";
+import { OFFLINE_WORKSPACE_USER, isSupabaseConfigured, type User } from "../lib/auth";
 import { hasJournalDocContent } from "../lib/journal/journalContent";
 import {
   defaultJournalChecklistTemplates,
@@ -47,14 +47,21 @@ import { createTradeTagActions } from "../lib/trades/tradeTagActions";
 import {
   loadWorkspaceState,
   recoverWorkspaceStateFromDesktopBackup,
-  saveWorkspaceState
+  saveWorkspaceState,
+  type WorkspaceState
 } from "../lib/workspace/workspaceStore";
 import { recoverHeadlinesFromDesktopBackup } from "../lib/headlines/headlineStore";
-import { defaultSettings, loadSettings, saveSettings } from "../lib/settings/settingsStore";
+import {
+  defaultSettings,
+  defaultSyncedSettings,
+  loadSettings,
+  saveSettings,
+  toSyncedSettings
+} from "../lib/settings/settingsStore";
 import { useDebouncedSave } from "../lib/hooks/useDebouncedSave";
 import { recoverReviewTemplatesFromDesktopBackup } from "../lib/review/reviewTemplateStore";
 import { recoverSelectOptionAdditionsFromDesktopBackup } from "../lib/select/selectOptionAdditionsStore";
-import { resetAllSyncStoreMemory } from "../lib/sync/syncStore";
+import { resetAllSyncStoreMemory, syncStores } from "../lib/sync/syncStore";
 import { requestFlushDebouncedSaves } from "../lib/sync/pendingSaveFlush";
 import { setUserIdForSync } from "../lib/sync/userDataSync";
 import {
@@ -95,12 +102,13 @@ import type {
 const navItems: AppNavItem[] = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard" },
   { id: "trades", label: "Trades", icon: "trades" },
+  { id: "trade-database", label: "Database", icon: "astronaut" },
   { id: "journal", label: "Journal", icon: "journal" },
   { id: "library", label: "Library", icon: "library" },
   { id: "reports", label: "Reports", icon: "reports" },
   { id: "import", label: "Imports", icon: "import" },
   { id: "data", label: "Data", icon: "data" },
-  { id: "settings", label: "Settings", icon: "filter" }
+  { id: "settings", label: "Settings", icon: "settings" }
 ];
 
 const DashboardPage = lazy(() =>
@@ -108,6 +116,9 @@ const DashboardPage = lazy(() =>
 );
 const TradesPage = lazy(() =>
   import("../features/grouping/pages/TradesPage").then((module) => ({ default: module.TradesPage }))
+);
+const TradeDatabasePage = lazy(() =>
+  import("../features/grouping/pages/TradeDatabasePage").then((module) => ({ default: module.TradeDatabasePage }))
 );
 const JournalPage = lazy(() =>
   import("../features/journal/pages/JournalPage").then((module) => ({ default: module.JournalPage }))
@@ -134,13 +145,6 @@ const createExportFileName = (): string => {
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");
   return `notion_ready_${year}-${month}-${day}.csv`;
-};
-
-const LOCAL_WORKSPACE_USER: User = {
-  id: "local-workspace",
-  email: "",
-  username: "Local Workspace",
-  isAdmin: false,
 };
 
 const toErrorMessage = (error: unknown, fallback: string): string => {
@@ -180,6 +184,66 @@ const stableStringify = (value: unknown): string => {
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record).sort();
   return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
+};
+
+const summarizeTradeList = (tradeList: GroupedTrade[]) => ({
+  tradeCount: tradeList.length,
+  tradeDates: Array.from(new Set(tradeList.map((trade) => trade.tradeDate))).sort(),
+  symbols: Array.from(new Set(tradeList.map((trade) => trade.symbol))).sort().slice(0, 12)
+});
+
+const summarizeTradeFilters = (filters: WorkspaceState["tradeFilters"]) => ({
+  tradeDateStart: filters.tradeDateStart,
+  tradeDateEnd: filters.tradeDateEnd,
+  playbook: filters.playbook,
+  symbol: filters.symbol,
+  status: filters.status,
+  game: filters.game,
+  execution: filters.execution
+});
+
+const summarizeWorkspaceState = (state: WorkspaceState) => ({
+  activeRoute: state.activeRoute,
+  fileName: state.fileName,
+  isCurrentImportSaved: state.isCurrentImportSaved,
+  reviewChartInterval: state.reviewChartInterval,
+  dayChartInterval: state.dayChartInterval,
+  selectedJournalPageId: state.selectedJournalPageId,
+  focusedTradeId: state.focusedTradeId,
+  loadedTradeDates: state.loadedTradeDates,
+  loadedTrades: summarizeTradeList(state.loadedTrades),
+  tradeFilters: summarizeTradeFilters(state.tradeFilters)
+});
+
+const summarizeValueForLog = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return {
+      type: "array",
+      length: value.length
+    };
+  }
+
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  if ("activeRoute" in value && "loadedTrades" in value) {
+    return summarizeWorkspaceState(value as WorkspaceState);
+  }
+
+  return {
+    type: "object",
+    keys: Object.keys(value as Record<string, unknown>)
+  };
+};
+
+const logPersistenceEvent = (phase: string, label: string, payload?: unknown) => {
+  if (payload === undefined) {
+    console.debug(`[persistence] ${phase} ${label}`);
+    return;
+  }
+
+  console.debug(`[persistence] ${phase} ${label}`, summarizeValueForLog(payload));
 };
 
 const JOURNAL_EDITOR_DRAFT_STORAGE_PREFIX = "trade-engine-journal-editor-draft::";
@@ -375,6 +439,8 @@ const recoverJournalPagesFromStoredDrafts = (pages: JournalPageRecord[]): Journa
       const draftContent = storedDraft.content;
       const currentSerialized = JSON.stringify(currentContent);
       const draftSerialized = JSON.stringify(draftContent);
+      const draftHasContent = hasJournalDocContent(draftContent);
+      const currentHasContent = hasJournalDocContent(currentContent);
 
       if (currentSerialized === draftSerialized) {
         continue;
@@ -382,7 +448,7 @@ const recoverJournalPagesFromStoredDrafts = (pages: JournalPageRecord[]): Journa
 
       const shouldPromoteDraft =
         draftTimestamp > pageTimestamp + 1000 ||
-        (!hasJournalDocContent(currentContent) && hasJournalDocContent(draftContent));
+        (!currentHasContent && draftHasContent && draftTimestamp >= pageTimestamp - 1000);
 
       if (!shouldPromoteDraft) {
         continue;
@@ -420,8 +486,10 @@ function App() {
   const hasRetriedJournalDesktopRecoveryRef = useRef(false);
   const hasRetriedSessionsDesktopRecoveryRef = useRef(false);
   const hasRetriedTradeTagsDesktopRecoveryRef = useRef(false);
+  const pendingSavePromisesRef = useRef<Set<Promise<boolean>>>(new Set());
   const [authChecked, setAuthChecked] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [hasPendingSaves, setHasPendingSaves] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
   const [journalPagesLoaded, setJournalPagesLoaded] = useState(false);
@@ -463,13 +531,197 @@ function App() {
   const [isCurrentImportSaved, setIsCurrentImportSaved] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("Load one PPro8 Trade Detail CSV file, then export the cleaned CSV.");
+  const [saveWarning, setSaveWarning] = useState<string | null>(null);
   const [, setBootError] = useState<string | null>(null);
   const journalPagesRef = useRef<JournalPageRecord[]>([]);
   journalPagesRef.current = journalPages;
 
   const persistJournalPages = (nextPages: JournalPageRecord[]) => {
+    logPersistenceEvent("edit", "journal-pages", nextPages);
     journalPagesRef.current = nextPages;
     setJournalPages(nextPages);
+  };
+
+  const registerPendingSave = (savePromise: Promise<boolean>) => {
+    pendingSavePromisesRef.current.add(savePromise);
+    setHasPendingSaves(true);
+
+    void savePromise.finally(() => {
+      pendingSavePromisesRef.current.delete(savePromise);
+      setHasPendingSaves(pendingSavePromisesRef.current.size > 0);
+    });
+  };
+
+  const waitForPendingSaves = async () => {
+    const pendingSaves = Array.from(pendingSavePromisesRef.current);
+    if (pendingSaves.length === 0) {
+      return;
+    }
+
+    await Promise.allSettled(pendingSaves);
+  };
+
+  const runTrackedSave = (
+    label: string,
+    payload: unknown,
+    saveTask: () => Promise<void>,
+    getStatus?: () => { dirty: boolean; lastError?: string }
+  ): Promise<boolean> => {
+    logPersistenceEvent("save:queued", label, payload);
+
+      const savePromise = (async () => {
+        try {
+          await saveTask();
+          const status = getStatus?.();
+          if (status?.dirty && isSupabaseConfigured) {
+            const syncWarning = `Saved ${label} locally. Cloud sync is still pending. ${status.lastError || `${label} is still waiting to sync.`}`;
+            console.warn(`[persistence] sync pending for ${label}`, summarizeValueForLog(payload), status.lastError);
+            setSaveWarning(syncWarning);
+            setMessage(syncWarning);
+            return false;
+          }
+
+          logPersistenceEvent("save:success", label, payload);
+          setSaveWarning((current) => (current && current.toLowerCase().includes(label.toLowerCase()) ? null : current));
+          return true;
+      } catch (error) {
+        const errorMessage = toErrorMessage(error, `Save failed for ${label}.`);
+        const warning = `Save failed for ${label}. Your latest edits are still in memory. ${errorMessage}`;
+        console.error(`[persistence] save failed for ${label}`, error, summarizeValueForLog(payload));
+        setSaveWarning(warning);
+        setMessage(warning);
+        return false;
+      }
+    })();
+
+    registerPendingSave(savePromise);
+    return savePromise;
+  };
+
+  const retryFailedSaves = async () => {
+    const retryTasks: Promise<boolean>[] = [];
+
+    if (syncStores.settings.hasDirtyLocalData()) {
+      retryTasks.push(
+        runTrackedSave(
+          "settings retry",
+          settings,
+          () => syncStores.settings.retryDirty(defaultSyncedSettings).then(() => undefined),
+          () => syncStores.settings.getStatus()
+        )
+      );
+    }
+
+    if (syncStores.journalPages.hasDirtyLocalData()) {
+      retryTasks.push(
+        runTrackedSave(
+          "journal pages retry",
+          journalPagesForSave,
+          () => saveJournalPages(journalPagesForSave),
+          () => syncStores.journalPages.getStatus()
+        )
+      );
+    }
+
+    if (syncStores.journalChecklistTemplates.hasDirtyLocalData()) {
+      retryTasks.push(
+        runTrackedSave(
+          "journal templates retry",
+          journalChecklistTemplates,
+          () =>
+            syncStores.journalChecklistTemplates
+              .retryDirty<JournalChecklistTemplates>(journalChecklistTemplates)
+              .then(() => undefined),
+          () => syncStores.journalChecklistTemplates.getStatus()
+        )
+      );
+    }
+
+    if (syncStores.tradeReviews.hasDirtyLocalData()) {
+      retryTasks.push(
+        runTrackedSave(
+          "trade reviews retry",
+          tradeReviews,
+          () => syncStores.tradeReviews.retryDirty<TradeReviewRecord[]>(tradeReviews).then(() => undefined),
+          () => syncStores.tradeReviews.getStatus()
+        )
+      );
+    }
+
+    if (syncStores.tradeTagOptions.hasDirtyLocalData()) {
+      retryTasks.push(
+        runTrackedSave(
+          "trade tag options retry",
+          tradeTagOptions,
+          () =>
+            syncStores.tradeTagOptions.retryDirty<TradeTagOptionsRecord>(tradeTagOptions).then(() => undefined),
+          () => syncStores.tradeTagOptions.getStatus()
+        )
+      );
+    }
+
+    if (syncStores.tradeSessions.hasDirtyLocalData()) {
+      retryTasks.push(
+        runTrackedSave(
+          "trade sessions retry",
+          tradeSessions,
+          () => syncStores.tradeSessions.retryDirty<TradeSessionRecord[]>(tradeSessions).then(() => undefined),
+          () => syncStores.tradeSessions.getStatus()
+        )
+      );
+    }
+
+    if (syncStores.tradeTagOverrides.hasDirtyLocalData()) {
+      retryTasks.push(
+        runTrackedSave(
+          "trade tag overrides retry",
+          tradeTagOverrides,
+          () =>
+            syncStores.tradeTagOverrides
+              .retryDirty<TradeTagOverrideRecord[]>(tradeTagOverrides)
+              .then(() => undefined),
+          () => syncStores.tradeTagOverrides.getStatus()
+        )
+      );
+    }
+
+    if (syncStores.historicalBars.hasDirtyLocalData()) {
+      retryTasks.push(
+        runTrackedSave(
+          "historical bars retry",
+          historicalBarSets,
+          () => syncStores.historicalBars.retryDirty<HistoricalBarSet[]>(historicalBarSets).then(() => undefined),
+          () => syncStores.historicalBars.getStatus()
+        )
+      );
+    }
+
+    if (syncStores.workspaceState.hasDirtyLocalData()) {
+      retryTasks.push(
+        runTrackedSave(
+          "workspace state retry",
+          workspaceStateForSave,
+          () => syncStores.workspaceState.retryDirty<WorkspaceState>(workspaceStateForSave).then(() => undefined),
+          () => syncStores.workspaceState.getStatus()
+        )
+      );
+    }
+
+    if (retryTasks.length === 0) {
+      setSaveWarning(null);
+      setMessage("All saves are already synced.");
+      return;
+    }
+
+    const results = await Promise.allSettled(retryTasks);
+    const failedRetry = results.some(
+      (result) => result.status === "rejected" || (result.status === "fulfilled" && result.value === false)
+    );
+
+    if (!failedRetry) {
+      setSaveWarning(null);
+      setMessage("All pending saves were retried successfully.");
+    }
   };
 
   const hydrateWorkspaceFromStores = async () => {
@@ -478,6 +730,7 @@ function App() {
     const localJournalChecklistTemplates = loadJournalChecklistTemplates();
     const localPlaybooks = loadPlaybooks();
     const localLibraryPages = loadLibraryPages();
+    logPersistenceEvent("load:start", "workspace-state", localWorkspaceState);
     const [
       loadedSettings,
       loadedOptions,
@@ -521,6 +774,13 @@ function App() {
       await Promise.all(sharedStoreRecoveryTasks);
     }
 
+    logPersistenceEvent("load:complete", "settings", loadedSettings);
+    logPersistenceEvent("load:complete", "trade-tag-options", loadedOptions);
+    logPersistenceEvent("load:complete", "trade-tag-overrides", loadedOverrides);
+    logPersistenceEvent("load:complete", "trade-sessions", loadedSessions);
+    logPersistenceEvent("load:complete", "journal-pages", loadedJournalPages);
+    logPersistenceEvent("load:complete", "trade-reviews", loadedTradeReviews);
+
     setSettings(loadedSettings);
     setSettingsLoaded(true);
 
@@ -534,11 +794,23 @@ function App() {
     setTradeSessionsLoaded(true);
 
     const workspaceState = recoveredWorkspaceState ?? localWorkspaceState;
+    logPersistenceEvent("load:complete", "workspace-state", workspaceState);
     setActiveRoute(workspaceState.activeRoute);
     setReviewChartInterval(workspaceState.reviewChartInterval);
     setDayChartInterval(workspaceState.dayChartInterval);
     setFileName(workspaceState.fileName);
+    setTrades(workspaceState.loadedTrades);
     setIsCurrentImportSaved(workspaceState.isCurrentImportSaved);
+    setDashboardTradeDateFilterStart(workspaceState.tradeFilters.tradeDateStart);
+    setDashboardTradeDateFilterEnd(workspaceState.tradeFilters.tradeDateEnd);
+    setDashboardPlaybookFilter(workspaceState.tradeFilters.playbook);
+    setDashboardSymbolFilter(workspaceState.tradeFilters.symbol);
+    setDashboardStatusFilter(workspaceState.tradeFilters.status);
+    setDashboardGameFilter(workspaceState.tradeFilters.game);
+    setDashboardExecutionFilter(workspaceState.tradeFilters.execution);
+    setDashboardSelectedTradeId(workspaceState.focusedTradeId);
+    setDashboardSelectedTradeRequestId(workspaceState.focusedTradeId ? 1 : 0);
+    setSelectedJournalPageId(workspaceState.selectedJournalPageId);
     setWorkspaceLoaded(true);
 
     setHistoricalBarSets(recoveredHistoricalBarSets ?? localHistoricalBarSets);
@@ -565,12 +837,41 @@ function App() {
     () => ({
       activeRoute,
       loadedTradeDates,
+      loadedTrades: trades,
       fileName,
       isCurrentImportSaved,
       reviewChartInterval,
-      dayChartInterval
+      dayChartInterval,
+      selectedJournalPageId,
+      focusedTradeId: dashboardSelectedTradeId,
+      tradeFilters: {
+        tradeDateStart: dashboardTradeDateFilterStart,
+        tradeDateEnd: dashboardTradeDateFilterEnd,
+        playbook: dashboardPlaybookFilter,
+        symbol: dashboardSymbolFilter,
+        status: dashboardStatusFilter,
+        game: dashboardGameFilter,
+        execution: dashboardExecutionFilter
+      }
     }),
-    [activeRoute, dayChartInterval, fileName, isCurrentImportSaved, loadedTradeDates, reviewChartInterval]
+    [
+      activeRoute,
+      dashboardExecutionFilter,
+      dashboardGameFilter,
+      dashboardPlaybookFilter,
+      dashboardSelectedTradeId,
+      dashboardStatusFilter,
+      dashboardSymbolFilter,
+      dashboardTradeDateFilterEnd,
+      dashboardTradeDateFilterStart,
+      dayChartInterval,
+      fileName,
+      isCurrentImportSaved,
+      loadedTradeDates,
+      reviewChartInterval,
+      selectedJournalPageId,
+      trades
+    ]
   );
 
   useEffect(() => {
@@ -587,7 +888,7 @@ function App() {
           return;
         }
 
-        setUser(LOCAL_WORKSPACE_USER);
+        setUser(OFFLINE_WORKSPACE_USER);
         setBootError(null);
       } catch (error) {
         if (cancelled) {
@@ -600,7 +901,7 @@ function App() {
         setMessage(errorMessage);
         setUserIdForSync(undefined);
         resetAllSyncStoreMemory();
-        setUser(LOCAL_WORKSPACE_USER);
+        setUser(OFFLINE_WORKSPACE_USER);
       } finally {
         if (!cancelled) {
           setAuthChecked(true);
@@ -668,11 +969,12 @@ function App() {
     }
 
     hasRestoredWorkspaceRef.current = true;
-    setActiveRoute("dashboard");
-    setMessage(
-      tradeSessions.length > 0
-        ? `Loaded ${tradeSessions.length} saved sessions from the local database. Pick a day from Dashboard or Data to load it into the workspace.`
-        : "Load one PPro8 Trade Detail CSV file, then export the cleaned CSV."
+    setMessage((currentMessage) =>
+      currentMessage.trim().length > 0
+        ? currentMessage
+        : tradeSessions.length > 0
+          ? `Loaded ${tradeSessions.length} saved sessions from the local database. Pick a day from Dashboard or Data to load it into the workspace.`
+          : "Load one PPro8 Trade Detail CSV file, then export the cleaned CSV."
     );
   }, [tradeSessions, tradeSessionsLoaded]);
 
@@ -736,7 +1038,12 @@ function App() {
     settings,
     400,
     (nextSettings) => {
-      void saveSettings(nextSettings);
+      void runTrackedSave(
+        "settings",
+        nextSettings,
+        () => saveSettings(nextSettings),
+        () => syncStores.settings.getStatus()
+      );
     },
     settingsLoaded,
     { skipInitialSave: true }
@@ -746,7 +1053,12 @@ function App() {
     journalPagesForSave,
     900,
     (nextJournalPages) => {
-      void saveJournalPages(nextJournalPages);
+      void runTrackedSave(
+        "journal pages",
+        nextJournalPages,
+        () => saveJournalPages(nextJournalPages),
+        () => syncStores.journalPages.getStatus()
+      );
     },
     journalPagesLoaded,
     { skipInitialSave: true }
@@ -756,7 +1068,12 @@ function App() {
     journalChecklistTemplates,
     600,
     (nextTemplates) => {
-      saveJournalChecklistTemplates(nextTemplates);
+      void runTrackedSave(
+        "journal templates",
+        nextTemplates,
+        () => Promise.resolve(saveJournalChecklistTemplates(nextTemplates)),
+        () => syncStores.journalChecklistTemplates.getStatus()
+      );
     },
     journalChecklistTemplatesLoaded,
     { skipInitialSave: true }
@@ -766,7 +1083,12 @@ function App() {
     tradeReviews,
     700,
     (nextReviews) => {
-      saveTradeReviews(nextReviews);
+      void runTrackedSave(
+        "trade reviews",
+        nextReviews,
+        () => saveTradeReviews(nextReviews),
+        () => syncStores.tradeReviews.getStatus()
+      );
     },
     tradeReviewsLoaded,
     { skipInitialSave: true }
@@ -776,7 +1098,12 @@ function App() {
     tradeTagOptions,
     500,
     (nextOptions) => {
-      void saveTradeTagOptions(nextOptions);
+      void runTrackedSave(
+        "trade tag options",
+        nextOptions,
+        () => saveTradeTagOptions(nextOptions),
+        () => syncStores.tradeTagOptions.getStatus()
+      );
     },
     tradeTagOptionsLoaded,
     { skipInitialSave: true }
@@ -786,7 +1113,12 @@ function App() {
     tradeSessions,
     800,
     (nextTradeSessions) => {
-      void saveTradeSessions(nextTradeSessions);
+      void runTrackedSave(
+        "trade sessions",
+        nextTradeSessions,
+        () => saveTradeSessions(nextTradeSessions),
+        () => syncStores.tradeSessions.getStatus()
+      );
     },
     tradeSessionsLoaded,
     { skipInitialSave: true }
@@ -796,7 +1128,12 @@ function App() {
     tradeTagOverrides,
     700,
     (nextOverrides) => {
-      void saveTradeTagOverrides(nextOverrides);
+      void runTrackedSave(
+        "trade tag overrides",
+        nextOverrides,
+        () => saveTradeTagOverrides(nextOverrides),
+        () => syncStores.tradeTagOverrides.getStatus()
+      );
     },
     tradeTagOverridesLoaded,
     { skipInitialSave: true }
@@ -806,7 +1143,12 @@ function App() {
     historicalBarSets,
     900,
     (nextBarSets) => {
-      saveHistoricalBarSets(nextBarSets);
+      void runTrackedSave(
+        "historical bars",
+        nextBarSets,
+        () => Promise.resolve(saveHistoricalBarSets(nextBarSets)),
+        () => syncStores.historicalBars.getStatus()
+      );
     },
     historicalBarSetsLoaded,
     { skipInitialSave: true }
@@ -816,7 +1158,12 @@ function App() {
     workspaceStateForSave,
     250,
     (nextWorkspaceState) => {
-      saveWorkspaceState(nextWorkspaceState);
+      void runTrackedSave(
+        "workspace state",
+        nextWorkspaceState,
+        () => Promise.resolve(saveWorkspaceState(nextWorkspaceState)),
+        () => syncStores.workspaceState.getStatus()
+      );
     },
     workspaceLoaded,
     { skipInitialSave: true }
@@ -905,6 +1252,7 @@ function App() {
     setAllowedSymbols,
     setHasExecutionProperty,
     setMessage,
+    setSettingsState: setSettings,
     setSyncing,
     hydrateWorkspaceFromStores,
     resetWorkspaceAfterImport,
@@ -944,9 +1292,16 @@ function App() {
     () => resolvedTradeSessions.flatMap((session) => session.trades as EditableTradeRow[]),
     [resolvedTradeSessions]
   );
+  const reportSourceTrades = useMemo(
+    () =>
+      resolvedTrades.length > 0 && !isCurrentImportSaved
+        ? [...resolvedTrades, ...allStoredTrades]
+        : allStoredTrades,
+    [allStoredTrades, isCurrentImportSaved, resolvedTrades]
+  );
   const {
-    updateTradeTag,
-    createTradeTagOption,
+      updateTradeTag,
+      createTradeTagOption,
     renameTradeTagOption,
     deleteTradeTagOption,
     bulkUpdateTradeTags
@@ -967,6 +1322,7 @@ function App() {
       }
 
       const processed = await processTradeFile(file, allowedSymbols, settings);
+      logPersistenceEvent("load:file", file.name, summarizeTradeList(processed.trades));
       setFileName(file.name);
       setTrades(processed.trades);
       setIsCurrentImportSaved(false);
@@ -1012,17 +1368,29 @@ function App() {
         );
 
         if (!keepManualTags) {
-          setTradeTagOverrides((current) =>
-            removeTradeTagOverridesForTradeDates(current, overlappingDates)
+          const nextOverrides = removeTradeTagOverridesForTradeDates(tradeTagOverrides, overlappingDates);
+          logPersistenceEvent("edit", "trade-tag-overrides", nextOverrides);
+          setTradeTagOverrides(nextOverrides);
+          void runTrackedSave(
+            "trade tag overrides",
+            nextOverrides,
+            () => saveTradeTagOverrides(nextOverrides),
+            () => syncStores.tradeTagOverrides.getStatus()
           );
         }
       }
     }
 
-    setTradeSessions((currentSessions) =>
-      mergeTradesIntoSessions(currentSessions, fileName, trades)
-    );
+    const nextTradeSessions = mergeTradesIntoSessions(tradeSessions, fileName, trades);
+    logPersistenceEvent("edit", "trade-sessions", nextTradeSessions);
+    setTradeSessions(nextTradeSessions);
     setIsCurrentImportSaved(true);
+    void runTrackedSave(
+      "trade sessions",
+      nextTradeSessions,
+      () => saveTradeSessions(nextTradeSessions),
+      () => syncStores.tradeSessions.getStatus()
+    );
 
     const dateSummary =
       tradeDates.length === 1 ? tradeDates[0] : `${tradeDates[0]} to ${tradeDates[tradeDates.length - 1]}`;
@@ -1117,6 +1485,7 @@ function App() {
   };
 
   const handleClear = () => {
+    logPersistenceEvent("reset", "loaded-trades", trades);
     setFileName("");
     setTrades([]);
     setIsCurrentImportSaved(false);
@@ -1130,6 +1499,7 @@ function App() {
       return;
     }
 
+    logPersistenceEvent("load:session", tradeDate, summarizeTradeList(session.trades));
     setTrades(session.trades);
     setFileName(session.sourceFileName);
     setIsCurrentImportSaved(true);
@@ -1152,11 +1522,40 @@ function App() {
     }
 
     const tradeIds = new Set(session.trades.map((trade) => trade.id));
+    const nextTradeSessions = tradeSessions.filter((entry) => entry.tradeDate !== tradeDate);
+    const nextTradeTagOverrides = removeTradeTagOverridesForTradeDates(tradeTagOverrides, [tradeDate]);
+    const nextTradeReviews = tradeReviews.filter((review) => !tradeIds.has(review.tradeId));
+    const nextHistoricalBarSets = historicalBarSets.filter((set) => set.tradeDate !== tradeDate);
 
-    setTradeSessions((current) => current.filter((entry) => entry.tradeDate !== tradeDate));
-    setTradeTagOverrides((current) => removeTradeTagOverridesForTradeDates(current, [tradeDate]));
-    setTradeReviews((current) => current.filter((review) => !tradeIds.has(review.tradeId)));
-    setHistoricalBarSets((current) => current.filter((set) => set.tradeDate !== tradeDate));
+    logPersistenceEvent("reset", "trade-session", { tradeDate, tradeIds: Array.from(tradeIds) });
+    setTradeSessions(nextTradeSessions);
+    setTradeTagOverrides(nextTradeTagOverrides);
+    setTradeReviews(nextTradeReviews);
+    setHistoricalBarSets(nextHistoricalBarSets);
+    void runTrackedSave(
+      "trade sessions",
+      nextTradeSessions,
+      () => saveTradeSessions(nextTradeSessions),
+      () => syncStores.tradeSessions.getStatus()
+    );
+    void runTrackedSave(
+      "trade tag overrides",
+      nextTradeTagOverrides,
+      () => saveTradeTagOverrides(nextTradeTagOverrides),
+      () => syncStores.tradeTagOverrides.getStatus()
+    );
+    void runTrackedSave(
+      "trade reviews",
+      nextTradeReviews,
+      () => saveTradeReviews(nextTradeReviews),
+      () => syncStores.tradeReviews.getStatus()
+    );
+    void runTrackedSave(
+      "historical bars",
+      nextHistoricalBarSets,
+      () => Promise.resolve(saveHistoricalBarSets(nextHistoricalBarSets)),
+      () => syncStores.historicalBars.getStatus()
+    );
 
     if (trades.some((trade) => trade.tradeDate === tradeDate)) {
       setTrades([]);
@@ -1225,6 +1624,7 @@ function App() {
 
   const {
     createJournalPage,
+    createJournalPages,
     updateJournalPage,
     updateJournalContent,
     saveJournalChecklistTemplateAs,
@@ -1243,23 +1643,56 @@ function App() {
     tradeId: string,
     updates: Partial<Pick<TradeReviewRecord, "notes" | "chartContext" | "screenshotUrl" | "drawings">>
   ) => {
+    logPersistenceEvent("edit", "trade-review", {
+      tradeId,
+      updatedFields: Object.keys(updates)
+    });
     setTradeReviews((current) => {
       const existing = current.find((review) => review.tradeId === tradeId);
-      const updatedAt = new Date().toISOString();
+      const hasNotesUpdate = updates.notes !== undefined;
+      const hasChartContextUpdate = updates.chartContext !== undefined;
+      const hasScreenshotUpdate = updates.screenshotUrl !== undefined;
+      const hasDrawingsUpdate = updates.drawings !== undefined;
 
       if (!existing) {
+        const nextNotes = updates.notes ?? "";
+        const nextChartContext = updates.chartContext ?? "";
+        const nextScreenshotUrl = updates.screenshotUrl ?? "";
+        const nextDrawings = updates.drawings ?? [];
+
+        if (
+          nextNotes.length === 0 &&
+          nextChartContext.length === 0 &&
+          nextScreenshotUrl.length === 0 &&
+          nextDrawings.length === 0
+        ) {
+          return current;
+        }
+
         return [
           ...current,
           {
             tradeId,
-            notes: updates.notes ?? "",
-            chartContext: updates.chartContext ?? "",
-            screenshotUrl: updates.screenshotUrl ?? "",
-            drawings: updates.drawings ?? [],
-            updatedAt
+            notes: nextNotes,
+            chartContext: nextChartContext,
+            screenshotUrl: nextScreenshotUrl,
+            drawings: nextDrawings,
+            updatedAt: new Date().toISOString()
           }
         ];
       }
+
+      const hasChanges =
+        (hasNotesUpdate && updates.notes !== existing.notes) ||
+        (hasChartContextUpdate && updates.chartContext !== existing.chartContext) ||
+        (hasScreenshotUpdate && updates.screenshotUrl !== existing.screenshotUrl) ||
+        (hasDrawingsUpdate && updates.drawings !== existing.drawings);
+
+      if (!hasChanges) {
+        return current;
+      }
+
+      const updatedAt = new Date().toISOString();
 
       return current.map((review) =>
         review.tradeId === tradeId
@@ -1272,6 +1705,24 @@ function App() {
       );
     });
   };
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!hasPendingSaves && !saveWarning) {
+        return;
+      }
+
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasPendingSaves, saveWarning]);
 
   const renderActivePage = () => {
     switch (activeRoute) {
@@ -1306,20 +1757,24 @@ function App() {
         );
       case "trades":
         return (
-          <TradesPage
-              trades={resolvedTrades}
-              databaseTrades={
-                resolvedTrades.length > 0 && !isCurrentImportSaved
-                  ? [...resolvedTrades, ...allStoredTrades]
-                  : allStoredTrades
-              }
-              externalTradeDateFilterStart={dashboardTradeDateFilterStart}
-              externalTradeDateFilterEnd={dashboardTradeDateFilterEnd}
-              externalPlaybookFilter={dashboardPlaybookFilter}
+            <TradesPage
+                databaseTrades={reportSourceTrades}
+                externalTradeDateFilterStart={dashboardTradeDateFilterStart}
+                externalTradeDateFilterEnd={dashboardTradeDateFilterEnd}
+                externalPlaybookFilter={dashboardPlaybookFilter}
               externalSymbolFilter={dashboardSymbolFilter}
               externalStatusFilter={dashboardStatusFilter}
               externalGameFilter={dashboardGameFilter}
               externalExecutionFilter={dashboardExecutionFilter}
+              onFiltersChange={({ startValue, endValue, playbook, symbol, status, game, execution }) => {
+                setDashboardTradeDateFilterStart(startValue);
+                setDashboardTradeDateFilterEnd(endValue);
+                setDashboardPlaybookFilter(playbook);
+                setDashboardSymbolFilter(symbol);
+                setDashboardStatusFilter(status);
+                setDashboardGameFilter(game);
+                setDashboardExecutionFilter(execution);
+              }}
               externalSelectedTradeId={dashboardSelectedTradeId}
               externalSelectedTradeRequestId={dashboardSelectedTradeRequestId}
               reviews={tradeReviews}
@@ -1337,12 +1792,35 @@ function App() {
               onChangeReviewChartInterval={setReviewChartInterval}
               onChangeDayChartInterval={setDayChartInterval}
               onUpdateTradeTag={updateTradeTag}
-              onBulkUpdateTradeTags={bulkUpdateTradeTags}
               onCreateTradeTagOption={createTradeTagOption}
               onRenameTradeTagOption={renameTradeTagOption}
               onDeleteTradeTagOption={deleteTradeTagOption}
               onClearExternalSelectedTrade={() => setDashboardSelectedTradeId("")}
             />
+        );
+      case "trade-database":
+        return (
+          <TradeDatabasePage
+            trades={reportSourceTrades}
+            tagOptionsByField={activeTradeTagOptionsByField}
+            onSelectTrade={(tradeId, tradeDate) => {
+              setDashboardTradeDateFilterStart(tradeDate);
+              setDashboardTradeDateFilterEnd(tradeDate);
+              setDashboardSelectedTradeId(tradeId);
+              setDashboardSelectedTradeRequestId((current) => current + 1);
+              setDashboardPlaybookFilter("all");
+              setDashboardSymbolFilter("all");
+              setDashboardStatusFilter("all");
+              setDashboardGameFilter("all");
+              setDashboardExecutionFilter("all");
+              handleNavigate("trades");
+            }}
+            onUpdateTradeTag={updateTradeTag}
+            onBulkUpdateTradeTags={bulkUpdateTradeTags}
+            onCreateTradeTagOption={createTradeTagOption}
+            onRenameTradeTagOption={renameTradeTagOption}
+            onDeleteTradeTagOption={deleteTradeTagOption}
+          />
         );
       case "journal":
         return (
@@ -1369,6 +1847,7 @@ function App() {
                 handleNavigate("trades");
               }}
               onCreatePage={createJournalPage}
+              onCreatePages={createJournalPages}
               onUpdatePage={updateJournalPage}
               onUpdateContent={updateJournalContent}
               onSaveChecklistTemplateAs={saveJournalChecklistTemplateAs}
@@ -1447,13 +1926,13 @@ function App() {
             }}
           />
         );
-      case "reports":
-        return (
-          <ReportsPage
-            trades={allStoredTrades}
-            externalTradeDateFilterStart={dashboardTradeDateFilterStart}
-            externalTradeDateFilterEnd={dashboardTradeDateFilterEnd}
-            externalPlaybookFilter={dashboardPlaybookFilter}
+        case "reports":
+          return (
+            <ReportsPage
+              trades={reportSourceTrades}
+              externalTradeDateFilterStart={dashboardTradeDateFilterStart}
+              externalTradeDateFilterEnd={dashboardTradeDateFilterEnd}
+              externalPlaybookFilter={dashboardPlaybookFilter}
             externalSymbolFilter={dashboardSymbolFilter}
             externalStatusFilter={dashboardStatusFilter}
             externalGameFilter={dashboardGameFilter}
@@ -1526,6 +2005,7 @@ function App() {
 
     void (async () => {
       await requestFlushDebouncedSaves();
+      await waitForPendingSaves();
       setActiveRoute(route);
     })();
   };
@@ -1537,7 +2017,7 @@ function App() {
           <div className="page-loading-state">
             <div className="page-loading-orb" aria-hidden="true" />
             <div className="page-loading-copy">
-              <strong>{!authChecked ? "Loading workspace" : "Applying workspace changes"}</strong>
+              <strong>{!authChecked ? "Loading workspace" : "Saving local changes"}</strong>
               <span>Preparing charts, reports, and journal tools.</span>
             </div>
           </div>
@@ -1557,17 +2037,32 @@ function App() {
         }
       >
         {user ? (
-          <AppLayout
-            activeRoute={activeRoute}
-            navItems={navItems}
-            onNavigate={handleNavigate}
-            accountLabel={user.username || "Local Workspace"}
-          >
-            <div key={`${activeRoute}-${workspaceRefreshKey}`}>{renderActivePage()}</div>
-          </AppLayout>
+          <>
+            {saveWarning ? (
+              <div className="status-bar status-bar-warning">
+                <span>{saveWarning}</span>
+                <button type="button" className="mini-action" onClick={() => void retryFailedSaves()}>
+                  Retry Save
+                </button>
+              </div>
+            ) : null}
+            <AppLayout
+              activeRoute={activeRoute}
+              navItems={navItems}
+              onNavigate={handleNavigate}
+              accountLabel={user.username || OFFLINE_WORKSPACE_USER.username}
+            >
+              <div key={`${activeRoute}-${workspaceRefreshKey}`}>{renderActivePage()}</div>
+            </AppLayout>
+          </>
         ) : null}
       </Suspense>
-      {user ? <footer className="status-bar">{message}</footer> : null}
+      {user ? (
+        <footer className="status-bar">
+          {message}
+          {hasPendingSaves ? " Saving changes..." : ""}
+        </footer>
+      ) : null}
     </>
   );
 }

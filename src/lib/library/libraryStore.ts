@@ -69,6 +69,12 @@ export const libraryCollections: LibraryCollectionDefinition[] = [
 const createId = () => `library-${Math.random().toString(36).slice(2, 10)}`;
 
 const nowIso = () => new Date().toISOString();
+const getLocalDateOnlyIsoString = (date = new Date()): string => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
 const SEED_TIMESTAMP = "2026-04-11T00:00:00.000Z";
 
 const TICKER_GROUP_PROPERTY_KEYS = {
@@ -1444,7 +1450,7 @@ export const createLibraryStrongViewRow = (): LibraryPageRecord => {
     status: "Active",
     properties: {
       [STRONG_VIEW_PROPERTY_KEYS.ticker]: defaults.ticker,
-      [STRONG_VIEW_PROPERTY_KEYS.date]: defaults.date,
+      [STRONG_VIEW_PROPERTY_KEYS.date]: getLocalDateOnlyIsoString(),
       [STRONG_VIEW_PROPERTY_KEYS.keyLevelUp]: defaults.keyLevelUp,
       [STRONG_VIEW_PROPERTY_KEYS.keyLevelDown]: defaults.keyLevelDown,
       [STRONG_VIEW_PROPERTY_KEYS.bias]: defaults.bias,

@@ -28,7 +28,7 @@ import {
   type WorkspaceState
 } from "../../../lib/workspace/workspaceStore";
 import {
-  applyWorkspaceTransferBundle,
+  applyWorkspaceTransferPrefixLocalStorage,
   buildAppliedWorkspaceTransferSnapshot,
   collectWorkspaceTransferLocalStorage,
   extractWorkspaceAttachmentPaths,
@@ -134,6 +134,16 @@ const formatAttachmentBytes = (value: number): string => {
 
 const waitForNextTask = (): Promise<void> =>
   new Promise((resolve) => window.setTimeout(resolve, 0));
+
+const waitForNextPaint = (): Promise<void> =>
+  new Promise((resolve) => {
+    if (typeof window === "undefined") {
+      resolve();
+      return;
+    }
+
+    window.requestAnimationFrame(() => resolve());
+  });
 
 const describeWorkspaceAttachmentAudit = (
   result: WorkspaceAttachmentAuditResult,
@@ -242,6 +252,7 @@ interface CreateSettingsPageActionsOptions {
   setAllowedSymbols: (symbols: string[]) => void;
   setHasExecutionProperty: (value: boolean) => void;
   setMessage: (message: string) => void;
+  setSettingsState: (next: Settings | ((current: Settings) => Settings)) => void;
   setSyncing: (syncing: boolean) => void;
   hydrateWorkspaceFromStores: () => Promise<void>;
   resetWorkspaceAfterImport: () => void;
@@ -270,6 +281,7 @@ export const createSettingsPageActions = ({
   setAllowedSymbols,
   setHasExecutionProperty,
   setMessage,
+  setSettingsState,
   setSyncing,
   hydrateWorkspaceFromStores,
   resetWorkspaceAfterImport,
@@ -432,6 +444,7 @@ export const createSettingsPageActions = ({
     }
 
     setSyncing(true);
+    await waitForNextPaint();
     try {
       const result = await loadWorkspaceAttachmentSummary();
       if (!result) {
@@ -456,6 +469,7 @@ export const createSettingsPageActions = ({
     }
 
     setSyncing(true);
+    await waitForNextPaint();
     try {
       const attachmentPaths = await buildWorkspaceAttachmentReferencePaths();
       const auditResult = await loadWorkspaceAttachmentSummary(attachmentPaths);
@@ -503,8 +517,10 @@ export const createSettingsPageActions = ({
     }
 
     setSyncing(true);
+    await waitForNextPaint();
     try {
       await flushWorkspaceToLocalStores();
+      await waitForNextTask();
       const preparedSnapshot = prepareWorkspaceTransferSnapshot(
         buildWorkspaceTransferSnapshot(),
         settings.workspaceExportStartDate,
@@ -512,6 +528,8 @@ export const createSettingsPageActions = ({
         settings.workspaceExportSelectedDates
       );
       const attachmentPaths = extractWorkspaceAttachmentPaths(preparedSnapshot.localStorage);
+      await waitForNextTask();
+      const exportedAt = new Date().toISOString();
       const result = await invoke<WorkspaceTransferExportResult>("export_workspace_bundle", {
         exportFolder: settings.exportFolder,
         fileName: createWorkspaceBundleFileName(
@@ -521,7 +539,7 @@ export const createSettingsPageActions = ({
         ),
         bundle: {
           version: 1,
-          exportedAt: new Date().toISOString(),
+          exportedAt,
           source: "trade-engine-desktop",
           scope: preparedSnapshot.scope,
           startDate: preparedSnapshot.startDate,
@@ -543,6 +561,12 @@ export const createSettingsPageActions = ({
         skippedCount > 0
           ? `Workspace file saved to ${result.savedPath}${scopeLabel}. Included ${result.attachmentCount} attachments and skipped ${skippedCount} missing attachment reference${skippedCount === 1 ? "" : "s"}. Saved API keys were not included.`
           : `Workspace file saved to ${result.savedPath}${scopeLabel}. Included ${result.attachmentCount} attachment${result.attachmentCount === 1 ? "" : "s"}. Saved API keys were not included.`;
+      const nextSettings = {
+        ...settings,
+        workspaceTransferLastExportedAt: exportedAt
+      };
+      setSettingsState(() => nextSettings);
+      await saveSettings(nextSettings);
       setMessage(resultMessage);
       return resultMessage;
     } catch (error) {
@@ -560,6 +584,7 @@ export const createSettingsPageActions = ({
     }
 
     setSyncing(true);
+    await waitForNextPaint();
     try {
       const selectedPath = await invoke<string | null>("pick_workspace_bundle_file");
       if (!selectedPath) {
@@ -577,15 +602,25 @@ export const createSettingsPageActions = ({
       }
 
       await flushWorkspaceToLocalStores();
+      await waitForNextTask();
 
       const result = await invoke<WorkspaceTransferImportResult>("import_workspace_bundle", {
         path: selectedPath
       });
 
       const appliedSnapshot = buildAppliedWorkspaceTransferSnapshot(result.bundle);
+      await waitForNextTask();
       resetAllSyncStoreMemory();
       await persistWorkspaceTransferSnapshotToStores(appliedSnapshot);
-      applyWorkspaceTransferBundle(result.bundle);
+      applyWorkspaceTransferPrefixLocalStorage(appliedSnapshot);
+      const importedAt = new Date().toISOString();
+      const nextSettings = {
+        ...settings,
+        ...toImportedSettings(appliedSnapshot[SETTINGS_STORAGE_KEY], settings),
+        workspaceTransferLastImportedAt: importedAt
+      };
+      setSettingsState(() => nextSettings);
+      await saveSettings(nextSettings);
       resetWorkspaceAfterImport();
       await hydrateWorkspaceFromStores();
       await persistImportedWorkspaceToDesktopBackups();

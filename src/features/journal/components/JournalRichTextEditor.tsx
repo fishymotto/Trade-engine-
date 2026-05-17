@@ -42,6 +42,7 @@ interface JournalRichTextEditorProps {
   taskListColumns?: 1 | 2;
   appearance?: "default" | "notion";
   showBlockActions?: boolean;
+  blockActionsVisibility?: "always" | "focus";
   onImageInsert?: (file: File) => Promise<string | InlineImageInsertResult>;
   draftStorageKey?: string;
   sourceUpdatedAt?: string;
@@ -538,6 +539,7 @@ export const JournalRichTextEditor = ({
   taskListColumns = 1,
   appearance = "default",
   showBlockActions = true,
+  blockActionsVisibility = "always",
   onImageInsert,
   draftStorageKey,
   sourceUpdatedAt
@@ -1117,6 +1119,7 @@ export const JournalRichTextEditor = ({
         appearance === "notion" ? " journal-rich-editor-shell-notion" : ""
       }${autosize ? " journal-rich-editor-shell-autosize" : ""}${
         heightPreset === "short" ? " journal-rich-editor-shell-short" : ""
+      }${showBlockActions && blockActionsVisibility === "focus" ? " journal-rich-editor-shell-block-actions-focus" : ""
       }`}
     >
       {!readOnly ? (

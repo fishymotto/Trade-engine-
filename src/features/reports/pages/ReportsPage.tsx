@@ -21,6 +21,7 @@ import {
   getSharesTradedByDate,
   getTradeSummary
 } from "../../../lib/analytics/tradeAnalytics";
+import { getTradePlaybookOptions, tradeHasPlaybook } from "../../../lib/trades/playbookFilters";
 import type { GroupedTrade } from "../../../types/trade";
 
 interface ReportsPageProps {
@@ -428,14 +429,7 @@ export const ReportsPage = ({
   };
 
   const playbookOptions = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          trades
-            .map((trade) => trade.setups[0] ?? "")
-            .filter((value) => value.trim().length > 0)
-        )
-      ).sort((left, right) => left.localeCompare(right)),
+    () => getTradePlaybookOptions(trades),
     [trades]
   );
   const playbookFilterOptions = useMemo(
@@ -489,7 +483,7 @@ export const ReportsPage = ({
   const attributeFilteredTrades = useMemo(
     () =>
       trades.filter((trade) => {
-        if (selectedPlaybookFilter !== "all" && (trade.setups[0] ?? "") !== selectedPlaybookFilter) {
+        if (selectedPlaybookFilter !== "all" && !tradeHasPlaybook(trade, selectedPlaybookFilter)) {
           return false;
         }
 
@@ -776,7 +770,7 @@ export const ReportsPage = ({
           <section className="trade-view-filter-panel page-hero-review-slice-embedded">
             <div className="trade-view-filter-header">
               <div className="panel-header">
-                <WorkspaceIcon icon="filter" alt="Report filters icon" className="panel-header-icon" />
+                <WorkspaceIcon icon="review-slice" alt="Review slice icon" className="panel-header-icon" />
                 <h2>Review Slice</h2>
               </div>
               <button type="button" className="mini-action" onClick={clearFilters}>
@@ -1308,7 +1302,7 @@ export const ReportsPage = ({
             rows={hourlyBreakdown}
             emptyMessage="Adjust the report filters to populate session breakdowns."
             columns={[
-              { key: "label", label: "Hour", render: (row) => row.label },
+              { key: "label", label: "30 Min", render: (row) => row.label },
               { key: "trades", label: "Trades", render: (row) => row.trades, align: "right" },
               {
                 key: "totalSharesTraded",
@@ -1374,7 +1368,7 @@ export const ReportsPage = ({
         <article className="placeholder-panel analytics-panel">
           <div className="panel-header">
             <WorkspaceIcon icon="money" alt="Hourly pnl icon" className="panel-header-icon" />
-            <h2>Hourly P&amp;L</h2>
+            <h2>30-Min P&amp;L</h2>
             {hasPreviousSlice ? (
               <span className="report-line-chart-readout">
                 {activeSliceLabel} (solid) vs {comparisonSliceLabel} (shadow)
@@ -1416,7 +1410,7 @@ export const ReportsPage = ({
               ))}
             </div>
           ) : (
-            <div className="empty-state">Adjust the report filters to populate hourly P&amp;L bars.</div>
+            <div className="empty-state">Adjust the report filters to populate 30-minute P&amp;L bars.</div>
           )}
         </article>
       </section>

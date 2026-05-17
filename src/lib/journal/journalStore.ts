@@ -5,7 +5,8 @@ import type {
   JournalPageRecord,
   JournalBlockType,
   JournalScreenshotTagRecord,
-  JournalScreenshotTradeLink
+  JournalScreenshotTradeLink,
+  JournalTradeNoteRecord
 } from "../../types/journal";
 import {
   createClosingChecklistDoc,
@@ -114,6 +115,36 @@ const createDefaultScreenshotTag = (tradeDate: string): JournalScreenshotTagReco
   taggedDate: normalizeTradeDate(tradeDate)
 });
 
+const createTradeNoteId = (linkedTradeId = ""): string => {
+  if (linkedTradeId) {
+    return `trade-note-${linkedTradeId}`;
+  }
+
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+
+  return `trade-note-${Math.random().toString(36).slice(2, 10)}`;
+};
+
+const createDefaultTradeNoteRecord = (tradeDate: string): JournalTradeNoteRecord => {
+  const timestamp = new Date().toISOString();
+
+  return {
+    id: createTradeNoteId(),
+    title: "",
+    content: createEmptyJournalDoc(),
+    linkedTrades: [],
+    linkedTradeId: "",
+    linkedTradeDate: "",
+    ticker: "",
+    playbook: "",
+    taggedDate: normalizeTradeDate(tradeDate),
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value && typeof value === "object");
 
@@ -184,6 +215,72 @@ const ensureContent = (
   return parsedBlocks.length > 0 ? journalBlocksToDoc(parsedBlocks) : createEmptyJournalDoc();
 };
 
+const normalizeJournalTradeNotes = (
+  value: unknown,
+  tradeDate: string,
+  pageCreatedAt: string,
+  pageUpdatedAt: string
+): JournalTradeNoteRecord[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => {
+      if (!isRecord(entry)) {
+        return null;
+      }
+
+      const linkedTrades = normalizeScreenshotTradeLinks(
+        (entry as { linkedTrades?: unknown }).linkedTrades,
+        tradeDate
+      );
+      const linkedTradeId = typeof entry.linkedTradeId === "string" ? entry.linkedTradeId.trim() : "";
+      const linkedTradeDateRaw = typeof entry.linkedTradeDate === "string" ? entry.linkedTradeDate : "";
+      const legacyLinkedTrades =
+        linkedTradeId.length > 0
+          ? [
+              {
+                tradeId: linkedTradeId,
+                tradeDate: normalizeTradeDate(linkedTradeDateRaw || tradeDate)
+              }
+            ]
+          : [];
+      const normalizedLinkedTrades = dedupeScreenshotTradeLinks([...linkedTrades, ...legacyLinkedTrades]);
+      const primaryLinkedTrade = normalizedLinkedTrades[0] ?? null;
+      const fallback = createDefaultTradeNoteRecord(tradeDate);
+      const createdAt =
+        typeof entry.createdAt === "string" && entry.createdAt.trim().length > 0
+          ? entry.createdAt
+          : pageCreatedAt || fallback.createdAt;
+      const updatedAt =
+        typeof entry.updatedAt === "string" && entry.updatedAt.trim().length > 0
+          ? entry.updatedAt
+          : pageUpdatedAt || createdAt;
+
+      return {
+        id:
+          typeof entry.id === "string" && entry.id.trim().length > 0
+            ? entry.id.trim()
+            : createTradeNoteId(primaryLinkedTrade?.tradeId ?? linkedTradeId),
+        title: typeof entry.title === "string" ? entry.title : "",
+        content: ensureContent(entry.content as JSONContent | undefined),
+        linkedTrades: normalizedLinkedTrades,
+        linkedTradeId: primaryLinkedTrade?.tradeId ?? "",
+        linkedTradeDate: primaryLinkedTrade?.tradeDate ?? "",
+        ticker: typeof entry.ticker === "string" ? entry.ticker : "",
+        playbook: typeof entry.playbook === "string" ? entry.playbook : "",
+        taggedDate:
+          typeof entry.taggedDate === "string" && entry.taggedDate.trim().length > 0
+            ? normalizeTradeDate(entry.taggedDate)
+            : normalizeTradeDate(tradeDate),
+        createdAt,
+        updatedAt
+      };
+    })
+    .filter((entry): entry is JournalTradeNoteRecord => entry !== null);
+};
+
 const stableStringify = (value: unknown): string => {
   if (value === null || value === undefined) {
     return JSON.stringify(value);
@@ -251,6 +348,21 @@ const isDefaultClosingChecklist = (content: JSONContent): boolean =>
 const isEmptyJournalDoc = (content: JSONContent): boolean =>
   stableStringify(content) === stableStringify(createEmptyJournalDoc());
 
+const getTradeNoteContentScore = (tradeNotes: JournalTradeNoteRecord[]): number =>
+  tradeNotes.reduce((total, note) => {
+    let score = total;
+
+    if (!isEmptyJournalDoc(note.content) && readDocText(note.content).length > 0) {
+      score += 5;
+    }
+
+    if (note.linkedTradeId.trim().length > 0) {
+      score += 2;
+    }
+
+    return score;
+  }, 0);
+
 const getJournalContentScore = (page: JournalPageRecord): number => {
   let score = 0;
 
@@ -277,6 +389,8 @@ const getJournalContentScore = (page: JournalPageRecord): number => {
   if (!isEmptyJournalDoc(page.notesContent) && readDocText(page.notesContent).length > 0) {
     score += 6;
   }
+
+  score += getTradeNoteContentScore(page.tradeNotes);
 
   if (!isDefaultMorningChecklist(page.morningChecklistContent)) {
     score += 4;
@@ -378,16 +492,13 @@ const findLegacyCarryForwardSourcePage = (
   return withContent ?? priorPages[0] ?? null;
 };
 
-const isLikelyUntouchedGeneratedPage = (page: JournalPageRecord): boolean => {
-  const createdAt = getTimestamp(page.createdAt);
-  const updatedAt = getTimestamp(page.updatedAt);
-
-  if (createdAt <= 0 || updatedAt <= 0 || updatedAt > createdAt + 1000) {
-    return false;
+const hasManualJournalSignals = (page: JournalPageRecord): boolean => {
+  if (page.screenshotUrls.length > 0) {
+    return true;
   }
 
-  if (page.screenshotUrls.length > 0) {
-    return false;
+  if (page.tradeNotes.length > 0) {
+    return true;
   }
 
   if (
@@ -401,14 +512,25 @@ const isLikelyUntouchedGeneratedPage = (page: JournalPageRecord): boolean => {
     page.afternoonMood.trim().length > 0 ||
     page.closeMood.trim().length > 0
   ) {
-    return false;
+    return true;
   }
 
-  return (
+  return !(
     isEmptyJournalDoc(page.morningContent) &&
     isEmptyJournalDoc(page.closingContent) &&
     isEmptyJournalDoc(page.notesContent)
   );
+};
+
+const isLikelyUntouchedGeneratedPage = (page: JournalPageRecord): boolean => {
+  if (hasManualJournalSignals(page)) {
+    return false;
+  }
+
+  const createdAt = getTimestamp(page.createdAt);
+  const updatedAt = getTimestamp(page.updatedAt);
+
+  return createdAt > 0 && updatedAt > 0 && updatedAt <= createdAt + 1000;
 };
 
 const stripLegacyCarriedForwardSections = (pages: JournalPageRecord[]): JournalPageRecord[] => {
@@ -416,31 +538,33 @@ const stripLegacyCarriedForwardSections = (pages: JournalPageRecord[]): JournalP
   let changed = false;
 
   const nextPages = pagesAsc.map((page, index) => {
-    if (!isLikelyUntouchedGeneratedPage(page)) {
+    const priorPages = pagesAsc.slice(0, index);
+    const matchingLegacyFields = (["inPlayStocksContent", "traderReachOutsContent"] as const).filter((field) => {
+      const sourcePage = findLegacyCarryForwardSourcePage(priorPages, page.tradeDate, field);
+      if (!sourcePage || !hasJournalDocContent(sourcePage[field]) || !hasJournalDocContent(page[field])) {
+        return false;
+      }
+
+      return stableStringify(sourcePage[field]) === stableStringify(page[field]);
+    });
+
+    const shouldStripLegacyCarryForward =
+      isLikelyUntouchedGeneratedPage(page) ||
+      (!hasManualJournalSignals(page) && matchingLegacyFields.length === 2);
+
+    if (!shouldStripLegacyCarryForward || matchingLegacyFields.length === 0) {
       return page;
     }
 
-    const priorPages = pagesAsc.slice(0, index);
-    let nextPage = page;
+    changed = true;
 
-    for (const field of ["inPlayStocksContent", "traderReachOutsContent"] as const) {
-      const sourcePage = findLegacyCarryForwardSourcePage(priorPages, page.tradeDate, field);
-      if (!sourcePage || !hasJournalDocContent(sourcePage[field]) || !hasJournalDocContent(page[field])) {
-        continue;
-      }
-
-      if (stableStringify(sourcePage[field]) !== stableStringify(page[field])) {
-        continue;
-      }
-
-      nextPage = {
+    return matchingLegacyFields.reduce(
+      (nextPage, field) => ({
         ...nextPage,
         [field]: createEmptyJournalDoc()
-      };
-      changed = true;
-    }
-
-    return nextPage;
+      }),
+      page
+    );
   });
 
   return changed ? nextPages : pages;
@@ -468,6 +592,7 @@ const normalizeJournalPage = (
     closeMood?: string;
     marketRegime?: string;
     screenshotTags?: unknown;
+    tradeNotes?: unknown;
   }
 ): JournalPageRecord => {
   const morningBlocks = ensureBlocks(page.morningBlocks, page.morningJournal ?? "");
@@ -482,6 +607,12 @@ const normalizeJournalPage = (
   const rawScreenshotTags = Array.isArray((page as { screenshotTags?: unknown }).screenshotTags)
     ? ((page as { screenshotTags?: unknown[] }).screenshotTags ?? [])
     : [];
+  const tradeNotes = normalizeJournalTradeNotes(
+    (page as { tradeNotes?: unknown }).tradeNotes,
+    page.tradeDate,
+    page.createdAt,
+    page.updatedAt
+  );
   const screenshotTags = screenshotUrls.map((_, index) => {
     const raw = rawScreenshotTags[index];
     if (!isRecord(raw)) {
@@ -533,6 +664,7 @@ const normalizeJournalPage = (
     closeMood: page.closeMood ?? "",
     screenshotUrls,
     screenshotTags,
+    tradeNotes,
     closingChecklistContent: hasJournalDocContent(page.closingChecklistContent)
       ? (page.closingChecklistContent as JSONContent)
       : createClosingChecklistDoc(),
@@ -574,6 +706,16 @@ export const dedupeJournalPages = (pages: JournalPageRecord[]): JournalPageRecor
   );
 };
 
+type PersistedJournalPageRecord = Omit<
+  JournalPageRecord,
+  "morningBlocks" | "closingBlocks" | "mppPlanBlocks" | "blocks"
+>;
+
+const serializeJournalPagesForPersistence = (
+  pages: JournalPageRecord[]
+): PersistedJournalPageRecord[] =>
+  pages.map(({ morningBlocks, closingBlocks, mppPlanBlocks, blocks, ...page }) => page);
+
 export const loadJournalPages = async (): Promise<JournalPageRecord[]> => {
   const localPages = normalizeJournalPagesValue(syncStores.journalPages.load<unknown>([]));
   const activeUserId = syncStores.journalPages.getUserId();
@@ -595,7 +737,8 @@ export const loadJournalPages = async (): Promise<JournalPageRecord[]> => {
 
 export const saveJournalPages = async (pages: JournalPageRecord[]): Promise<void> => {
   const dedupedPages = dedupeJournalPages(pages);
-  const syncPromise = syncStores.journalPages.save(dedupedPages);
+  const persistedPages = serializeJournalPagesForPersistence(dedupedPages);
+  const syncPromise = syncStores.journalPages.save(persistedPages);
 
   const activeUserId = syncStores.journalPages.getUserId();
   if (!canUseMachineLegacyData(activeUserId)) {
@@ -610,7 +753,7 @@ export const saveJournalPages = async (pages: JournalPageRecord[]): Promise<void
   }
 
   try {
-    await invoke("save_journal_pages", { pages: dedupedPages });
+    await invoke("save_journal_pages", { pages: persistedPages });
   } catch (error) {
     if (isTauri()) {
       console.warn("[journal] Failed to save desktop journal backup.", error);

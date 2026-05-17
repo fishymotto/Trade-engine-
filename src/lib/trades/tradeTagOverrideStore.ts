@@ -1,8 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { TradeTagOverrideRecord } from "../../types/tradeTags";
 import { canUseMachineLegacyData, syncStores } from "../sync/syncStore";
-
-const STORAGE_KEY = "trade-engine-trade-tag-overrides";
 const LOSSY_OVERRIDE_DROP_RATIO = 0.35;
 const LOSSY_OVERRIDE_MIN_EXISTING = 200;
 const LOSSY_OVERRIDE_NEWER_GRACE_MS = 1000 * 60 * 60 * 24 * 30;
@@ -44,16 +42,7 @@ const normalizeTradeTagOverrides = (value: unknown): TradeTagOverrideRecord[] =>
 };
 
 const loadTradeTagOverridesFromLocalStorage = (): TradeTagOverrideRecord[] => {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return [];
-  }
-
-  try {
-    return normalizeTradeTagOverrides(JSON.parse(raw));
-  } catch {
-    return [];
-  }
+  return normalizeTradeTagOverrides(syncStores.tradeTagOverrides.load<unknown>([]));
 };
 
 const readTradeTagOverridesFromDesktopBackup = async (): Promise<TradeTagOverrideRecord[] | null> => {

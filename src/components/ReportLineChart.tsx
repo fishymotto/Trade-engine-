@@ -47,6 +47,68 @@ const formatAxisValue = (value: number): string => {
   return value.toFixed(2);
 };
 
+const getNiceNumber = (value: number, round: boolean): number => {
+  const absolute = Math.abs(value);
+  if (!Number.isFinite(absolute) || absolute === 0) {
+    return 1;
+  }
+
+  const exponent = Math.floor(Math.log10(absolute));
+  const fraction = absolute / 10 ** exponent;
+  let niceFraction = 1;
+
+  if (round) {
+    if (fraction < 1.5) {
+      niceFraction = 1;
+    } else if (fraction < 3) {
+      niceFraction = 2;
+    } else if (fraction < 7) {
+      niceFraction = 5;
+    } else {
+      niceFraction = 10;
+    }
+  } else if (fraction <= 1) {
+    niceFraction = 1;
+  } else if (fraction <= 2) {
+    niceFraction = 2;
+  } else if (fraction <= 5) {
+    niceFraction = 5;
+  } else {
+    niceFraction = 10;
+  }
+
+  return niceFraction * 10 ** exponent;
+};
+
+const buildNiceAxis = (minValue: number, maxValue: number, tickCount = 5) => {
+  const safeMin = Number.isFinite(minValue) ? minValue : 0;
+  const safeMax = Number.isFinite(maxValue) ? maxValue : 0;
+
+  if (safeMin === safeMax) {
+    const buffer = Math.max(1, Math.abs(safeMin) * 0.2);
+    const min = safeMin - buffer;
+    const max = safeMax + buffer;
+
+    return {
+      max,
+      min,
+      ticks: [min, safeMin, max]
+    };
+  }
+
+  const range = getNiceNumber(safeMax - safeMin, false);
+  const spacing = getNiceNumber(range / Math.max(tickCount - 1, 1), true);
+  const min = Math.floor(safeMin / spacing) * spacing;
+  const max = Math.ceil(safeMax / spacing) * spacing;
+  const ticks: number[] = [];
+
+  for (let value = min; value <= max + spacing * 0.5; value += spacing) {
+    ticks.push(Number(value.toFixed(10)));
+  }
+
+  return { max, min, ticks };
+};
+
 const buildSmoothPath = (points: Array<{ x: number; y: number }>): string => {
   if (points.length === 0) {
     return "";
@@ -91,10 +153,10 @@ export const ReportLineChart = ({
 
   const chart = useMemo(() => {
     const width = 1240;
-    const height = 540;
-    const paddingTop = 34;
+    const height = 512;
+    const paddingTop = 28;
     const paddingRight = 80;
-    const paddingBottom = 70;
+    const paddingBottom = 62;
     const paddingLeft = 84;
     const innerWidth = width - paddingLeft - paddingRight;
     const innerHeight = height - paddingTop - paddingBottom;
@@ -102,8 +164,11 @@ export const ReportLineChart = ({
     const minValue = values.length > 0 ? Math.min(...values) : 0;
     const maxValue = values.length > 0 ? Math.max(...values) : 0;
     const rawRange = maxValue - minValue || Math.max(1, Math.abs(maxValue) * 0.1);
-    const chartMin = minValue - rawRange * 0.12;
-    const chartMax = maxValue + rawRange * 0.12;
+    const paddedMin = minValue - rawRange * 0.1;
+    const paddedMax = maxValue + rawRange * 0.1;
+    const niceAxis = buildNiceAxis(paddedMin, paddedMax);
+    const chartMin = niceAxis.min;
+    const chartMax = niceAxis.max;
     const chartRange = chartMax - chartMin || 1;
     const baselineValue = chartMin > 0 ? chartMin : chartMax < 0 ? chartMax : 0;
     const yScale = (value: number) => paddingTop + innerHeight - ((value - chartMin) / chartRange) * innerHeight;
@@ -131,14 +196,11 @@ export const ReportLineChart = ({
             2
           )} L ${chartPoints[0].x.toFixed(2)} ${baselineY.toFixed(2)} Z`
         : "";
-    const yTicks = Array.from({ length: 6 }, (_, index) => {
-      const value = chartMin + (chartRange / 5) * index;
-      return {
-        value,
-        y: yScale(value)
-      };
-    });
-    const xTickCount = Math.min(8, points.length);
+    const yTicks = niceAxis.ticks.map((value) => ({
+      value,
+      y: yScale(value)
+    }));
+    const xTickCount = Math.min(7, points.length);
     const xTickIndexes =
       xTickCount <= 1
         ? [0]
@@ -184,11 +246,21 @@ export const ReportLineChart = ({
             ? Math.min(hoveredIndex, comparePoints.length - 1)
             : Math.round((hoveredIndex / (points.length - 1)) * (comparePoints.length - 1))
         ] ?? null;
-  const shouldRenderPointSeries = chart.chartPoints.length <= 72;
+  const shouldRenderPointSeries = chart.chartPoints.length <= 24;
   const tooltipX =
-    hoveredPoint && hoveredPoint.x > chart.width - chart.paddingRight - 210 ? hoveredPoint.x - 204 : (hoveredPoint?.x ?? 0) + 14;
+    hoveredPoint && hoveredPoint.x > chart.width - chart.paddingRight - 216 ? hoveredPoint.x - 212 : (hoveredPoint?.x ?? 0) + 14;
   const tooltipY =
-    hoveredPoint && hoveredPoint.y > chart.height - chart.paddingBottom - 70 ? hoveredPoint.y - 78 : (hoveredPoint?.y ?? 0) + 14;
+    hoveredPoint && hoveredPoint.y > chart.height - chart.paddingBottom - 74 ? hoveredPoint.y - 82 : (hoveredPoint?.y ?? 0) + 14;
+  const latestComparePoint = comparePoints[comparePoints.length - 1] ?? null;
+  const readoutText = hoveredPoint
+    ? `${formatAxisDate(hoveredPoint.label)} | ${primarySeriesLabel} ${valueFormatter(hoveredPoint.value)}${
+        hoveredComparePoint ? ` | ${compareSeriesLabel} ${valueFormatter(hoveredComparePoint.value)}` : ""
+      }`
+    : chart.latestPoint
+      ? `Latest ${formatAxisDate(chart.latestPoint.label)} | ${primarySeriesLabel} ${valueFormatter(chart.latestPoint.value)}${
+          latestComparePoint ? ` | ${compareSeriesLabel} ${valueFormatter(latestComparePoint.value)}` : ""
+        }`
+      : "Hover chart for point details";
 
   const handlePointerMove = (event: PointerEvent<SVGRectElement>) => {
     const bounds = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
@@ -209,19 +281,7 @@ export const ReportLineChart = ({
           <span className="panel-header-line" style={{ background: color }} />
           <h2>{title}</h2>
         </div>
-        <span className="report-line-chart-readout">
-          {hoveredPoint
-            ? `${formatAxisDate(hoveredPoint.label)} - ${primarySeriesLabel}: ${valueFormatter(hoveredPoint.value)}${
-                hoveredComparePoint ? ` | ${compareSeriesLabel}: ${valueFormatter(hoveredComparePoint.value)}` : ""
-              }`
-            : chart.latestPoint
-              ? `Latest ${formatAxisDate(chart.latestPoint.label)} - ${primarySeriesLabel}: ${valueFormatter(chart.latestPoint.value)}${
-                  comparePoints.length > 0 && comparePoints[comparePoints.length - 1]
-                    ? ` | ${compareSeriesLabel}: ${valueFormatter(comparePoints[comparePoints.length - 1].value)}`
-                    : ""
-                }`
-              : "Hover chart for point details"}
-        </span>
+        <span className="report-line-chart-readout">{readoutText}</span>
       </div>
       <div className="report-line-chart-shell">
         <span className="report-line-chart-axis-label">{yAxisLabel}</span>
@@ -233,21 +293,14 @@ export const ReportLineChart = ({
               <stop offset="100%" stopColor={color} stopOpacity="0.72" />
             </linearGradient>
             <linearGradient id={`${chartId}-area-gradient`} x1="0%" y1="0%" x2="0%" y2="100%">
-              <stop offset="0%" stopColor={color} stopOpacity="0.24" />
-              <stop offset="65%" stopColor={color} stopOpacity="0.06" />
+              <stop offset="0%" stopColor={color} stopOpacity="0.18" />
+              <stop offset="55%" stopColor={color} stopOpacity="0.07" />
               <stop offset="100%" stopColor={color} stopOpacity="0" />
             </linearGradient>
             <linearGradient id={`${chartId}-compare-line-gradient`} x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor={compareColor} stopOpacity="0.68" />
-              <stop offset="100%" stopColor={compareColor} stopOpacity="0.86" />
+              <stop offset="0%" stopColor={compareColor} stopOpacity="0.38" />
+              <stop offset="100%" stopColor={compareColor} stopOpacity="0.72" />
             </linearGradient>
-            <filter id={`${chartId}-line-glow`} x="-20%" y="-30%" width="140%" height="160%">
-              <feGaussianBlur stdDeviation="2.4" result="lineBlur" />
-              <feMerge>
-                <feMergeNode in="lineBlur" />
-                <feMergeNode in="SourceGraphic" />
-              </feMerge>
-            </filter>
           </defs>
           <rect
             x={chart.paddingLeft}
@@ -328,13 +381,21 @@ export const ReportLineChart = ({
           <path d={chart.areaPath} className="report-line-chart-area" fill={`url(#${chartId}-area-gradient)`} />
           <path
             d={chart.linePath}
+            className="report-line-chart-path-glow"
+            fill="none"
+            stroke={color}
+            strokeWidth="7.5"
+            strokeLinejoin="round"
+            strokeLinecap="round"
+          />
+          <path
+            d={chart.linePath}
             className="report-line-chart-path"
             fill="none"
             stroke={`url(#${chartId}-line-gradient)`}
-            strokeWidth="3.1"
+            strokeWidth="2.8"
             strokeLinejoin="round"
             strokeLinecap="round"
-            filter={`url(#${chartId}-line-glow)`}
           />
           {shouldRenderPointSeries
             ? chart.chartPoints.map((point, index) => (
@@ -342,7 +403,7 @@ export const ReportLineChart = ({
                   key={`${point.label}-${index}`}
                   cx={point.x}
                   cy={point.y}
-                  r={hoveredIndex === index ? "5" : "3.5"}
+                  r={hoveredIndex === index ? "4.4" : "2.8"}
                   fill={color}
                   className={`report-line-chart-point ${
                     hoveredIndex === index ? "is-hovered" : hoveredIndex !== null ? "is-muted" : ""
@@ -351,12 +412,15 @@ export const ReportLineChart = ({
               ))
             : null}
           {chart.latestPoint ? (
-            <circle
-              cx={chart.latestPoint.x}
-              cy={chart.latestPoint.y}
-              r="7.2"
-              className="report-line-chart-latest-ring"
-            />
+            <g className="report-line-chart-latest-marker">
+              <circle
+                cx={chart.latestPoint.x}
+                cy={chart.latestPoint.y}
+                r="6.2"
+                className="report-line-chart-latest-ring"
+              />
+              <circle cx={chart.latestPoint.x} cy={chart.latestPoint.y} r="3.1" fill={color} />
+            </g>
           ) : null}
           {hoveredPoint ? (
             <g className="report-line-chart-cursor">
@@ -374,9 +438,9 @@ export const ReportLineChart = ({
                 y2={hoveredPoint.y}
                 className="report-line-chart-crosshair"
               />
-              <circle cx={hoveredPoint.x} cy={hoveredPoint.y} r="7" fill={color} stroke="#f8fbff" strokeWidth="2" />
+              <circle cx={hoveredPoint.x} cy={hoveredPoint.y} r="6.4" fill={color} stroke="#f8fbff" strokeWidth="1.8" />
               <g transform={`translate(${tooltipX}, ${tooltipY})`}>
-                <rect width="214" height={hoveredComparePoint ? "76" : "56"} rx="12" className="report-line-chart-tooltip-box" />
+                <rect width="220" height={hoveredComparePoint ? "78" : "58"} rx="12" className="report-line-chart-tooltip-box" />
                 <text x="14" y="22" className="report-line-chart-tooltip-label">
                   {formatAxisDate(hoveredPoint.label)}
                 </text>
@@ -384,7 +448,7 @@ export const ReportLineChart = ({
                   {primarySeriesLabel}: {valueFormatter(hoveredPoint.value)}
                 </text>
                 {hoveredComparePoint ? (
-                  <text x="14" y="61" className="report-line-chart-tooltip-label">
+                  <text x="14" y="62" className="report-line-chart-tooltip-label">
                     {compareSeriesLabel}: {valueFormatter(hoveredComparePoint.value)}
                   </text>
                 ) : null}

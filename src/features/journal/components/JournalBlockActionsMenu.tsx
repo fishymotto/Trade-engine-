@@ -345,6 +345,7 @@ export const JournalBlockActionsMenu = ({ editor, appearance = "default" }: Jour
   return (
     <div
       ref={rootRef}
+      data-open={isOpen ? "true" : "false"}
       className={`journal-block-actions${appearance === "notion" ? " journal-block-actions-notion" : ""}`}
     >
       <div className="journal-block-actions-bar">
