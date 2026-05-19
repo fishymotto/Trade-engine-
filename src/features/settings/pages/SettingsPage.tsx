@@ -127,7 +127,7 @@ export const SettingsPage = ({
       <PageHero
         eyebrow="Settings"
         title="Workspace Preferences"
-        description="Set local workspace preferences, desktop backups, and maintenance tools. File transfers now live on Imports."
+        icon="settings"
       />
 
       <section className="settings-page-layout" aria-label="Settings form">

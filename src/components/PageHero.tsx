@@ -1,25 +1,27 @@
 import type { ReactNode } from "react";
+import type { WorkspaceIconKey } from "../lib/ui/workspaceIcons";
+import { WorkspaceIcon } from "./WorkspaceIcon";
 
 interface PageHeroProps {
   eyebrow: string;
-  title: string;
-  description?: string;
-  content?: ReactNode;
-  children?: ReactNode;
+  title: ReactNode;
+  icon?: WorkspaceIconKey;
   className?: string;
 }
 
-export const PageHero = ({ eyebrow, title, description, content, children, className }: PageHeroProps) => {
+export const PageHero = ({ eyebrow, title, icon, className }: PageHeroProps) => {
   return (
     <section className={`page-hero${className ? ` ${className}` : ""}`}>
-      <div className={`page-hero-layout${children ? " page-hero-layout-with-aside" : ""}`}>
+      <div className="page-hero-layout">
         <div className="page-hero-copy">
           <span className="page-eyebrow">{eyebrow}</span>
-          <h1>{title}</h1>
-          {description ? <p>{description}</p> : null}
-          {content ? <div className="page-hero-content">{content}</div> : null}
+          <h1>
+            <span className="page-hero-title">
+              {icon ? <WorkspaceIcon icon={icon} alt="" className="page-hero-title-icon" /> : null}
+              <span>{title}</span>
+            </span>
+          </h1>
         </div>
-        {children ? <div className="page-hero-aside">{children}</div> : null}
       </div>
     </section>
   );

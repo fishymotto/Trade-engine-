@@ -654,9 +654,10 @@ export const DashboardPage = ({
       <PageHero
         eyebrow="Overview"
         title="Dashboard"
+        icon="dashboard"
         className="page-hero-dashboard"
-        content={
-          <section className="trade-view-filter-panel page-hero-review-slice-embedded">
+      />
+      <section className="trade-view-filter-panel page-hero-review-slice-embedded">
             <div className="trade-view-filter-header">
               <div className="panel-header">
                 <WorkspaceIcon icon="review-slice" alt="Review slice icon" className="panel-header-icon" />
@@ -757,36 +758,7 @@ export const DashboardPage = ({
                 </span>
               )}
             </div>
-          </section>
-        }
-      >
-        <div className="page-hero-stat-grid page-hero-stat-grid-dashboard">
-          <div className="page-hero-stat-card">
-            <span>Range</span>
-            <strong>{getDashboardRangeLabel(selectedTradeDateFilterStart, selectedTradeDateFilterEnd)}</strong>
-          </div>
-          <div className="page-hero-stat-card">
-            <span>Trades</span>
-            <strong>{overallSummary.totalTrades}</strong>
-          </div>
-          <div className="page-hero-stat-card">
-            <span>Net P&L</span>
-            <strong>{formatSignedNumber(overallSummary.totalNetPnl)}</strong>
-          </div>
-          <div className="page-hero-stat-card">
-            <span>Gross P&L</span>
-            <strong>{formatSignedNumber(overallSummary.totalGrossPnl)}</strong>
-          </div>
-          <div className="page-hero-stat-card">
-            <span>Win Rate</span>
-            <strong>{overallSummary.winRate.toFixed(1)}%</strong>
-          </div>
-          <div className="page-hero-stat-card">
-            <span>Shares Traded</span>
-            <strong>{overallSummary.totalSharesTraded.toLocaleString()}</strong>
-          </div>
-        </div>
-      </PageHero>
+      </section>
       <section className="dashboard-summary-grid">
         <DashboardSummaryCard
           title="Recent Session"
@@ -1126,7 +1098,7 @@ export const DashboardPage = ({
       <section className="analytics-grid">
         <article className="placeholder-panel analytics-panel">
           <div className="panel-header">
-            <WorkspaceIcon icon="dashboard" alt="Session breakdown icon" className="panel-header-icon" />
+            <WorkspaceIcon icon="hourglass" alt="Session breakdown icon" className="panel-header-icon" />
             <h2>Breakdown: Session</h2>
           </div>
           <AnalyticsTable
@@ -1155,7 +1127,7 @@ export const DashboardPage = ({
         </article>
         <article className="placeholder-panel analytics-panel">
           <div className="panel-header">
-            <WorkspaceIcon icon="tags" alt="Top symbols icon" className="panel-header-icon" />
+            <WorkspaceIcon icon="candles-chart" alt="Top symbols icon" className="panel-header-icon" />
             <h2>Top Symbols</h2>
           </div>
           <AnalyticsTable
@@ -1191,7 +1163,7 @@ export const DashboardPage = ({
       <section className="analytics-grid analytics-grid-single">
         <article className="placeholder-panel analytics-panel">
           <div className="panel-header">
-            <WorkspaceIcon icon="money" alt="Hourly pnl icon" className="panel-header-icon" />
+            <WorkspaceIcon icon="hourglass" alt="Hourly pnl icon" className="panel-header-icon" />
             <h2>30-Min P&L</h2>
           </div>
           {hourlyBreakdown.length > 0 ? (

@@ -1,16 +1,19 @@
 import calloutIcon from "../../assets/ui-icons/callout.png";
 import astronautIcon from "../../assets/ui-icons/astronaut.png";
 import cameraIcon from "../../assets/ui-icons/import.png";
+import candlesChartIcon from "../../assets/ui-icons/candles-chart.png";
 import chartGalleryIcon from "../../assets/ui-icons/chart-gallery.png";
 import chartScreenshotsIcon from "../../assets/ui-icons/chart-screenshots.png";
 import clearScreenshotsIcon from "../../assets/ui-icons/clear-screenshots.png";
 import checklistIcon from "../../assets/ui-icons/checklist.png";
+import cloudSearchIcon from "../../assets/ui-icons/cloud-search.png";
 import dashboardIcon from "../../assets/ui-icons/dashboard.png";
 import dataIcon from "../../assets/ui-icons/data.png";
 import executionIcon from "../../assets/ui-icons/execution.png";
 import filterIcon from "../../assets/ui-icons/filter.png";
 import headingIcon from "../../assets/ui-icons/heading.png";
-import importIcon from "../../assets/ui-icons/import.png";
+import hourglassIcon from "../../assets/ui-icons/hourglass.png";
+import importIcon from "../../assets/ui-icons/login-import.png";
 import journalChecklistIcon from "../../assets/ui-icons/journal-checklist.png";
 import journalNotebookIcon from "../../assets/ui-icons/journal-notebook.png";
 import journalIcon from "../../assets/ui-icons/journal.png";
@@ -35,7 +38,9 @@ export type WorkspaceIconKey =
   | "astronaut"
   | "chart-gallery"
   | "chart-screenshots"
+  | "candles-chart"
   | "clear-screenshots"
+  | "cloud-search"
   | "trades"
   | "journal-checklist"
   | "journal-notebook"
@@ -57,6 +62,7 @@ export type WorkspaceIconKey =
   | "tags"
   | "text"
   | "heading"
+  | "hourglass"
   | "checklist"
   | "callout"
   | "plan"
@@ -65,9 +71,11 @@ export type WorkspaceIconKey =
 export const workspaceIcons: Record<WorkspaceIconKey, string> = {
   dashboard: dashboardIcon,
   astronaut: astronautIcon,
+  "candles-chart": candlesChartIcon,
   "chart-gallery": chartGalleryIcon,
   "chart-screenshots": chartScreenshotsIcon,
   "clear-screenshots": clearScreenshotsIcon,
+  "cloud-search": cloudSearchIcon,
   trades: tradesIcon,
   "journal-checklist": journalChecklistIcon,
   "journal-notebook": journalNotebookIcon,
@@ -89,6 +97,7 @@ export const workspaceIcons: Record<WorkspaceIconKey, string> = {
   tags: tagsIcon,
   text: textIcon,
   heading: headingIcon,
+  hourglass: hourglassIcon,
   checklist: checklistIcon,
   callout: calloutIcon,
   plan: planIcon,

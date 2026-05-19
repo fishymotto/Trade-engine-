@@ -1010,123 +1010,40 @@ export const PlaybooksPage = ({
         <PageHero
           eyebrow="Playbooks"
           title="Playbooks"
+          icon="playbooks"
           className="page-hero-playbooks"
-          description={`Organize your setups, review examples, and track execution quality. ${heroWindowLabel} window in view.`}
-          content={
-            <div className="playbooks-hero-content">
-              <div className="playbooks-hero-window-toolbar" aria-label="Playbook period controls">
-                {playbookHeroWindowOptions.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={`playbooks-hero-window-chip${heroWindow === option.value ? " is-active" : ""}`}
-                    onClick={() => setHeroWindow(option.value)}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-                {hasActiveFilters ? (
-                  <button
-                    type="button"
-                    className="mini-action mini-action-soft"
-                    onClick={() => {
-                      setSearchQuery("");
-                      setStatusFilter("all");
-                      setTickerFilter("all");
-                      setSetupTypeFilter("all");
-                      setConfidenceFilter("all");
-                      setNetPnlFilter("all");
-                    }}
-                  >
-                    Reset Filters
-                  </button>
-                ) : null}
-              </div>
-              <div className="playbooks-hero-kpi-strip" aria-label="Playbook snapshot">
-                <span className="playbook-meta-pill">
-                  {heroTradesInWindow} tagged trade{heroTradesInWindow === 1 ? "" : "s"}
-                </span>
-                <span className="playbook-meta-pill">
-                  {heroWinsInWindow}W - {heroLossesInWindow}L
-                </span>
-                <span
-                  className={`playbook-meta-pill${
-                    heroTradesInWindow > 0
-                      ? heroNetPnlInWindow >= 0
-                        ? " positive-value"
-                        : " negative-value"
-                      : ""
-                  }`}
-                >
-                  {heroTradesInWindow > 0 ? formatSignedMoney(heroNetPnlInWindow) : "No tagged P&L yet"}
-                </span>
-              </div>
-            </div>
-          }
-        >
-          <div className="page-hero-stat-grid playbooks-hero-stat-grid">
-            <div className="page-hero-stat-card">
-              <span>Total Playbooks</span>
-              <strong>{sortedPlaybookCards.length}</strong>
-              <small>{heroWindowLabel} window</small>
-            </div>
-            <div className="page-hero-stat-card">
-              <span>Active Playbooks</span>
-              <strong>{activePlaybookCount}</strong>
-              <small>Active plus Proven</small>
-            </div>
-            <div className="page-hero-stat-card">
-              <span>Window Net P&amp;L</span>
-              <strong className={heroTradesInWindow > 0 ? getSignedValueClassName(heroNetPnlInWindow) : ""}>
-                {heroTradesInWindow > 0 ? formatSignedMoney(heroNetPnlInWindow) : "-"}
-              </strong>
-              <small>Combined across tagged playbooks</small>
-            </div>
-            <div className="page-hero-stat-card">
-              <span>Window Win Rate</span>
-              <strong>{heroTradesInWindow > 0 ? `${heroWinRateInWindow.toFixed(1)}%` : "-"}</strong>
-              <small>
-                {heroTradesInWindow > 0
-                  ? `${heroWinsInWindow}W - ${heroLossesInWindow}L`
-                  : "Tag trades to compute win rate"}
-              </small>
-            </div>
-            <button
-              type="button"
-              className="page-hero-stat-card page-hero-stat-card-action"
-              onClick={() => {
-                if (bestPlaybook) {
-                  handleOpenPlaybook(bestPlaybook.playbook.id);
-                }
-              }}
-              disabled={!bestPlaybook}
-            >
-              <span>Best Performer</span>
-              <strong>{bestPlaybookLabel}</strong>
-              <small
-                className={
-                  bestPlaybook ? getSignedValueClassName(bestPlaybook.filteredSummary.totalNetPnl) : undefined
-                }
+        />
+
+        <div className="playbooks-hero-content">
+          <div className="playbooks-hero-window-toolbar" aria-label="Playbook period controls">
+            {playbookHeroWindowOptions.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                className={`playbooks-hero-window-chip${heroWindow === option.value ? " is-active" : ""}`}
+                onClick={() => setHeroWindow(option.value)}
               >
-                {bestPlaybookMetaLabel}
-              </small>
-            </button>
-            <button
-              type="button"
-              className="page-hero-stat-card page-hero-stat-card-action"
-              onClick={() => {
-                if (mostTradedPlaybook) {
-                  handleOpenPlaybook(mostTradedPlaybook.playbook.id);
-                }
-              }}
-              disabled={!mostTradedPlaybook}
-            >
-              <span>Most Traded</span>
-              <strong>{mostTradedPlaybookLabel}</strong>
-              <small>{mostTradedPlaybookMetaLabel}</small>
-            </button>
+                {option.label}
+              </button>
+            ))}
+            {hasActiveFilters ? (
+              <button
+                type="button"
+                className="mini-action mini-action-soft"
+                onClick={() => {
+                  setSearchQuery("");
+                  setStatusFilter("all");
+                  setTickerFilter("all");
+                  setSetupTypeFilter("all");
+                  setConfidenceFilter("all");
+                  setNetPnlFilter("all");
+                }}
+              >
+                Reset Filters
+              </button>
+            ) : null}
           </div>
-        </PageHero>
+        </div>
 
         <section className="playbook-database" aria-label="Playbooks table view">
           <div className="playbook-database-header">
@@ -1345,48 +1262,8 @@ export const PlaybooksPage = ({
       <PageHero
         eyebrow="Playbooks"
         title={selectedPlaybook.playbook.name}
-        description={selectedPlaybook.playbook.focus}
-      >
-        <div className="playbook-hero-meta-row">
-          <span className={getPlaybookStatusBadgeClassName(selectedPlaybook.status)}>
-            {selectedPlaybook.status}
-          </span>
-          <span className={getPlaybookConfidenceBadgeClassName(selectedPlaybook.confidence)}>
-            {selectedPlaybook.confidence}
-          </span>
-          <span className="playbook-meta-pill">Setup: {selectedPlaybook.setupType}</span>
-          {tickerFilter !== "all" ? <span className="playbook-meta-pill">Ticker: {tickerFilter}</span> : null}
-          <span className="playbook-meta-pill">
-            Updated: {formatUpdatedAt(selectedPlaybook.playbook.updatedAt)}
-          </span>
-        </div>
-        <div className="page-hero-stat-grid playbook-detail-stat-grid">
-          <div className="page-hero-stat-card">
-            <span>Tagged Trades</span>
-            <strong>{summary.totalTrades}</strong>
-          </div>
-          <div className="page-hero-stat-card">
-            <span>Win Rate</span>
-            <strong>{summary.winRate.toFixed(1)}%</strong>
-          </div>
-          <div className="page-hero-stat-card">
-            <span>Net P&amp;L</span>
-            <strong>{formatSignedMoney(summary.totalNetPnl)}</strong>
-          </div>
-          <div className="page-hero-stat-card">
-            <span>Avg Trade</span>
-            <strong>{formatSignedMoney(summary.avgTrade)}</strong>
-          </div>
-          <div className="page-hero-stat-card">
-            <span>Fees</span>
-            <strong>${summary.totalFees.toFixed(2)}</strong>
-          </div>
-          <div className="page-hero-stat-card">
-            <span>Shares</span>
-            <strong>{summary.totalSharesTraded.toLocaleString()}</strong>
-          </div>
-        </div>
-      </PageHero>
+        icon="playbooks"
+      />
 
       <section className="playbook-toolbar">
         <div className="playbook-toolbar-actions">

@@ -92,52 +92,15 @@ export const DataPage = ({ settings, sessions, onLoadSession, onDeleteSession }:
   const totalExecutions = sessionRows.reduce((sum, session) => sum + session.executions, 0);
   const totalSymbols = new Set(sessions.flatMap((session) => session.trades.map((trade) => trade.symbol))).size;
   const totalNetPnl = sessionRows.reduce((sum, session) => sum + session.netPnl, 0);
-  const latestSession = sessionRows[0] ?? null;
-  const selectedTradeDateLabel = selectedSummary ? formatTradeDate(selectedSummary.tradeDate) : "No import selected";
 
   return (
     <main className="page-shell data-storage-page">
       <PageHero
         eyebrow="Data"
         title="Storage Manager"
-        description="Review saved CSV imports, load a stored day back into the workspace, or remove a bad import without touching the rest of your data."
+        icon="data"
         className="page-hero-data-storage"
-        content={
-          <div className="data-storage-hero-tags">
-            <span className="data-storage-hero-tag">{sessionRows.length} saved days</span>
-            <span className="data-storage-hero-tag">
-              {latestSession ? `Latest ${formatTradeDate(latestSession.tradeDate, tradeDateMetaFormatter)}` : "No saved sessions"}
-            </span>
-            <span className="data-storage-hero-tag">
-              {settings.exportFolder ? "Export folder connected" : "Export folder not set"}
-            </span>
-          </div>
-        }
-      >
-        <div className="data-storage-hero-focus">
-          <span>Current Selection</span>
-          <strong>{selectedTradeDateLabel}</strong>
-          <p>
-            {selectedSummary
-              ? `${selectedSummary.trades} trades across ${selectedSummary.symbols} symbols and ${selectedSummary.executions} executions.`
-              : "Choose a saved import from the list to inspect its file, stats, and trade preview."}
-          </p>
-          {selectedSummary ? (
-            <div className="data-storage-hero-focus-stats">
-              <div>
-                <small>Net P&amp;L</small>
-                <strong className={selectedSummary.netPnl >= 0 ? "positive" : "negative"}>
-                  {formatMoney(selectedSummary.netPnl)}
-                </strong>
-              </div>
-              <div>
-                <small>Source</small>
-                <strong title={selectedSummary.sourceFileName}>{selectedSummary.sourceFileName}</strong>
-              </div>
-            </div>
-          ) : null}
-        </div>
-      </PageHero>
+      />
 
       <section className="data-storage-summary" aria-label="Storage summary">
         <div>

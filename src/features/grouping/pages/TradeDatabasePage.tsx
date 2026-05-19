@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { DateFilterPopover } from "../../../components/DateFilterPopover";
 import { FilterSelect } from "../../../components/FilterSelect";
+import { PageHero } from "../../../components/PageHero";
 import { PreviewTable } from "../../../components/PreviewTable";
 import { TagDrawer } from "../../../components/TagDrawer";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
@@ -261,17 +262,19 @@ export const TradeDatabasePage = ({
   const emptyStateLabel =
     selectedTradeDateFilter === todayTradeDate && !hasNonDateFilters
       ? "No trades saved for today's date yet."
-      : "No trades match the current database filters.";
+      : "No trades match the current trade history filters.";
 
   return (
     <main className="page-shell trade-database-page">
+      <PageHero eyebrow="Trades" title="Trade History" icon="cloud-search" />
+
       <section className="placeholder-panel analytics-panel trade-database-panel trade-database-page-panel">
         <div className="trade-database-toolbar">
           <section className="trade-view-filter-panel trade-database-search-panel">
             <div className="trade-view-filter-header">
               <div className="panel-header">
-                <WorkspaceIcon icon="astronaut" alt="Trade database icon" className="panel-header-icon" />
-                <h2>Trade Database</h2>
+                <WorkspaceIcon icon="cloud-search" alt="Trade history icon" className="panel-header-icon" />
+                <h2>Trade History</h2>
               </div>
               <button type="button" className="mini-action" onClick={clearFilters}>
                 Clear All
@@ -313,14 +316,14 @@ export const TradeDatabasePage = ({
                   className="trade-search-input"
                   value={searchQuery}
                   placeholder="Name, symbol, tag..."
-                  aria-label="Search trade database"
+                  aria-label="Search trade history"
                   onChange={(event) => setSearchQuery(event.target.value)}
                 />
               </label>
               <label className="trade-filter-field">
                 <span>Playbook</span>
                 <FilterSelect
-                  ariaLabel="Trade database playbook filter"
+                  ariaLabel="Trade history playbook filter"
                   value={selectedPlaybookFilter}
                   onChange={setSelectedPlaybookFilter}
                   options={[
@@ -332,7 +335,7 @@ export const TradeDatabasePage = ({
               <label className="trade-filter-field">
                 <span>Symbol</span>
                 <FilterSelect
-                  ariaLabel="Trade database symbol filter"
+                  ariaLabel="Trade history symbol filter"
                   value={selectedSymbolFilter}
                   onChange={setSelectedSymbolFilter}
                   options={[
@@ -344,7 +347,7 @@ export const TradeDatabasePage = ({
               <label className="trade-filter-field">
                 <span>Status</span>
                 <FilterSelect
-                  ariaLabel="Trade database status filter"
+                  ariaLabel="Trade history status filter"
                   value={selectedStatusFilter}
                   onChange={setSelectedStatusFilter}
                   options={[
@@ -356,7 +359,7 @@ export const TradeDatabasePage = ({
               <label className="trade-filter-field">
                 <span>Game</span>
                 <FilterSelect
-                  ariaLabel="Trade database game filter"
+                  ariaLabel="Trade history game filter"
                   value={selectedGameFilter}
                   onChange={setSelectedGameFilter}
                   options={[
@@ -368,7 +371,7 @@ export const TradeDatabasePage = ({
               <label className="trade-filter-field">
                 <span>Execution</span>
                 <FilterSelect
-                  ariaLabel="Trade database execution filter"
+                  ariaLabel="Trade history execution filter"
                   value={selectedExecutionFilter}
                   onChange={setSelectedExecutionFilter}
                   options={[
@@ -378,7 +381,7 @@ export const TradeDatabasePage = ({
                 />
               </label>
             </div>
-            <div className="active-filter-chip-row dashboard-review-chip-row" aria-label="Active trade database filters">
+            <div className="active-filter-chip-row dashboard-review-chip-row" aria-label="Active trade history filters">
               {activeFilters.map((filter) => (
                 <span key={filter.key} className="active-filter-chip">
                   <strong>{filter.label}</strong>

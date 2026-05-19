@@ -7,8 +7,8 @@ import { ReportBarChart } from "../../../components/ReportBarChart";
 import { ReportLineChart } from "../../../components/ReportLineChart";
 import { SymbolPills } from "../../../components/SymbolPills";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
+import { DailyPnlOverview } from "../components/DailyPnlOverview";
 import {
-  getCumulativeNetPnlByDate,
   getFeesByDate,
   getPerformanceByExecution,
   getPerformanceByGame,
@@ -69,6 +69,8 @@ type ReportSliceMode = "current" | "previous";
 interface DateRangePreset {
   key: "all" | "last5" | "last20" | "last60";
   label: string;
+  shortLabel: string;
+  detail: string;
   sessionCount?: number;
 }
 
@@ -82,10 +84,10 @@ interface PeriodComparisonMetric {
 }
 
 const DATE_RANGE_PRESETS: DateRangePreset[] = [
-  { key: "all", label: "All Dates" },
-  { key: "last5", label: "Last 5 Sessions", sessionCount: 5 },
-  { key: "last20", label: "Last 20 Sessions", sessionCount: 20 },
-  { key: "last60", label: "Last 60 Sessions", sessionCount: 60 }
+  { key: "all", label: "All Dates", shortLabel: "All", detail: "Dates" },
+  { key: "last5", label: "Last 5 Sessions", shortLabel: "5", detail: "Sessions", sessionCount: 5 },
+  { key: "last20", label: "Last 20 Sessions", shortLabel: "20", detail: "Sessions", sessionCount: 20 },
+  { key: "last60", label: "Last 60 Sessions", shortLabel: "60", detail: "Sessions", sessionCount: 60 }
 ];
 
 const formatActiveDateRange = (startValue: string, endValue: string): string => {
@@ -193,7 +195,6 @@ interface ReportSliceMetrics {
   avgLoser: number;
   hourlyBreakdown: HourlyBreakdownRow[];
   symbolRows: PerformanceRow[];
-  topSymbols: PerformanceRow[];
   gatewayRows: PerformanceRow[];
   setupPerformanceRows: PerformanceRow[];
   setupRows: PerformanceRow[];
@@ -201,7 +202,6 @@ interface ReportSliceMetrics {
   mistakeRows: PerformanceRow[];
   gameRows: PerformanceRow[];
   executionRows: PerformanceRow[];
-  cumulativeNetPnlSeries: TimeSeriesPoint[];
   dailyNetPnlSeries: TimeSeriesPoint[];
   feesByDateSeries: TimeSeriesPoint[];
   sharesTradedByDateSeries: TimeSeriesPoint[];
@@ -231,22 +231,18 @@ const buildReportSliceMetrics = (sliceTrades: GroupedTrade[]): ReportSliceMetric
       : 0;
   const hourlyBreakdown = getHourlyBreakdown(sliceTrades);
   const symbolRows = getPerformanceBySymbol(sliceTrades);
-  const topSymbols = symbolRows.slice(0, 8);
   const gatewayRows = getPerformanceByGateway(sliceTrades).slice(0, 8);
   const setupPerformanceRows = getPerformanceBySetup(sliceTrades);
-  const setupRows = setupPerformanceRows.slice(0, 8);
+  const setupRows = setupPerformanceRows.filter((row) => row.label !== "No Setup");
   const mistakePerformanceRows = getPerformanceByMistake(sliceTrades);
   const mistakeRows = mistakePerformanceRows.slice(0, 8);
   const gameRows = getPerformanceByGame(sliceTrades).slice(0, 8);
   const executionRows = getPerformanceByExecution(sliceTrades).slice(0, 8);
-  const cumulativeNetPnlSeries = getCumulativeNetPnlByDate(sliceTrades);
   const dailyNetPnlSeries = getNetPnlByDate(sliceTrades);
   const feesByDateSeries = getFeesByDate(sliceTrades);
   const sharesTradedByDateSeries = getSharesTradedByDate(sliceTrades);
-  const playbookNetPnlSeries = [...setupPerformanceRows]
-    .filter((row) => row.label !== "No Setup")
-    .sort((left, right) => Math.abs(right.netPnl) - Math.abs(left.netPnl) || right.trades - left.trades)
-    .slice(0, 10)
+  const playbookNetPnlSeries = [...setupRows]
+    .sort((left, right) => right.netPnl - left.netPnl || right.trades - left.trades)
     .map((row) => ({
       label: row.label,
       value: row.netPnl
@@ -275,9 +271,7 @@ const buildReportSliceMetrics = (sliceTrades: GroupedTrade[]): ReportSliceMetric
     (highest, point) => (!highest || point.value > highest.value ? point : highest),
     null
   );
-  const bestPlaybook = [...setupPerformanceRows]
-    .filter((row) => row.label !== "No Setup")
-    .sort((left, right) => right.netPnl - left.netPnl || right.trades - left.trades)[0];
+  const bestPlaybook = [...setupRows].sort((left, right) => right.netPnl - left.netPnl || right.trades - left.trades)[0];
   const costliestMistake = [...mistakePerformanceRows]
     .filter((row) => row.label !== "No Mistakes" && row.netPnl < 0)
     .sort((left, right) => left.netPnl - right.netPnl || right.trades - left.trades)[0];
@@ -290,7 +284,6 @@ const buildReportSliceMetrics = (sliceTrades: GroupedTrade[]): ReportSliceMetric
     avgLoser,
     hourlyBreakdown,
     symbolRows,
-    topSymbols,
     gatewayRows,
     setupPerformanceRows,
     setupRows,
@@ -298,7 +291,6 @@ const buildReportSliceMetrics = (sliceTrades: GroupedTrade[]): ReportSliceMetric
     mistakeRows,
     gameRows,
     executionRows,
-    cumulativeNetPnlSeries,
     dailyNetPnlSeries,
     feesByDateSeries,
     sharesTradedByDateSeries,
@@ -333,6 +325,8 @@ export const ReportsPage = ({
   const [selectedGameFilter, setSelectedGameFilter] = useState(externalGameFilter);
   const [selectedExecutionFilter, setSelectedExecutionFilter] = useState(externalExecutionFilter);
   const [reportSliceMode, setReportSliceMode] = useState<ReportSliceMode>("current");
+  const [selectedComparisonDateFilterStart, setSelectedComparisonDateFilterStart] = useState("");
+  const [selectedComparisonDateFilterEnd, setSelectedComparisonDateFilterEnd] = useState("");
 
   useEffect(() => {
     setSelectedTradeDateFilterStart(externalTradeDateFilterStart);
@@ -538,6 +532,7 @@ export const ReportsPage = ({
     ]
   );
 
+  const isManualComparisonActive = Boolean(selectedComparisonDateFilterStart || selectedComparisonDateFilterEnd);
   const comparisonWindow = useMemo(() => {
     const currentDatesDesc = Array.from(new Set(filteredTrades.map((trade) => trade.tradeDate))).sort((left, right) =>
       right.localeCompare(left)
@@ -569,23 +564,46 @@ export const ReportsPage = ({
     const previousDateSet = new Set(previousDatesDesc);
     const previousTrades =
       previousDateSet.size > 0 ? attributeFilteredTrades.filter((trade) => previousDateSet.has(trade.tradeDate)) : [];
+    const manualComparisonTrades = isManualComparisonActive
+      ? attributeFilteredTrades.filter((trade) => {
+          if (selectedComparisonDateFilterStart && trade.tradeDate < selectedComparisonDateFilterStart) {
+            return false;
+          }
+
+          if (selectedComparisonDateFilterEnd && trade.tradeDate > selectedComparisonDateFilterEnd) {
+            return false;
+          }
+
+          return true;
+        })
+      : [];
+    const comparisonTrades = isManualComparisonActive ? manualComparisonTrades : previousTrades;
+    const comparisonDatesDesc = Array.from(new Set(comparisonTrades.map((trade) => trade.tradeDate))).sort(
+      (left, right) => right.localeCompare(left)
+    );
 
     return {
       currentDatesAsc,
       currentSessionCount: currentDatesDesc.length,
-      previousDatesAsc: [...previousDatesDesc].reverse(),
-      previousSessionCount: previousDatesDesc.length,
-      previousTrades
+      previousDatesAsc: [...comparisonDatesDesc].reverse(),
+      previousSessionCount: comparisonDatesDesc.length,
+      previousTrades: comparisonTrades
     };
-  }, [attributeFilteredTrades, filteredTrades]);
+  }, [
+    attributeFilteredTrades,
+    filteredTrades,
+    isManualComparisonActive,
+    selectedComparisonDateFilterEnd,
+    selectedComparisonDateFilterStart
+  ]);
   const hasPreviousSlice = comparisonWindow.previousSessionCount > 0 && comparisonWindow.previousTrades.length > 0;
   const currentSliceMetrics = useMemo(() => buildReportSliceMetrics(filteredTrades), [filteredTrades]);
-  const previousSliceMetrics = useMemo(
+  const comparisonSliceMetrics = useMemo(
     () => buildReportSliceMetrics(comparisonWindow.previousTrades),
     [comparisonWindow.previousTrades]
   );
   const effectiveSliceMode: ReportSliceMode = reportSliceMode === "previous" && hasPreviousSlice ? "previous" : "current";
-  const activeSliceMetrics = effectiveSliceMode === "previous" ? previousSliceMetrics : currentSliceMetrics;
+  const activeSliceMetrics = effectiveSliceMode === "previous" ? comparisonSliceMetrics : currentSliceMetrics;
   const {
     symbols,
     reportSummary,
@@ -593,13 +611,11 @@ export const ReportsPage = ({
     avgLoser,
     hourlyBreakdown,
     symbolRows,
-    topSymbols,
     gatewayRows,
     setupRows,
     mistakeRows,
     gameRows,
     executionRows,
-    cumulativeNetPnlSeries,
     dailyNetPnlSeries,
     feesByDateSeries,
     sharesTradedByDateSeries,
@@ -615,14 +631,19 @@ export const ReportsPage = ({
   } = activeSliceMetrics;
   const currentSliceWindowLabel = formatDateWindow(comparisonWindow.currentDatesAsc);
   const previousSliceWindowLabel = formatDateWindow(comparisonWindow.previousDatesAsc);
+  const comparisonSliceName = isManualComparisonActive ? "Comparison" : "Previous";
+  const comparisonCompactLabel = isManualComparisonActive ? "Compare" : "Prev";
+  const comparisonBadgeLabel = isManualComparisonActive ? "Current vs Comparison Range" : "Current vs Previous Slice";
   const activeSliceWindowLabel = effectiveSliceMode === "previous" ? previousSliceWindowLabel : currentSliceWindowLabel;
   const activeSliceSessionCount =
     effectiveSliceMode === "previous" ? comparisonWindow.previousSessionCount : comparisonWindow.currentSessionCount;
-  const comparisonReferenceMetrics = effectiveSliceMode === "previous" ? currentSliceMetrics : previousSliceMetrics;
+  const comparisonReferenceMetrics = effectiveSliceMode === "previous" ? currentSliceMetrics : comparisonSliceMetrics;
   const comparisonReferenceSummary = comparisonReferenceMetrics.reportSummary;
-  const comparisonReferenceLabel = effectiveSliceMode === "previous" ? "Current" : "Prev";
-  const activeSliceLabel = effectiveSliceMode === "previous" ? "Previous" : "Current";
-  const comparisonSliceLabel = effectiveSliceMode === "previous" ? "Current" : "Previous";
+  const comparisonReferenceLabel = effectiveSliceMode === "previous" ? "Current" : comparisonCompactLabel;
+  const activeSliceLabel = effectiveSliceMode === "previous" ? comparisonSliceName : "Current";
+  const comparisonSliceLabel = effectiveSliceMode === "previous" ? "Current" : comparisonSliceName;
+  const activeSliceTrades = effectiveSliceMode === "previous" ? comparisonWindow.previousTrades : filteredTrades;
+  const comparisonReferenceTrades = effectiveSliceMode === "previous" ? filteredTrades : comparisonWindow.previousTrades;
   const hourlyComparisonRows = useMemo(
     () =>
       buildHourlyComparisonRows(
@@ -645,9 +666,12 @@ export const ReportsPage = ({
     [hourlyComparisonRows]
   );
   const comparisonCoverageNote =
-    hasPreviousSlice && comparisonWindow.previousSessionCount < comparisonWindow.currentSessionCount
+    hasPreviousSlice && !isManualComparisonActive && comparisonWindow.previousSessionCount < comparisonWindow.currentSessionCount
       ? `Previous slice only has ${comparisonWindow.previousSessionCount} of ${comparisonWindow.currentSessionCount} sessions available.`
       : "";
+  const comparisonEmptyMessage = isManualComparisonActive
+    ? "The comparison range does not contain any saved sessions. Pick another comparison range."
+    : "Narrow the date range, or pick a comparison range, to compare the current slice against another period.";
   useEffect(() => {
     if (!hasPreviousSlice && reportSliceMode === "previous") {
       setReportSliceMode("current");
@@ -659,26 +683,26 @@ export const ReportsPage = ({
     }
 
     const currentSummary = currentSliceMetrics.reportSummary;
-    const previousSummary = previousSliceMetrics.reportSummary;
-    const netDelta = currentSummary.totalNetPnl - previousSummary.totalNetPnl;
-    const winRateDelta = currentSummary.winRate - previousSummary.winRate;
-    const tradeDelta = currentSummary.totalTrades - previousSummary.totalTrades;
-    const avgTradeDelta = currentSummary.avgTrade - previousSummary.avgTrade;
+    const comparisonSummary = comparisonSliceMetrics.reportSummary;
+    const netDelta = currentSummary.totalNetPnl - comparisonSummary.totalNetPnl;
+    const winRateDelta = currentSummary.winRate - comparisonSummary.winRate;
+    const tradeDelta = currentSummary.totalTrades - comparisonSummary.totalTrades;
+    const avgTradeDelta = currentSummary.avgTrade - comparisonSummary.avgTrade;
 
     return [
       {
         key: "net",
         label: "Net P&L",
         currentValue: formatSignedMoney(currentSummary.totalNetPnl),
-        previousValue: formatSignedMoney(previousSummary.totalNetPnl),
-        deltaValue: `${formatSignedMoney(netDelta)} (${formatRelativeDelta(netDelta, previousSummary.totalNetPnl)})`,
+        previousValue: formatSignedMoney(comparisonSummary.totalNetPnl),
+        deltaValue: `${formatSignedMoney(netDelta)} (${formatRelativeDelta(netDelta, comparisonSummary.totalNetPnl)})`,
         tone: getDeltaTone(netDelta)
       },
       {
         key: "winRate",
         label: "Win Rate",
         currentValue: `${currentSummary.winRate.toFixed(1)}%`,
-        previousValue: `${previousSummary.winRate.toFixed(1)}%`,
+        previousValue: `${comparisonSummary.winRate.toFixed(1)}%`,
         deltaValue: `${winRateDelta >= 0 ? "+" : ""}${winRateDelta.toFixed(1)} pts`,
         tone: getDeltaTone(winRateDelta)
       },
@@ -686,26 +710,28 @@ export const ReportsPage = ({
         key: "trades",
         label: "Trades",
         currentValue: currentSummary.totalTrades.toLocaleString(),
-        previousValue: previousSummary.totalTrades.toLocaleString(),
-        deltaValue: `${formatSignedCount(tradeDelta)} (${formatRelativeDelta(tradeDelta, previousSummary.totalTrades)})`,
+        previousValue: comparisonSummary.totalTrades.toLocaleString(),
+        deltaValue: `${formatSignedCount(tradeDelta)} (${formatRelativeDelta(tradeDelta, comparisonSummary.totalTrades)})`,
         tone: getDeltaTone(tradeDelta)
       },
       {
         key: "avgTrade",
         label: "Avg Trade",
         currentValue: formatSignedMoney(currentSummary.avgTrade),
-        previousValue: formatSignedMoney(previousSummary.avgTrade),
-        deltaValue: `${formatSignedMoney(avgTradeDelta)} (${formatRelativeDelta(avgTradeDelta, previousSummary.avgTrade)})`,
+        previousValue: formatSignedMoney(comparisonSummary.avgTrade),
+        deltaValue: `${formatSignedMoney(avgTradeDelta)} (${formatRelativeDelta(avgTradeDelta, comparisonSummary.avgTrade)})`,
         tone: getDeltaTone(avgTradeDelta)
       }
     ];
-  }, [currentSliceMetrics, hasPreviousSlice, previousSliceMetrics]);
+  }, [comparisonSliceMetrics, currentSliceMetrics, hasPreviousSlice]);
+  const activeDatePreset = DATE_RANGE_PRESETS.find((preset) => isDatePresetActive(preset)) ?? null;
+  const activeDateRangeLabel = formatActiveDateRange(selectedTradeDateFilterStart, selectedTradeDateFilterEnd);
   const activeFilters = [
     selectedTradeDateFilterStart || selectedTradeDateFilterEnd
       ? {
           key: "date" as const,
           label: "Date",
-          value: formatActiveDateRange(selectedTradeDateFilterStart, selectedTradeDateFilterEnd)
+          value: activeDateRangeLabel
         }
       : null,
     selectedPlaybookFilter !== "all"
@@ -728,6 +754,8 @@ export const ReportsPage = ({
   const clearFilters = () => {
     setSelectedTradeDateFilterStart("");
     setSelectedTradeDateFilterEnd("");
+    setSelectedComparisonDateFilterStart("");
+    setSelectedComparisonDateFilterEnd("");
     setSelectedPlaybookFilter("all");
     setSelectedSymbolFilter("all");
     setSelectedStatusFilter("all");
@@ -765,9 +793,10 @@ export const ReportsPage = ({
       <PageHero
         eyebrow="Reports"
         title="Reports"
+        icon="reports"
         className="page-hero-reports"
-        content={
-          <section className="trade-view-filter-panel page-hero-review-slice-embedded">
+      />
+      <section className="trade-view-filter-panel page-hero-review-slice-embedded">
             <div className="trade-view-filter-header">
               <div className="panel-header">
                 <WorkspaceIcon icon="review-slice" alt="Review slice icon" className="panel-header-icon" />
@@ -850,18 +879,25 @@ export const ReportsPage = ({
                 />
               </label>
             </div>
-            <div className="report-date-preset-row">
-              <span>Quick Ranges</span>
-              <div className="report-date-preset-actions">
+            <div className="report-date-preset-row" aria-label="Report date quick ranges">
+              <div className="report-date-preset-copy">
+                <span>Range</span>
+                <strong>{activeDatePreset?.label ?? "Custom Range"}</strong>
+                <small>{activeDateRangeLabel}</small>
+              </div>
+              <div className="report-date-preset-actions" role="group" aria-label="Quick date ranges">
                 {DATE_RANGE_PRESETS.map((preset) => (
                   <button
                     key={preset.key}
                     type="button"
-                    className={`mini-action report-date-preset-action ${isDatePresetActive(preset) ? "report-date-preset-action-active" : ""}`}
+                    className={`report-date-preset-action ${isDatePresetActive(preset) ? "report-date-preset-action-active" : ""}`}
                     onClick={() => applyDatePreset(preset)}
                     disabled={Boolean(preset.sessionCount && tradeDateOptions.length === 0)}
+                    aria-pressed={isDatePresetActive(preset)}
+                    title={preset.label}
                   >
-                    {preset.label}
+                    <span>{preset.shortLabel}</span>
+                    <small>{preset.detail}</small>
                   </button>
                 ))}
               </div>
@@ -889,40 +925,7 @@ export const ReportsPage = ({
                 </span>
               )}
             </div>
-          </section>
-        }
-      >
-        <div className="page-hero-stat-grid">
-          <div className="page-hero-stat-card report-hero-stat-card">
-            <span>Range</span>
-            <strong>{activeSliceWindowLabel}</strong>
-            <small>{`${activeSliceSessionCount} sessions (${effectiveSliceMode === "previous" ? "previous" : "current"} slice)`}</small>
-          </div>
-          <div className="page-hero-stat-card report-hero-stat-card">
-            <span>Trades</span>
-            <strong>{reportSummary.totalTrades.toLocaleString()}</strong>
-            <small>{reportSummary.winCount} wins / {reportSummary.lossCount} losses</small>
-          </div>
-          <div className="page-hero-stat-card report-hero-stat-card">
-            <span>Symbols</span>
-            <strong>{symbols}</strong>
-            <small>Top: {topSymbolLabel}</small>
-          </div>
-          <div
-            className={`page-hero-stat-card report-hero-stat-card ${
-              reportSummary.totalNetPnl >= 0 ? "report-hero-stat-card-positive" : "report-hero-stat-card-negative"
-            }`}
-          >
-            <span>Net P&amp;L</span>
-            <strong className={getSignedValueClassName(reportSummary.totalNetPnl)}>{formatSignedMoney(reportSummary.totalNetPnl)}</strong>
-            <small>
-              {hasPreviousSlice
-                ? `${comparisonReferenceLabel} ${formatSignedMoney(comparisonReferenceSummary.totalNetPnl)}`
-                : "Pick a quick range to compare periods"}
-            </small>
-          </div>
-        </div>
-      </PageHero>
+      </section>
       <section className="placeholder-panel report-period-compare-panel">
         <div className="report-period-compare-header">
           <div className="panel-header">
@@ -931,7 +934,7 @@ export const ReportsPage = ({
           </div>
           {hasPreviousSlice ? (
             <div className="report-period-compare-actions">
-              <span className="report-period-compare-badge">Current vs Previous Slice</span>
+              <span className="report-period-compare-badge">{comparisonBadgeLabel}</span>
               <div className="report-slice-mode-toggle" role="tablist" aria-label="Report slice mode">
                 <button
                   type="button"
@@ -947,13 +950,50 @@ export const ReportsPage = ({
                   onClick={() => setReportSliceMode("previous")}
                   aria-pressed={effectiveSliceMode === "previous"}
                 >
-                  View Previous
+                  View {comparisonSliceName}
                 </button>
               </div>
             </div>
           ) : (
-            <span className="report-period-compare-badge">Current vs Previous Slice</span>
+            <span className="report-period-compare-badge">{comparisonBadgeLabel}</span>
           )}
+        </div>
+        <div className="report-period-range-controls">
+          <div className="report-period-range-copy">
+            <span>{isManualComparisonActive ? "Manual comparison" : "Auto comparison"}</span>
+            <strong>{isManualComparisonActive ? previousSliceWindowLabel : "Previous matching sessions"}</strong>
+            <small>
+              {isManualComparisonActive
+                ? `${comparisonWindow.previousSessionCount} saved sessions`
+                : "Use the date picker to choose a custom comparison range."}
+            </small>
+          </div>
+          <label className="trade-filter-field report-period-range-field">
+            <span>Comparison</span>
+            <DateFilterPopover
+              mode="range"
+              startValue={selectedComparisonDateFilterStart}
+              endValue={selectedComparisonDateFilterEnd}
+              onRangeChange={(startValue, endValue) => {
+                setSelectedComparisonDateFilterStart(startValue);
+                setSelectedComparisonDateFilterEnd(endValue);
+              }}
+              availableDates={tradeDateOptions}
+              allLabel="Auto Previous"
+            />
+          </label>
+          {isManualComparisonActive ? (
+            <button
+              type="button"
+              className="mini-action report-period-auto-button"
+              onClick={() => {
+                setSelectedComparisonDateFilterStart("");
+                setSelectedComparisonDateFilterEnd("");
+              }}
+            >
+              Auto Previous
+            </button>
+          ) : null}
         </div>
         {hasPreviousSlice ? (
           <>
@@ -964,7 +1004,7 @@ export const ReportsPage = ({
                 <small>{comparisonWindow.currentSessionCount} sessions</small>
               </div>
               <div className="report-period-window-card report-period-window-card-previous">
-                <span>Previous Slice</span>
+                <span>{comparisonSliceName} Slice</span>
                 <strong>{previousSliceWindowLabel}</strong>
                 <small>{comparisonWindow.previousSessionCount} sessions</small>
               </div>
@@ -978,7 +1018,7 @@ export const ReportsPage = ({
                 >
                   <span>{metric.label}</span>
                   <strong>{metric.currentValue}</strong>
-                  <small>Prev {metric.previousValue}</small>
+                  <small>{comparisonCompactLabel} {metric.previousValue}</small>
                   <em className={`report-period-delta report-period-delta-${metric.tone}`}>{metric.deltaValue}</em>
                 </div>
               ))}
@@ -986,12 +1026,12 @@ export const ReportsPage = ({
           </>
         ) : (
           <div className="empty-state report-period-compare-empty">
-            Narrow the date range (Quick Ranges works well) to compare the current slice against a previous one.
+            {comparisonEmptyMessage}
           </div>
         )}
       </section>
       <div className="report-slice-context-note">
-        Showing <strong>{effectiveSliceMode === "previous" ? "Previous Slice" : "Current Slice"}</strong> across all report panels.
+        Showing <strong>{effectiveSliceMode === "previous" ? `${comparisonSliceName} Slice` : "Current Slice"}</strong> across all report panels.
       </div>
       <section className="analytics-grid">
         <article className="placeholder-panel analytics-panel analytics-grid-full">
@@ -1206,68 +1246,12 @@ export const ReportsPage = ({
       </section>
       <section className="analytics-grid analytics-grid-single">
         <article className="placeholder-panel analytics-panel">
-          <ReportLineChart
-            points={cumulativeNetPnlSeries}
-            comparePoints={hasPreviousSlice ? comparisonReferenceMetrics.cumulativeNetPnlSeries : []}
-            color="#89d8ab"
-            title="Cumulative Net P&L"
-            yAxisLabel="Net PnL USD (Running)"
-            valueFormatter={(value) => formatSignedMoney(value)}
-            primarySeriesLabel={activeSliceLabel}
-            compareSeriesLabel={comparisonSliceLabel}
-          />
-        </article>
-      </section>
-      <section className="analytics-grid">
-        <article className="placeholder-panel analytics-panel">
-          <ReportBarChart
+          <DailyPnlOverview
             points={dailyNetPnlSeries}
             comparePoints={hasPreviousSlice ? comparisonReferenceMetrics.dailyNetPnlSeries : []}
+            trades={activeSliceTrades}
+            compareTrades={hasPreviousSlice ? comparisonReferenceTrades : []}
             title="Daily Net P&L"
-            yAxisLabel="Net PnL USD"
-            positiveColor="#2ee6d6"
-            negativeColor="#b42eff"
-            valueFormatter={(value) => formatSignedMoney(value)}
-            primarySeriesLabel={activeSliceLabel}
-            compareSeriesLabel={comparisonSliceLabel}
-          />
-        </article>
-        <article className="placeholder-panel analytics-panel">
-          <ReportBarChart
-            points={feesByDateSeries}
-            comparePoints={hasPreviousSlice ? comparisonReferenceMetrics.feesByDateSeries : []}
-            title="Fees Over Time"
-            yAxisLabel="Fees USD"
-            color="#ffd66b"
-            positiveColor="#ffd66b"
-            negativeColor="#ffd66b"
-            valueFormatter={(value) => `$${value.toFixed(2)}`}
-            primarySeriesLabel={activeSliceLabel}
-            compareSeriesLabel={comparisonSliceLabel}
-          />
-        </article>
-      </section>
-      <section className="analytics-grid">
-        <article className="placeholder-panel analytics-panel">
-          <ReportBarChart
-            points={sharesTradedByDateSeries}
-            comparePoints={hasPreviousSlice ? comparisonReferenceMetrics.sharesTradedByDateSeries : []}
-            title="Shares Traded Over Time"
-            yAxisLabel="Shares Traded"
-            color="#5da8ff"
-            positiveColor="#5da8ff"
-            valueFormatter={(value) => value.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-            primarySeriesLabel={activeSliceLabel}
-            compareSeriesLabel={comparisonSliceLabel}
-          />
-        </article>
-        <article className="placeholder-panel analytics-panel">
-          <ReportBarChart
-            points={playbookNetPnlSeries}
-            comparePoints={hasPreviousSlice ? comparisonReferenceMetrics.playbookNetPnlSeries : []}
-            title="Best / Worst Playbooks"
-            yAxisLabel="Net PnL USD"
-            color="#5da8ff"
             positiveColor="#2ee6d6"
             negativeColor="#b42eff"
             valueFormatter={(value) => formatSignedMoney(value)}
@@ -1278,14 +1262,104 @@ export const ReportsPage = ({
       </section>
       <section className="analytics-grid analytics-grid-single">
         <article className="placeholder-panel analytics-panel">
+          <ReportLineChart
+            points={feesByDateSeries}
+            comparePoints={hasPreviousSlice ? comparisonReferenceMetrics.feesByDateSeries : []}
+            title="Fees Over Time"
+            yAxisLabel="Fees USD"
+            color="#2ee6d6"
+            compareColor="#2ee6d6"
+            valueFormatter={(value) => `$${value.toFixed(2)}`}
+            primarySeriesLabel={activeSliceLabel}
+            compareSeriesLabel={comparisonSliceLabel}
+          />
+        </article>
+      </section>
+      <section className="analytics-grid analytics-grid-single">
+        <article className="placeholder-panel analytics-panel">
+          <ReportLineChart
+            points={sharesTradedByDateSeries}
+            comparePoints={hasPreviousSlice ? comparisonReferenceMetrics.sharesTradedByDateSeries : []}
+            title="Shares Traded Over Time"
+            yAxisLabel="Shares Traded"
+            color="#5da8ff"
+            compareColor="#93bfff"
+            valueFormatter={(value) => value.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            primarySeriesLabel={activeSliceLabel}
+            compareSeriesLabel={comparisonSliceLabel}
+          />
+        </article>
+      </section>
+      <section className="analytics-grid analytics-grid-single">
+        <article className="placeholder-panel analytics-panel">
+          <ReportBarChart
+            points={playbookNetPnlSeries}
+            comparePoints={hasPreviousSlice ? comparisonReferenceMetrics.playbookNetPnlSeries : []}
+            title="Playbook Net P&L"
+            yAxisLabel="Net PnL USD"
+            color="#5da8ff"
+            positiveColor="#2ee6d6"
+            negativeColor="#b42eff"
+            compareMode="label"
+            horizontalLabelWidth={250}
+            horizontalLabelMaxLength={30}
+            horizontalRowHeight={30}
+            showAllCategoryLabels
+            showValueLabels
+            valueFormatter={(value) => formatSignedMoney(value)}
+            primarySeriesLabel={activeSliceLabel}
+            compareSeriesLabel={comparisonSliceLabel}
+          />
+        </article>
+      </section>
+      <section className="analytics-grid analytics-grid-single">
+        <article className="placeholder-panel analytics-panel">
+          <div className="panel-header">
+            <WorkspaceIcon icon="journal" alt="Setup breakdown icon" className="panel-header-icon" />
+            <h2>Playbook Performance</h2>
+          </div>
+          <AnalyticsTable
+            rows={setupRows}
+            emptyMessage="Load trades to compare playbooks."
+            columns={[
+              { key: "label", label: "Playbook", render: (row) => row.label },
+              { key: "trades", label: "Trades", render: (row) => row.trades, align: "right" },
+              {
+                key: "totalSharesTraded",
+                label: "Shares",
+                render: (row) => (row.totalSharesTraded ?? 0).toLocaleString(),
+                align: "right"
+              },
+              { key: "winRate", label: "Win Rate", render: (row) => `${row.winRate.toFixed(1)}%`, align: "right" },
+              {
+                key: "avgPnl",
+                label: "Avg Trade",
+                render: (row) => formatSignedMoney(row.avgPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.avgPnl)
+              },
+              {
+                key: "netPnl",
+                label: "Net PnL",
+                render: (row) => formatSignedMoney(row.netPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.netPnl)
+              },
+              { key: "totalFees", label: "Fees", render: (row) => `$${(row.totalFees ?? 0).toFixed(2)}`, align: "right" }
+            ]}
+          />
+        </article>
+      </section>
+      <section className="analytics-grid analytics-grid-single">
+        <article className="placeholder-panel analytics-panel">
           <ReportBarChart
             points={mistakeLossSeries}
             comparePoints={hasPreviousSlice ? comparisonReferenceMetrics.mistakeLossSeries : []}
             title="Mistakes By Total Loss"
             yAxisLabel="Net PnL USD"
-            color="#ff6f91"
+            color="#b42eff"
             positiveColor="#2ee6d6"
-            negativeColor="#ff6f91"
+            negativeColor="#b42eff"
             valueFormatter={(value) => formatSignedMoney(value)}
             primarySeriesLabel={activeSliceLabel}
             compareSeriesLabel={comparisonSliceLabel}
@@ -1295,7 +1369,7 @@ export const ReportsPage = ({
       <section className="analytics-grid">
         <article className="placeholder-panel analytics-panel">
           <div className="panel-header">
-            <WorkspaceIcon icon="dashboard" alt="Session breakdown icon" className="panel-header-icon" />
+            <WorkspaceIcon icon="hourglass" alt="Session breakdown icon" className="panel-header-icon" />
             <h2>Breakdown: Session</h2>
           </div>
           <AnalyticsTable
@@ -1331,12 +1405,12 @@ export const ReportsPage = ({
         </article>
         <article className="placeholder-panel analytics-panel">
           <div className="panel-header">
-            <WorkspaceIcon icon="tags" alt="Top symbols icon" className="panel-header-icon" />
-            <h2>Top Symbols</h2>
+            <WorkspaceIcon icon="candles-chart" alt="Symbol performance icon" className="panel-header-icon" />
+            <h2>Symbol Performance</h2>
           </div>
           <AnalyticsTable
-            rows={topSymbols}
-            emptyMessage="Adjust the report filters to populate symbol leaders."
+            rows={symbolRows}
+            emptyMessage="Load trades to see symbol performance."
             columns={[
               {
                 key: "label",
@@ -1353,8 +1427,15 @@ export const ReportsPage = ({
               },
               { key: "winRate", label: "Win Rate", render: (row) => `${row.winRate.toFixed(1)}%`, align: "right" },
               {
+                key: "avgPnl",
+                label: "Avg Trade",
+                render: (row) => formatSignedMoney(row.avgPnl),
+                align: "right",
+                className: (row) => getSignedValueClassName(row.avgPnl)
+              },
+              {
                 key: "netPnl",
-                label: "Net P&L",
+                label: "Net PnL",
                 render: (row) => formatSignedMoney(row.netPnl),
                 align: "right",
                 className: (row) => getSignedValueClassName(row.netPnl)
@@ -1367,7 +1448,7 @@ export const ReportsPage = ({
       <section className="analytics-grid analytics-grid-single">
         <article className="placeholder-panel analytics-panel">
           <div className="panel-header">
-            <WorkspaceIcon icon="money" alt="Hourly pnl icon" className="panel-header-icon" />
+            <WorkspaceIcon icon="hourglass" alt="Hourly pnl icon" className="panel-header-icon" />
             <h2>30-Min P&amp;L</h2>
             {hasPreviousSlice ? (
               <span className="report-line-chart-readout">
@@ -1412,85 +1493,6 @@ export const ReportsPage = ({
           ) : (
             <div className="empty-state">Adjust the report filters to populate 30-minute P&amp;L bars.</div>
           )}
-        </article>
-      </section>
-      <section className="analytics-grid">
-        <article className="placeholder-panel analytics-panel">
-          <div className="panel-header">
-            <WorkspaceIcon icon="reports" alt="Symbol performance icon" className="panel-header-icon" />
-            <h2>Symbol Performance</h2>
-          </div>
-          <AnalyticsTable
-            rows={symbolRows}
-            emptyMessage="Load trades to see symbol performance."
-            columns={[
-              {
-                key: "label",
-                label: "Symbol",
-                render: (row) => <SymbolPills symbols={[row.label]} />,
-                className: "analytics-symbol-cell"
-              },
-              { key: "trades", label: "Trades", render: (row) => row.trades, align: "right" },
-              {
-                key: "totalSharesTraded",
-                label: "Shares",
-                render: (row) => (row.totalSharesTraded ?? 0).toLocaleString(),
-                align: "right"
-              },
-              { key: "winRate", label: "Win Rate", render: (row) => `${row.winRate.toFixed(1)}%`, align: "right" },
-              {
-                key: "avgPnl",
-                label: "Avg Trade",
-                render: (row) => formatSignedMoney(row.avgPnl),
-                align: "right",
-                className: (row) => getSignedValueClassName(row.avgPnl)
-              },
-              {
-                key: "netPnl",
-                label: "Net PnL",
-                render: (row) => formatSignedMoney(row.netPnl),
-                align: "right",
-                className: (row) => getSignedValueClassName(row.netPnl)
-              },
-              { key: "totalFees", label: "Fees", render: (row) => `$${(row.totalFees ?? 0).toFixed(2)}`, align: "right" }
-            ]}
-          />
-        </article>
-        <article className="placeholder-panel analytics-panel">
-          <div className="panel-header">
-            <WorkspaceIcon icon="journal" alt="Setup breakdown icon" className="panel-header-icon" />
-            <h2>Playbook Performance</h2>
-          </div>
-          <AnalyticsTable
-            rows={setupRows}
-            emptyMessage="Load trades to compare playbooks."
-            columns={[
-              { key: "label", label: "Playbook", render: (row) => row.label },
-              { key: "trades", label: "Trades", render: (row) => row.trades, align: "right" },
-              {
-                key: "totalSharesTraded",
-                label: "Shares",
-                render: (row) => (row.totalSharesTraded ?? 0).toLocaleString(),
-                align: "right"
-              },
-              { key: "winRate", label: "Win Rate", render: (row) => `${row.winRate.toFixed(1)}%`, align: "right" },
-              {
-                key: "avgPnl",
-                label: "Avg Trade",
-                render: (row) => formatSignedMoney(row.avgPnl),
-                align: "right",
-                className: (row) => getSignedValueClassName(row.avgPnl)
-              },
-              {
-                key: "netPnl",
-                label: "Net PnL",
-                render: (row) => formatSignedMoney(row.netPnl),
-                align: "right",
-                className: (row) => getSignedValueClassName(row.netPnl)
-              },
-              { key: "totalFees", label: "Fees", render: (row) => `$${(row.totalFees ?? 0).toFixed(2)}`, align: "right" }
-            ]}
-          />
         </article>
       </section>
       <section className="analytics-grid">

@@ -16,6 +16,12 @@ interface ReportBarChartProps {
   layout?: "vertical" | "horizontal";
   primarySeriesLabel?: string;
   compareSeriesLabel?: string;
+  compareMode?: "index" | "label";
+  horizontalLabelWidth?: number;
+  horizontalLabelMaxLength?: number;
+  horizontalRowHeight?: number;
+  showAllCategoryLabels?: boolean;
+  showValueLabels?: boolean;
 }
 
 const formatChartLabel = (value: string): string => {
@@ -30,9 +36,9 @@ const formatChartLabel = (value: string): string => {
   return value;
 };
 
-const formatShortLabel = (value: string): string => {
+const formatShortLabel = (value: string, maxLength = 18): string => {
   const formatted = formatChartLabel(value);
-  return formatted.length > 18 ? `${formatted.slice(0, 17)}...` : formatted;
+  return formatted.length > maxLength ? `${formatted.slice(0, Math.max(1, maxLength - 1))}...` : formatted;
 };
 
 const formatAxisValue = (value: number): string => {
@@ -73,7 +79,13 @@ export const ReportBarChart = ({
   labelFormatter = formatChartLabel,
   layout = "horizontal",
   primarySeriesLabel = "Current",
-  compareSeriesLabel = "Previous"
+  compareSeriesLabel = "Previous",
+  compareMode = "index",
+  horizontalLabelWidth = 190,
+  horizontalLabelMaxLength = 18,
+  horizontalRowHeight = 22,
+  showAllCategoryLabels = false,
+  showValueLabels = false
 }: ReportBarChartProps) => {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const chartId = useId().replace(/:/g, "");
@@ -84,19 +96,42 @@ export const ReportBarChart = ({
     const paddingTop = 34;
     const paddingRight = 80;
     const paddingBottom = layout === "horizontal" ? 72 : 82;
-    const paddingLeft = layout === "horizontal" ? 190 : 84;
+    const paddingLeft = layout === "horizontal" ? horizontalLabelWidth : 84;
     const minInnerHeight = baseHeight - paddingTop - paddingBottom;
     const innerWidth = width - paddingLeft - paddingRight;
     const innerHeight =
-      layout === "horizontal" ? Math.max(minInnerHeight, points.length * 22) : minInnerHeight;
+      layout === "horizontal" ? Math.max(minInnerHeight, points.length * horizontalRowHeight) : minInnerHeight;
     const height = paddingTop + paddingBottom + innerHeight;
-    const values = [...points.map((point) => point.value), ...comparePoints.map((point) => point.value)];
+    const pointLabels = new Set(points.map((point) => point.label));
+    const values = [
+      ...points.map((point) => point.value),
+      ...comparePoints
+        .filter((point) => compareMode === "index" || pointLabels.has(point.label))
+        .map((point) => point.value)
+    ];
     const minValue = values.length > 0 ? Math.min(...values, 0) : 0;
     const maxValue = values.length > 0 ? Math.max(...values, 0) : 0;
     const rawRange = maxValue - minValue || Math.max(1, Math.abs(maxValue), Math.abs(minValue));
     const chartMin = minValue < 0 ? minValue - rawRange * 0.12 : 0;
     const chartMax = maxValue > 0 ? maxValue + rawRange * 0.12 : 0;
     const chartRange = chartMax - chartMin || 1;
+    const comparePointsByLabel =
+      compareMode === "label" ? new Map(comparePoints.map((point) => [point.label, point])) : null;
+    const getComparePoint = (index: number) => {
+      if (comparePoints.length === 0) {
+        return null;
+      }
+
+      if (comparePointsByLabel) {
+        return comparePointsByLabel.get(points[index]?.label ?? "") ?? null;
+      }
+
+      const mappedIndex =
+        points.length <= 1 || comparePoints.length <= 1
+          ? Math.min(index, comparePoints.length - 1)
+          : Math.round((index / (points.length - 1)) * (comparePoints.length - 1));
+      return comparePoints[mappedIndex] ?? null;
+    };
 
     if (layout === "vertical") {
       const yScale = (value: number) => paddingTop + innerHeight - ((value - chartMin) / chartRange) * innerHeight;
@@ -119,14 +154,7 @@ export const ReportBarChart = ({
         };
       });
       const compareBars = points.map((_, index) => {
-        if (comparePoints.length === 0) {
-          return null;
-        }
-        const mappedIndex =
-          points.length <= 1 || comparePoints.length <= 1
-            ? Math.min(index, comparePoints.length - 1)
-            : Math.round((index / (points.length - 1)) * (comparePoints.length - 1));
-        const comparePoint = comparePoints[mappedIndex];
+        const comparePoint = getComparePoint(index);
         if (!comparePoint) {
           return null;
         }
@@ -153,7 +181,7 @@ export const ReportBarChart = ({
           y: yScale(value)
         };
       });
-      const categoryTickCount = Math.min(8, points.length);
+      const categoryTickCount = Math.min(showAllCategoryLabels ? points.length : 8, points.length);
       const categoryTickIndexes =
         categoryTickCount <= 1
           ? [0]
@@ -216,14 +244,7 @@ export const ReportBarChart = ({
       };
     });
     const compareBars = points.map((_, index) => {
-      if (comparePoints.length === 0) {
-        return null;
-      }
-      const mappedIndex =
-        points.length <= 1 || comparePoints.length <= 1
-          ? Math.min(index, comparePoints.length - 1)
-          : Math.round((index / (points.length - 1)) * (comparePoints.length - 1));
-      const comparePoint = comparePoints[mappedIndex];
+      const comparePoint = getComparePoint(index);
       if (!comparePoint) {
         return null;
       }
@@ -252,7 +273,7 @@ export const ReportBarChart = ({
       };
     });
 
-    const categoryTickCount = Math.min(10, points.length);
+    const categoryTickCount = Math.min(showAllCategoryLabels ? points.length : 10, points.length);
     const categoryTickIndexes =
       categoryTickCount <= 1
         ? [0]
@@ -293,7 +314,7 @@ export const ReportBarChart = ({
       valueTicks,
       width
     };
-  }, [comparePoints, layout, points]);
+  }, [compareMode, comparePoints, horizontalLabelWidth, horizontalRowHeight, layout, points, showAllCategoryLabels]);
 
   if (points.length === 0) {
     return <div className="empty-state">Adjust the report filters to populate this chart.</div>;
@@ -348,6 +369,28 @@ export const ReportBarChart = ({
             anchor: "middle"
           }
         : null;
+  const getValueLabelPosition = (point: { value: number; rectX: number; rectY: number; barLength: number; barBreadth: number }) => {
+    if (chart.layout !== "horizontal") {
+      return null;
+    }
+
+    const minX = chart.paddingLeft + 8;
+    const maxX = chart.width - chart.paddingRight - 8;
+    const targetX = point.value >= 0 ? point.rectX + point.barLength + 10 : point.rectX - 10;
+
+    return {
+      x: Math.max(minX, Math.min(maxX, targetX)),
+      y: point.rectY + point.barBreadth / 2 + 4,
+      anchor:
+        point.value >= 0
+          ? targetX > maxX
+            ? "end"
+            : "start"
+          : targetX < minX
+            ? "start"
+            : "end"
+    } as const;
+  };
 
   const handlePointerMove = (event: PointerEvent<SVGRectElement>) => {
     const bounds = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
@@ -468,7 +511,7 @@ export const ReportBarChart = ({
                     className="report-line-chart-grid"
                   />
                   <text x={chart.paddingLeft - 12} y={tick.y + 4} textAnchor="end" className="report-line-chart-tick">
-                    {formatShortLabel(tick.label)}
+                    {formatShortLabel(tick.label, horizontalLabelMaxLength)}
                   </text>
                 </g>
               ))
@@ -482,7 +525,7 @@ export const ReportBarChart = ({
                     className="report-line-chart-grid report-line-chart-grid-vertical"
                   />
                   <text x={tick.x} y={chart.height - 30} textAnchor="middle" className="report-line-chart-tick">
-                    {formatShortLabel(tick.label)}
+                    {formatShortLabel(tick.label, horizontalLabelMaxLength)}
                   </text>
                 </g>
               ))}
@@ -555,6 +598,24 @@ export const ReportBarChart = ({
               filter={hoveredIndex === index ? `url(#${chartId}-bar-glow)` : undefined}
             />
           ))}
+          {showValueLabels
+            ? chart.chartBars.map((point, index) => {
+                const position = getValueLabelPosition(point);
+                return position ? (
+                  <text
+                    key={`${point.label}-${index}-value`}
+                    x={position.x}
+                    y={position.y}
+                    textAnchor={position.anchor}
+                    className={`report-bar-chart-value-label ${
+                      point.value < 0 ? "report-bar-chart-value-label-negative" : "report-bar-chart-value-label-positive"
+                    }`}
+                  >
+                    {valueFormatter(point.value)}
+                  </text>
+                ) : null;
+              })
+            : null}
           {hoveredPoint && hoveredValueLabel ? (
             <text
               x={hoveredValueLabel.x}

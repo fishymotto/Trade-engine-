@@ -1295,7 +1295,7 @@ export const JournalPage = ({
       <PageHero
         eyebrow="Journal"
         title="Trading Journal"
-        description="Manual daily review pages with fixed journal sections, compact trade context, and room for deeper written notes."
+        icon="journal"
       />
       <section className="journal-grid">
         <aside className="journal-sidebar">

@@ -678,9 +678,10 @@ export const TradesPage = ({
       <PageHero
         eyebrow="Trades"
         title="Trade Review"
+        icon="trades"
         className="page-hero-trades"
-        content={
-          <section className="trade-view-filter-panel page-hero-review-slice-embedded">
+      />
+      <section className="trade-view-filter-panel page-hero-review-slice-embedded">
             <div className="trade-view-filter-header">
               <div className="panel-header">
                 <WorkspaceIcon icon="review-slice" alt="Review slice icon" className="panel-header-icon" />
@@ -781,28 +782,7 @@ export const TradesPage = ({
                 </span>
               )}
             </div>
-          </section>
-        }
-      >
-        <div className="page-hero-stat-grid">
-          <div className="page-hero-stat-card">
-            <span>Range</span>
-            <strong>{formatActiveDateRange(selectedTradeDateFilterStart, selectedTradeDateFilterEnd)}</strong>
-          </div>
-          <div className="page-hero-stat-card">
-            <span>Trades</span>
-            <strong>{filteredTrades.length}</strong>
-          </div>
-          <div className="page-hero-stat-card">
-            <span>Symbols</span>
-            <strong>{filteredSymbolCount}</strong>
-          </div>
-          <div className="page-hero-stat-card">
-            <span>Selected</span>
-            <strong>{selectedTrade?.name ?? "No trade selected"}</strong>
-          </div>
-        </div>
-      </PageHero>
+      </section>
       <section className="trades-review-grid trades-review-grid-advanced">
         <article className="placeholder-panel chart-panel chart-panel-wide">
           <input

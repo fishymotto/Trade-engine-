@@ -125,24 +125,12 @@ export const ImportPage = ({
   const isSendWorkspaceTab = activeTab === "send-workspace";
   const lastExportedLabel = formatWorkspaceSyncTimestamp(settings.workspaceTransferLastExportedAt);
   const lastImportedLabel = formatWorkspaceSyncTimestamp(settings.workspaceTransferLastImportedAt);
-  const importHeroCopy =
+  const importHeroTitle =
     activeTab === "trade-csv"
-      ? {
-          title: "Bring In Trade Detail CSVs",
-          description:
-            "Load raw PPro8 trade detail exports, review the grouped trades, then save or export them when you're ready."
-        }
+      ? "Bring In Trade Detail CSVs"
       : activeTab === "send-workspace"
-        ? {
-            title: "Create Workspace Sync Files",
-            description:
-              "Package a full workspace or recent updates into one manual sync file for the other computer."
-          }
-        : {
-            title: "Receive Workspace Sync Files",
-            description:
-              "Import a sync file from the other computer to merge missing sessions or restore a full exported workspace."
-          };
+        ? "Create Workspace Sync Files"
+        : "Receive Workspace Sync Files";
 
   const handleDrop = (event: DragEvent<HTMLElement>) => {
     event.preventDefault();
@@ -176,8 +164,8 @@ export const ImportPage = ({
     >
       <PageHero
         eyebrow="Imports"
-        title={importHeroCopy.title}
-        description={importHeroCopy.description}
+        title={importHeroTitle}
+        icon="import"
       />
       <div className="import-page-tabs" role="tablist" aria-label="Import types">
         <button

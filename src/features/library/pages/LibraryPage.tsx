@@ -10,6 +10,7 @@ import { FilterSelect } from "../../../components/FilterSelect";
 import { TagDrawer } from "../../../components/TagDrawer";
 import { ErrorBoundary } from "../../../components/ErrorBoundary";
 import { getTickerIcon, resolveTickerGroupIcon, tickerIcons } from "../../../lib/tickers/tickerIcons";
+import { parseTickerList } from "../../../lib/tickers/tickerList";
 import { useDebouncedSave } from "../../../lib/hooks/useDebouncedSave";
 import { useEditableSelectOptions } from "../../../lib/select/useEditableSelectOptions";
 import {
@@ -23,7 +24,7 @@ import {
   saveLibraryPages
 } from "../../../lib/library/libraryStore";
 import type { LibraryCollectionId, LibraryPageRecord } from "../../../types/library";
-import type { JournalPageRecord } from "../../../types/journal";
+import type { JournalPageRecord, JournalScreenshotTagRecord, JournalScreenshotTradeLink } from "../../../types/journal";
 import type { Settings } from "../../../types/trade";
 import type { GroupedTrade } from "../../../types/trade";
 import { ReviewDatabaseTable } from "../components/ReviewDatabaseTable";
@@ -497,6 +498,21 @@ const formatSignedUsd = (value: number): string => {
   return amount >= 0 ? `+$${formatted}` : `-$${formatted}`;
 };
 
+const formatUsd = (value: number): string => {
+  const amount = Number.isFinite(value) ? value : 0;
+  return `$${Math.abs(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+
+const formatTradePrice = (value: number): string => (Number.isFinite(value) ? value.toFixed(4) : "-");
+
+const formatSignedDecimal = (value: number, digits = 4): string => {
+  const amount = Number.isFinite(value) ? value : 0;
+  const formatted = Math.abs(amount).toFixed(digits);
+  return amount >= 0 ? `+${formatted}` : `-${formatted}`;
+};
+
+const formatTradeNumber = (value: number): string => (Number.isFinite(value) ? value.toLocaleString() : "-");
+
 type ReviewComparisonTone = "positive" | "negative" | "neutral";
 
 type ReviewCompareCardData = {
@@ -504,6 +520,300 @@ type ReviewCompareCardData = {
   previousLabel: string;
   deltaLabel: string;
   deltaTone: ReviewComparisonTone;
+};
+
+type TaggedReviewChart = {
+  screenshotUrl: string;
+  taggedDate: string;
+  journalTradeDate: string;
+  updatedAt: string;
+};
+
+type ReviewTradeSpotlightData = {
+  trade: GroupedTrade;
+  taggedChart: TaggedReviewChart | null;
+};
+
+type ReviewTradeSpotlightKind = "best" | "worst";
+
+const REVIEW_TRADE_LINK_SEPARATOR = "::";
+
+const dedupeReviewScreenshotTradeLinks = (links: JournalScreenshotTradeLink[]): JournalScreenshotTradeLink[] => {
+  const unique = new Map<string, JournalScreenshotTradeLink>();
+
+  for (const link of links) {
+    const tradeId = typeof link.tradeId === "string" ? link.tradeId.trim() : "";
+    const tradeDate = typeof link.tradeDate === "string" ? normalizeIsoTradeDate(link.tradeDate) : "";
+    if (!tradeId || !tradeDate) {
+      continue;
+    }
+
+    unique.set(`${tradeId}${REVIEW_TRADE_LINK_SEPARATOR}${tradeDate}`, { tradeId, tradeDate });
+  }
+
+  return Array.from(unique.values());
+};
+
+const getReviewScreenshotTradeLinks = (
+  screenshotTag: JournalScreenshotTagRecord | undefined
+): JournalScreenshotTradeLink[] => {
+  if (!screenshotTag) {
+    return [];
+  }
+
+  const normalizedLinkedTrades = Array.isArray(screenshotTag.linkedTrades)
+    ? screenshotTag.linkedTrades.map((link) => ({
+        tradeId: typeof link.tradeId === "string" ? link.tradeId.trim() : "",
+        tradeDate: typeof link.tradeDate === "string" ? normalizeIsoTradeDate(link.tradeDate) : ""
+      }))
+    : [];
+
+  const legacyTradeId = typeof screenshotTag.linkedTradeId === "string" ? screenshotTag.linkedTradeId.trim() : "";
+  const legacyTradeDate =
+    typeof screenshotTag.linkedTradeDate === "string" ? normalizeIsoTradeDate(screenshotTag.linkedTradeDate) : "";
+  const legacyLink =
+    legacyTradeId && legacyTradeDate
+      ? [
+          {
+            tradeId: legacyTradeId,
+            tradeDate: legacyTradeDate
+          }
+        ]
+      : [];
+
+  return dedupeReviewScreenshotTradeLinks([...normalizedLinkedTrades, ...legacyLink]);
+};
+
+const findTaggedChartForTrade = (journalPages: JournalPageRecord[], trade: GroupedTrade): TaggedReviewChart | null => {
+  const tradeDate = normalizeIsoTradeDate(trade.tradeDate);
+  let match: TaggedReviewChart | null = null;
+
+  for (const page of journalPages) {
+    const screenshotUrls = Array.isArray(page.screenshotUrls) ? page.screenshotUrls : [];
+    const screenshotTags = Array.isArray(page.screenshotTags) ? page.screenshotTags : [];
+    const journalTradeDate = normalizeIsoTradeDate(page.tradeDate);
+
+    for (const [index, screenshotUrl] of screenshotUrls.entries()) {
+      if (typeof screenshotUrl !== "string" || !screenshotUrl.trim()) {
+        continue;
+      }
+
+      const screenshotTag = screenshotTags[index];
+      const isLinkedToTrade = getReviewScreenshotTradeLinks(screenshotTag).some(
+        (link) => link.tradeId === trade.id && (!tradeDate || link.tradeDate === tradeDate)
+      );
+
+      if (!isLinkedToTrade) {
+        continue;
+      }
+
+      const taggedDate =
+        typeof screenshotTag?.taggedDate === "string" ? normalizeIsoTradeDate(screenshotTag.taggedDate) : "";
+      const candidate: TaggedReviewChart = {
+        screenshotUrl,
+        taggedDate: taggedDate || journalTradeDate,
+        journalTradeDate,
+        updatedAt: page.updatedAt
+      };
+
+      if (!match || Date.parse(candidate.updatedAt || "") >= Date.parse(match.updatedAt || "")) {
+        match = candidate;
+      }
+    }
+  }
+
+  return match;
+};
+
+const ReviewTradeSpotlightCard = ({
+  kind,
+  data,
+  onSelectTrade,
+  onOpenJournalDate
+}: {
+  kind: ReviewTradeSpotlightKind;
+  data: ReviewTradeSpotlightData | null;
+  onSelectTrade: (tradeId: string, tradeDate: string) => void;
+  onOpenJournalDate: (tradeDate: string) => void;
+}) => {
+  const isWorst = kind === "worst";
+  const title = isWorst ? "Worst Trade" : "Best Trade";
+  const emptyTitle = isWorst ? "No worst trade yet." : "No best trade yet.";
+
+  return (
+    <section
+      className={`journal-writing-section review-writing-section review-best-trade-section${
+        isWorst ? " review-worst-trade-section" : ""
+      }`}
+    >
+      <div className="journal-writing-header">
+        <div className="journal-writing-header-title">
+          <WorkspaceIcon icon={isWorst ? "execution" : "win"} alt="" className="mini-action-icon" />
+          <strong>{title}</strong>
+        </div>
+        {data ? (
+          <div className="journal-writing-header-actions">
+            <button
+              type="button"
+              className="mini-action"
+              onClick={() =>
+                onSelectTrade(data.trade.id, normalizeIsoTradeDate(data.trade.tradeDate) || data.trade.tradeDate)
+              }
+            >
+              Open Trade
+            </button>
+          </div>
+        ) : null}
+      </div>
+
+      {data ? (
+        (() => {
+          const { trade, taggedChart } = data;
+          const tradeDate = normalizeIsoTradeDate(trade.tradeDate);
+          const symbolIcon = getTickerIcon(trade.symbol);
+          const fillCount = trade.openingExecutions.length + trade.closingExecutions.length;
+          const statCards: Array<{ label: string; value: string; tone?: "positive" | "negative" }> = [
+            {
+              label: "Net PnL",
+              value: formatSignedUsd(trade.netPnlUsd),
+              tone: trade.netPnlUsd >= 0 ? "positive" : "negative"
+            },
+            {
+              label: "Gross PnL",
+              value: formatSignedUsd(trade.grossPnlUsd),
+              tone: trade.grossPnlUsd >= 0 ? "positive" : "negative"
+            },
+            { label: "Fees", value: formatUsd(trade.feesUsd) },
+            {
+              label: "Return / Share",
+              value: formatSignedDecimal(trade.returnPerShare),
+              tone: trade.returnPerShare >= 0 ? "positive" : "negative"
+            },
+            { label: "Size", value: formatTradeNumber(Math.abs(trade.size || 0)) },
+            { label: "Entry", value: formatTradePrice(trade.entryPrice) },
+            { label: "Exit", value: formatTradePrice(trade.exitPrice) },
+            { label: "Hold", value: trade.holdTime || `${Math.round((trade.holdSeconds || 0) / 60)}m` },
+            { label: "Side", value: trade.side },
+            { label: "Fills", value: formatTradeNumber(fillCount) }
+          ];
+          const tagGroups = [
+            { label: "Playbook", values: trade.setups.filter((value) => value && value !== "No Setup") },
+            { label: "Mistakes", values: trade.mistakes },
+            { label: "Catalyst", values: trade.catalyst },
+            { label: "Execution", values: trade.execution },
+            { label: "Out Tag", values: trade.outTag },
+            { label: "Gateways", values: trade.gateways }
+          ]
+            .map((group) => ({
+              ...group,
+              values: Array.from(new Set(group.values.map((value) => value.trim()).filter(Boolean)))
+            }))
+            .filter((group) => group.values.length > 0);
+
+          return (
+            <div className="review-best-trade-layout">
+              <div className="review-best-trade-details">
+                <div className="review-best-trade-identity">
+                  <span className="symbol-pill review-best-trade-symbol">
+                    {symbolIcon ? (
+                      <img src={symbolIcon} alt={`${trade.symbol} icon`} className="symbol-pill-icon" />
+                    ) : (
+                      <WorkspaceIcon icon="trades" alt="" className="symbol-pill-icon" />
+                    )}
+                    {trade.symbol}
+                  </span>
+                  <div className="review-best-trade-title">
+                    <strong>{trade.name || `${trade.symbol} ${trade.side}`}</strong>
+                    <span>
+                      {tradeDate || trade.tradeDate} | {trade.openTime || "--"} to {trade.closeTime || "--"}
+                    </span>
+                  </div>
+                  <span className={`review-best-trade-status review-best-trade-status-${trade.status.toLowerCase()}`}>
+                    {trade.status}
+                  </span>
+                </div>
+
+                <div className="review-best-trade-stats" aria-label={`${title} stats`}>
+                  {statCards.map((stat) => (
+                    <div
+                      key={stat.label}
+                      className={`review-best-trade-stat${stat.tone ? ` review-best-trade-stat-${stat.tone}` : ""}`}
+                    >
+                      <span>{stat.label}</span>
+                      <strong>{stat.value}</strong>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="review-best-trade-tag-area" aria-label={`${title} tags`}>
+                  {tagGroups.length > 0 ? (
+                    tagGroups.map((group) => (
+                      <div key={group.label} className="review-best-trade-tag-group">
+                        <span>{group.label}</span>
+                        <div>
+                          {group.values.map((value) => (
+                            <em key={`${group.label}-${value}`}>{value}</em>
+                          ))}
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <span className="review-best-trade-tag-empty">No trade tags on this one yet.</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="review-best-trade-chart">
+                {taggedChart ? (
+                  <>
+                    <button
+                      type="button"
+                      className="review-best-trade-chart-button"
+                      onClick={() => onSelectTrade(trade.id, tradeDate || trade.tradeDate)}
+                      title={`Open ${trade.symbol} trade`}
+                    >
+                      <img
+                        src={resolveWorkspaceAttachmentSrc(taggedChart.screenshotUrl)}
+                        alt={`${trade.symbol} tagged chart`}
+                      />
+                    </button>
+                    <div className="review-best-trade-chart-meta">
+                      <strong>Tagged Chart</strong>
+                      <span>
+                        {taggedChart.taggedDate
+                          ? `Tagged ${taggedChart.taggedDate}`
+                          : `Journal ${taggedChart.journalTradeDate || tradeDate}`}
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="review-best-trade-chart-empty">
+                    <WorkspaceIcon icon="chart-screenshots" alt="" className="mini-action-icon" />
+                    <strong>No tagged chart yet</strong>
+                    <span>Tag a journal screenshot to this trade and it will show here.</span>
+                    {tradeDate ? (
+                      <button
+                        type="button"
+                        className="mini-action mini-action-soft"
+                        onClick={() => onOpenJournalDate(tradeDate)}
+                      >
+                        Open Journal
+                      </button>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()
+      ) : (
+        <div className="review-best-trade-empty">
+          <strong>{emptyTitle}</strong>
+          <span>This review range does not have any trades to rank.</span>
+        </div>
+      )}
+    </section>
+  );
 };
 
 const parseReviewMppNumber = (value: string): number | null => {
@@ -701,6 +1011,13 @@ export const LibraryPage = ({
     removeOption: removeStrongViewTickerOption,
     isCustomOption: isCustomStrongViewTickerOption
   } = useEditableSelectOptions("strongViewTickers", Object.keys(tickerIcons).sort());
+  const {
+    options: tickerGroupTickerOptionsBase,
+    addOption: addTickerGroupTickerOption,
+    renameOption: renameTickerGroupTickerOption,
+    removeOption: removeTickerGroupTickerOption,
+    isCustomOption: isCustomTickerGroupTickerOption
+  } = useEditableSelectOptions("tickerGroupTickers", Object.keys(tickerIcons).sort());
   const [pages, setPages] = useState<LibraryPageRecord[]>(() => loadLibraryPages());
   const pagesRef = useRef<LibraryPageRecord[]>([]);
   pagesRef.current = pages;
@@ -734,6 +1051,8 @@ export const LibraryPage = ({
   const [strongViewSortDirection, setStrongViewSortDirection] = useState<StrongViewSortDirection>("desc");
   const [isStrongViewTickerDrawerOpen, setIsStrongViewTickerDrawerOpen] = useState(false);
   const [strongViewTickerSearch, setStrongViewTickerSearch] = useState("");
+  const [isTickerGroupTickerDrawerOpen, setIsTickerGroupTickerDrawerOpen] = useState(false);
+  const [tickerGroupTickerSearch, setTickerGroupTickerSearch] = useState("");
   const [quoteCellEditor, setQuoteCellEditor] = useState<QuoteCellEditorState | null>(null);
   const [quoteCellEditorSearchQuery, setQuoteCellEditorSearchQuery] = useState("");
   const [notesTypeEditor, setNotesTypeEditor] = useState<NotesTypeEditorState | null>(null);
@@ -1141,10 +1460,12 @@ export const LibraryPage = ({
       .flatMap((page) => renderPropertyList(page, "Tickers").map(normalizeTickerToken))
       .filter(Boolean);
 
-    return Array.from(new Set([...fromTrades, ...fromGroups])).sort((a, b) =>
+    return Array.from(
+      new Set([...tickerGroupTickerOptionsBase, ...fromTrades, ...fromGroups].map(normalizeTickerToken).filter(Boolean))
+    ).sort((a, b) =>
       a.localeCompare(b, undefined, { sensitivity: "base" })
     );
-  }, [pages, trades]);
+  }, [pages, tickerGroupTickerOptionsBase, trades]);
 
   const bookRows = useMemo(
     () => collectionPages.filter(isBookRow),
@@ -1422,6 +1743,86 @@ export const LibraryPage = ({
       .sort((a, b) => b[1] - a[1])
       .slice(0, limit);
   }, [isReviewCollection, selectedPage, selectedReviewPeriod, trades]);
+
+  const selectedReviewRangeTrades = useMemo(() => {
+    if (!selectedPage || !isReviewCollection || !selectedReviewPeriod) {
+      return [];
+    }
+
+    const range = getReviewRange(selectedPage.properties);
+    if (!range?.start || !range?.end) {
+      return [];
+    }
+
+    const start = normalizeIsoTradeDate(range.start);
+    const end = normalizeIsoTradeDate(range.end);
+    if (!start || !end) {
+      return [];
+    }
+
+    return trades.filter((trade) => {
+      const date = normalizeIsoTradeDate(trade.tradeDate);
+      return Boolean(date) && date >= start && date <= end;
+    });
+  }, [isReviewCollection, selectedPage, selectedReviewPeriod, trades]);
+
+  const bestReviewTrade = useMemo<ReviewTradeSpotlightData | null>(() => {
+    if (selectedReviewRangeTrades.length === 0) {
+      return null;
+    }
+
+    const [trade] = [...selectedReviewRangeTrades].sort((left, right) => {
+      const netDelta = right.netPnlUsd - left.netPnlUsd;
+      if (netDelta !== 0) {
+        return netDelta;
+      }
+
+      const grossDelta = right.grossPnlUsd - left.grossPnlUsd;
+      if (grossDelta !== 0) {
+        return grossDelta;
+      }
+
+      return `${right.tradeDate}-${right.openTime}`.localeCompare(`${left.tradeDate}-${left.openTime}`);
+    });
+
+    if (!trade) {
+      return null;
+    }
+
+    return {
+      trade,
+      taggedChart: findTaggedChartForTrade(journalPages, trade)
+    };
+  }, [journalPages, selectedReviewRangeTrades]);
+
+  const worstReviewTrade = useMemo<ReviewTradeSpotlightData | null>(() => {
+    if (selectedReviewRangeTrades.length === 0) {
+      return null;
+    }
+
+    const [trade] = [...selectedReviewRangeTrades].sort((left, right) => {
+      const netDelta = left.netPnlUsd - right.netPnlUsd;
+      if (netDelta !== 0) {
+        return netDelta;
+      }
+
+      const grossDelta = left.grossPnlUsd - right.grossPnlUsd;
+      if (grossDelta !== 0) {
+        return grossDelta;
+      }
+
+      return `${left.tradeDate}-${left.openTime}`.localeCompare(`${right.tradeDate}-${right.openTime}`);
+    });
+
+    if (!trade) {
+      return null;
+    }
+
+    return {
+      trade,
+      taggedChart: findTaggedChartForTrade(journalPages, trade)
+    };
+  }, [journalPages, selectedReviewRangeTrades]);
 
   const reviewReadingBookDefaults = useMemo(() => {
     const titles = pages
@@ -1991,6 +2392,151 @@ export const LibraryPage = ({
     }
   };
 
+  const renameTickerGroupTickerEverywhere = (currentTicker: string, nextTicker: string) => {
+    const normalizedCurrent = normalizeTickerToken(currentTicker);
+    const normalizedNext = normalizeTickerToken(nextTicker);
+    if (!normalizedCurrent || !normalizedNext || normalizedCurrent === normalizedNext) {
+      return;
+    }
+
+    const selectedPageTickers = selectedPage
+      ? renderPropertyList(selectedPage, "Tickers").map(normalizeTickerToken).filter(Boolean)
+      : [];
+    const recipientGroupId = selectedPageTickers.includes(normalizedCurrent)
+      ? selectedPage?.id
+      : pagesRef.current.find(
+        (page) =>
+          page.collectionId === "ticker-groups" &&
+          renderPropertyList(page, "Tickers").map(normalizeTickerToken).includes(normalizedCurrent)
+      )?.id;
+
+    if (!recipientGroupId) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    let changed = false;
+
+    const nextPages = pagesRef.current.map((page) => {
+      if (page.collectionId !== "ticker-groups") {
+        return page;
+      }
+
+      const existingTickers = renderPropertyList(page, "Tickers").map(normalizeTickerToken).filter(Boolean);
+      let nextTickers = existingTickers;
+
+      if (page.id === recipientGroupId) {
+        nextTickers = existingTickers.map((ticker) =>
+          ticker === normalizedCurrent ? normalizedNext : ticker
+        );
+      } else {
+        nextTickers = existingTickers.filter((ticker) => ticker !== normalizedCurrent && ticker !== normalizedNext);
+      }
+
+      const normalizedTickers = Array.from(new Set(nextTickers)).sort((a, b) =>
+        a.localeCompare(b, undefined, { sensitivity: "base" })
+      );
+
+      if (JSON.stringify(existingTickers) === JSON.stringify(normalizedTickers)) {
+        return page;
+      }
+
+      changed = true;
+      return {
+        ...page,
+        properties: {
+          ...(page.properties ?? {}),
+          Tickers: normalizedTickers
+        },
+        updatedAt: now
+      };
+    });
+
+    if (changed) {
+      persistPages(nextPages);
+    }
+  };
+
+  const removeTickerGroupTickerEverywhere = (ticker: string) => {
+    const normalizedTicker = normalizeTickerToken(ticker);
+    if (!normalizedTicker) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    let changed = false;
+
+    const nextPages = pagesRef.current.map((page) => {
+      if (page.collectionId !== "ticker-groups") {
+        return page;
+      }
+
+      const existingTickers = renderPropertyList(page, "Tickers").map(normalizeTickerToken).filter(Boolean);
+      const filteredTickers = existingTickers.filter((value) => value !== normalizedTicker);
+      if (filteredTickers.length === existingTickers.length) {
+        return page;
+      }
+
+      changed = true;
+      return {
+        ...page,
+        properties: {
+          ...(page.properties ?? {}),
+          Tickers: filteredTickers
+        },
+        updatedAt: now
+      };
+    });
+
+    if (changed) {
+      persistPages(nextPages);
+    }
+  };
+
+  const renderTickerGroupTickerPicker = (page: LibraryPageRecord) => {
+    const tickers = renderPropertyList(page, "Tickers").map(normalizeTickerToken).filter(Boolean);
+    const visibleTickers = tickers.slice(0, 24);
+    const hiddenCount = Math.max(0, tickers.length - visibleTickers.length);
+
+    return (
+      <label className="library-open-page-property ticker-group-ticker-picker">
+        <span>Tickers</span>
+        <button
+          type="button"
+          className="library-property-pill-button ticker-group-ticker-select"
+          onClick={() => {
+            setTickerGroupTickerSearch("");
+            setIsTickerGroupTickerDrawerOpen(true);
+          }}
+        >
+          {tickers.length === 0 ? (
+            <span className="ticker-group-ticker-placeholder">Select tickers...</span>
+          ) : (
+            <span className="ticker-group-selected-pills" aria-label={`Selected tickers: ${tickers.join(", ")}`}>
+              {visibleTickers.map((ticker) => {
+                const tickerIcon = getTickerIcon(ticker);
+
+                return (
+                  <span key={ticker} className="symbol-pill ticker-group-selected-pill">
+                    {tickerIcon ? (
+                      <img src={tickerIcon} alt={`${ticker} ticker icon`} className="symbol-pill-icon" />
+                    ) : (
+                      <WorkspaceIcon icon="trades" alt={`${ticker} ticker icon`} className="symbol-pill-icon" />
+                    )}
+                    {ticker}
+                  </span>
+                );
+              })}
+              {hiddenCount > 0 ? (
+                <span className="ticker-group-overflow-pill">+{hiddenCount} more</span>
+              ) : null}
+            </span>
+          )}
+        </button>
+      </label>
+    );
+  };
+
   const handleCreatePage = () => {
     const newPage = createLibraryPage(selectedCollectionId);
     const seededPage =
@@ -2181,28 +2727,10 @@ export const LibraryPage = ({
       {activeSection === "collections" ? (
         <PageHero
           eyebrow="Library"
-          title="Knowledge Library"
-          description="A Notion-style home for books, trading notes, reviews, and raw ideas."
-        >
-          <div className="page-hero-stat-grid">
-            <div className="page-hero-stat-card">
-              <span>Collections</span>
-              <strong>{libraryCollections.length}</strong>
-            </div>
-            <div className="page-hero-stat-card">
-              <span>Pages</span>
-              <strong>{pages.length}</strong>
-            </div>
-            <div className="page-hero-stat-card">
-              <span>Tags</span>
-              <strong>{totalTags}</strong>
-            </div>
-            <div className="page-hero-stat-card">
-              <span>Current View</span>
-              <strong>{selectedCollection.name}</strong>
-            </div>
-          </div>
-        </PageHero>
+          title="Library"
+          icon="library"
+          className="page-hero-library"
+        />
       ) : null}
 
       <section className="library-layout">
@@ -3205,14 +3733,7 @@ export const LibraryPage = ({
                       />
                     </label>
 
-                    <PropertyMultiSelect
-                      label="Tickers"
-                      values={renderPropertyList(selectedPage, "Tickers").map(normalizeTickerToken).filter(Boolean)}
-                      onChange={(values) => updateTickerGroupTickers(selectedPage.id, values)}
-                      predefinedOptions={tickerGroupTickerOptions}
-                      placeholder="Add ticker (ex: AAPL)"
-                      allowCustom
-                    />
+                    {renderTickerGroupTickerPicker(selectedPage)}
                   </div>
 
                   <div className="ticker-group-chip-preview" aria-label="Ticker chip preview">
@@ -3512,6 +4033,19 @@ export const LibraryPage = ({
                       )}
                     </div>
                   </div>
+
+                  <ReviewTradeSpotlightCard
+                    kind="best"
+                    data={bestReviewTrade}
+                    onSelectTrade={onSelectTrade}
+                    onOpenJournalDate={handleOpenJournalDate}
+                  />
+                  <ReviewTradeSpotlightCard
+                    kind="worst"
+                    data={worstReviewTrade}
+                    onSelectTrade={onSelectTrade}
+                    onOpenJournalDate={handleOpenJournalDate}
+                  />
 
                   <ReviewReflectionPanel
                     period={selectedReviewPeriod ?? "weekly"}
@@ -4124,6 +4658,65 @@ export const LibraryPage = ({
           onClose={() => {
             setIsStrongViewTickerDrawerOpen(false);
             setStrongViewTickerSearch("");
+          }}
+        />
+      ) : null}
+      {isTickerGroupTickerDrawerOpen && selectedPage && isTickerGroups ? (
+        <TagDrawer
+          isOpen={isTickerGroupTickerDrawerOpen}
+          title={`${selectedPage.title} - Tickers`}
+          options={tickerGroupTickerOptions}
+          selectionMode="multi"
+          currentValues={renderPropertyList(selectedPage, "Tickers").map(normalizeTickerToken).filter(Boolean)}
+          allowClear
+          clearLabel="Clear tickers"
+          searchValue={tickerGroupTickerSearch}
+          onSearchChange={(value) => setTickerGroupTickerSearch(value.toUpperCase())}
+          onSelect={(value) => {
+            const nextTickers = Array.isArray(value)
+              ? value.map(normalizeTickerToken).filter(Boolean)
+              : [];
+            updateTickerGroupTickers(selectedPage.id, nextTickers);
+          }}
+          onCreateOption={(value) => {
+            const additions = parseTickerList(value)
+              .map((ticker) => addTickerGroupTickerOption(ticker))
+              .filter((ticker): ticker is string => Boolean(ticker))
+              .map(normalizeTickerToken);
+
+            if (additions.length === 0) {
+              return;
+            }
+
+            const currentTickers = renderPropertyList(selectedPage, "Tickers").map(normalizeTickerToken).filter(Boolean);
+            updateTickerGroupTickers(selectedPage.id, [...currentTickers, ...additions]);
+            setTickerGroupTickerSearch("");
+          }}
+          onRenameOption={(currentValue, nextValue) => {
+            const currentTicker = normalizeTickerToken(currentValue);
+            const nextTicker = normalizeTickerToken(nextValue);
+            if (!currentTicker || !nextTicker || currentTicker === nextTicker) {
+              return;
+            }
+
+            if (!renameTickerGroupTickerOption(currentTicker, nextTicker)) {
+              return;
+            }
+
+            renameTickerGroupTickerEverywhere(currentTicker, nextTicker);
+          }}
+          onDeleteOption={(value) => {
+            const ticker = normalizeTickerToken(value);
+            if (!ticker || !removeTickerGroupTickerOption(ticker)) {
+              return;
+            }
+
+            removeTickerGroupTickerEverywhere(ticker);
+          }}
+          canManageOption={isCustomTickerGroupTickerOption}
+          onClose={() => {
+            setIsTickerGroupTickerDrawerOpen(false);
+            setTickerGroupTickerSearch("");
           }}
         />
       ) : null}

@@ -102,7 +102,7 @@ import type {
 const navItems: AppNavItem[] = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard" },
   { id: "trades", label: "Trades", icon: "trades" },
-  { id: "trade-database", label: "Database", icon: "astronaut" },
+  { id: "trade-database", label: "Trade History", icon: "cloud-search" },
   { id: "journal", label: "Journal", icon: "journal" },
   { id: "library", label: "Library", icon: "library" },
   { id: "reports", label: "Reports", icon: "reports" },
