@@ -236,6 +236,19 @@ const normalizeHeadlinesRecord = (value: Partial<HeadlinesByTradeDate>): Headlin
   return grouped;
 };
 
+const mergeHeadlinesRecords = (...records: Array<Partial<HeadlinesByTradeDate>>): HeadlinesByTradeDate => {
+  const combined: HeadlinesByTradeDate = {};
+
+  for (const record of records) {
+    const normalizedRecord = normalizeHeadlinesRecord(record);
+    for (const [tradeDate, items] of Object.entries(normalizedRecord)) {
+      combined[tradeDate] = [...(combined[tradeDate] ?? []), ...items];
+    }
+  }
+
+  return normalizeHeadlinesRecord(combined);
+};
+
 const loadRawHeadlines = (): unknown => {
   return syncStores.headlines.load<unknown>(null);
 };
@@ -267,10 +280,6 @@ export const recoverHeadlinesFromDesktopBackup = async (): Promise<HeadlinesByTr
   }
 
   const localRecord = normalizeHeadlinesRecord((loadRawHeadlines() ?? {}) as Partial<HeadlinesByTradeDate>);
-  if (hasHeadlines(localRecord)) {
-    return null;
-  }
-
   const desktopRecord = normalizeHeadlinesRecord(
     ((await loadDesktopStoreBackup<HeadlinesByTradeDate>("headlines")) ?? {}) as Partial<HeadlinesByTradeDate>
   );
@@ -278,8 +287,13 @@ export const recoverHeadlinesFromDesktopBackup = async (): Promise<HeadlinesByTr
     return null;
   }
 
-  await persistHeadlinesRecord(desktopRecord);
-  return desktopRecord;
+  const mergedRecord = mergeHeadlinesRecords(localRecord, desktopRecord);
+  if (stableStringify(localRecord) === stableStringify(mergedRecord)) {
+    return null;
+  }
+
+  await persistHeadlinesRecord(mergedRecord);
+  return mergedRecord;
 };
 
 export const repairStoredHeadlineBuckets = async (): Promise<boolean> => {

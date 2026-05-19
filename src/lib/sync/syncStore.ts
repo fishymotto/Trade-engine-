@@ -158,15 +158,25 @@ const parseTimestamp = (value: unknown): number | null => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
-const extractMaxTimestamp = (value: unknown): number | null => {
+const maxTimestamp = (...values: Array<number | null>): number | null => {
+  const candidates = values.filter((value): value is number => value !== null);
+  return candidates.length > 0 ? Math.max(...candidates) : null;
+};
+
+const extractMaxTimestamp = (value: unknown, visited = new WeakSet<object>()): number | null => {
   if (!value || typeof value !== 'object') {
     return null;
   }
 
+  if (visited.has(value)) {
+    return null;
+  }
+  visited.add(value);
+
   if (Array.isArray(value)) {
     let max: number | null = null;
     for (const entry of value) {
-      const candidate = extractMaxTimestamp(entry);
+      const candidate = extractMaxTimestamp(entry, visited);
       if (candidate !== null && (max === null || candidate > max)) {
         max = candidate;
       }
@@ -185,11 +195,38 @@ const extractMaxTimestamp = (value: unknown): number | null => {
     .map(parseTimestamp)
     .filter((candidate): candidate is number => candidate !== null);
 
-  if (candidates.length > 0) {
-    return Math.max(...candidates);
+  let max = candidates.length > 0 ? Math.max(...candidates) : null;
+  for (const entry of Object.values(record)) {
+    const candidate = extractMaxTimestamp(entry, visited);
+    if (candidate !== null && (max === null || candidate > max)) {
+      max = candidate;
+    }
   }
 
-  return null;
+  return max;
+};
+
+const getCloudMaxTimestamp = (cloudValue: unknown, cloudUpdatedAt?: string | null): number | null =>
+  maxTimestamp(extractMaxTimestamp(cloudValue), parseTimestamp(cloudUpdatedAt ?? undefined));
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const hasNewerMergeableLocalValue = <T>(
+  localValue: T,
+  cloudValue: T,
+  cloudUpdatedAt?: string | null
+): boolean => {
+  const canMerge =
+    (Array.isArray(localValue) && Array.isArray(cloudValue)) ||
+    (isPlainRecord(localValue) && isPlainRecord(cloudValue));
+  if (!canMerge) {
+    return false;
+  }
+
+  const localTs = extractMaxTimestamp(localValue);
+  const cloudTs = getCloudMaxTimestamp(cloudValue, cloudUpdatedAt);
+  return localTs !== null && (cloudTs === null || localTs > cloudTs);
 };
 
 const getMergeKey = (value: unknown): string | null => {
@@ -201,9 +238,6 @@ const getMergeKey = (value: unknown): string | null => {
   const key = record.id ?? record.tradeDate ?? record.key;
   return typeof key === 'string' && key.trim() ? key : null;
 };
-
-const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
-  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
 const LOSSY_MERGE_GUARDED_TABLES = new Set([
   'user_journal_pages',
@@ -481,7 +515,7 @@ const shouldPreferLocalOverCloud = <T>(
   if (localIsDefault && !cloudIsDefault) return false;
 
   const localTs = extractMaxTimestamp(localValue);
-  const cloudTs = extractMaxTimestamp(cloudValue) ?? parseTimestamp(cloudUpdatedAt ?? undefined);
+  const cloudTs = getCloudMaxTimestamp(cloudValue, cloudUpdatedAt);
 
   if (localTs !== null && cloudTs !== null) {
     return localTs > cloudTs + 30_000;
@@ -897,9 +931,15 @@ export class HybridSyncStore {
       // Parse and cache the data locally
       const parsed = JSON.parse(data.data) as T;
       const cloudHash = hashValue(parsed);
+      const shouldMergeNewerLocal =
+        hasLocalValue &&
+        !localIsSyncedCloudCache &&
+        localHash !== cloudHash &&
+        hasNewerMergeableLocalValue(effectiveLocalValue, parsed, data.updated_at);
       const shouldPromoteRicherLocal =
         hasLocalValue &&
         !localIsSyncedCloudCache &&
+        !shouldMergeNewerLocal &&
         shouldPreferLocalOverCloud(effectiveLocalValue, parsed, defaultValue, data.updated_at);
 
       if (options.forcePushLocal && hasLocalValue) {
@@ -945,7 +985,54 @@ export class HybridSyncStore {
         };
       }
 
-      if (!shouldPushLocal || localIsSyncedCloudCache || localHash === cloudHash) {
+      if ((!shouldPushLocal && !shouldMergeNewerLocal) || localIsSyncedCloudCache || localHash === cloudHash) {
+        const latestLocalValue = this.load(defaultValue);
+        const latestLocalHash = hashValue(latestLocalValue);
+        const shouldMergeChangedLocal =
+          latestLocalHash !== localHash &&
+          latestLocalHash !== cloudHash &&
+          hasNewerMergeableLocalValue(latestLocalValue, parsed, data.updated_at);
+
+        if (shouldMergeChangedLocal) {
+          const merged = mergeSyncedValues(latestLocalValue, parsed, this.config.tableName);
+
+          try {
+            console.debug(`[sync] ${this.config.tableName}: merging local changes made during hydration`);
+            await this.syncToSupabase(merged, userId);
+            this.markRemoteSuccess(merged, userId);
+          } catch (mergeError) {
+            console.warn(`Failed to sync merged data to Supabase (${this.config.tableName}):`, mergeError);
+            this.markRemoteFailure(mergeError);
+            this.writeLocalCache(merged, {
+              ...this.loadMetadata(),
+              dirty: true,
+              localUpdatedAt: new Date().toISOString(),
+            });
+            return {
+              value: merged,
+              result: {
+                tableName: this.config.tableName,
+                storageKey: this.config.storageKey,
+                source: 'merged',
+                pushed: false,
+                dirty: true,
+              },
+            };
+          }
+
+          this.cacheSyncedValue(merged, userId);
+          return {
+            value: merged,
+            result: {
+              tableName: this.config.tableName,
+              storageKey: this.config.storageKey,
+              source: 'merged',
+              pushed: true,
+              dirty: false,
+            },
+          };
+        }
+
         console.debug(`[sync] ${this.config.tableName}: hydrated from cloud`);
         this.cacheSyncedValue(parsed, userId, data.updated_at ?? new Date().toISOString());
         return {

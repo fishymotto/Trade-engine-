@@ -1939,7 +1939,6 @@ export const JournalPage = ({
                       sourceUpdatedAt={selectedPage.updatedAt}
                       placeholder="Type '/' for commands"
                       appearance="notion"
-                      taskListColumns={2}
                       compact
                       autosize
                     />
@@ -2082,7 +2081,6 @@ export const JournalPage = ({
                       sourceUpdatedAt={selectedPage.updatedAt}
                       placeholder="Type '/' for commands"
                       appearance="notion"
-                      taskListColumns={2}
                       compact
                       autosize
                     />

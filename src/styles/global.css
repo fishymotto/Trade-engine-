@@ -6326,8 +6326,34 @@ body {
   min-height: 220px;
 }
 
+.trade-review-bottom .journal-rich-editor-surface {
+  padding: 12px 14px;
+}
+
 .trade-review-bottom .journal-rich-editor .ProseMirror {
   min-height: 220px;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  letter-spacing: 0;
+}
+
+.trade-review-bottom .journal-rich-editor .ProseMirror * {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.trade-review-bottom .journal-rich-editor .ProseMirror p,
+.trade-review-bottom .journal-rich-editor .ProseMirror li,
+.trade-review-bottom .journal-rich-editor .ProseMirror blockquote {
+  margin: 0 0 8px;
+}
+
+.trade-review-bottom .journal-rich-editor .ProseMirror h1,
+.trade-review-bottom .journal-rich-editor .ProseMirror h2,
+.trade-review-bottom .journal-rich-editor .ProseMirror h3 {
+  font-size: inherit;
+  margin: 12px 0 8px;
+  line-height: 1.32;
 }
 
 @media (max-width: 1200px) {
@@ -7055,15 +7081,15 @@ body {
 }
 
 .journal-header-ticker-card .symbol-pill {
-  min-height: 38px;
-  padding: 9px 15px;
-  font-size: 1rem;
-  gap: 10px;
+  min-height: 42px;
+  padding: 10px 17px;
+  font-size: 1.04rem;
+  gap: 11px;
 }
 
 .journal-header-ticker-card .symbol-pill-icon {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
 }
 
 .journal-header-ticker-card .journal-ticker-pills--compact .symbol-pill {
@@ -7436,14 +7462,15 @@ body {
 }
 
 .headline-symbol-pill {
-  min-height: 26px;
-  padding: 5px 10px;
-  font-size: 0.78rem;
+  min-height: 30px;
+  padding: 6px 11px;
+  font-size: 0.84rem;
+  gap: 9px;
 }
 
 .headline-symbol-pill .symbol-pill-icon {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 
 .headline-select:hover:not(:disabled) {

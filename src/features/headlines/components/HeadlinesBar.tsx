@@ -152,6 +152,11 @@ export const HeadlinesBar = ({ className = "", journalDate }: HeadlinesBarProps)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }, [headlines]);
 
+  const persistHeadlineList = (nextHeadlines: HeadlineItem[]) => {
+    setHeadlines(nextHeadlines);
+    void saveHeadlinesForTradeDate(journalDate, nextHeadlines);
+  };
+
   const handleStartAdd = () => {
     setEditingId(null);
     setDraft(createEmptyDraft());
@@ -200,7 +205,7 @@ export const HeadlinesBar = ({ className = "", journalDate }: HeadlinesBarProps)
       updatedAt: now
     };
 
-    setHeadlines((current) => [next, ...current]);
+    persistHeadlineList([next, ...headlines]);
     handleCancel();
   };
 
@@ -216,8 +221,8 @@ export const HeadlinesBar = ({ className = "", journalDate }: HeadlinesBarProps)
     }
 
     const now = new Date().toISOString();
-    setHeadlines((current) =>
-      current.map((headline) =>
+    persistHeadlineList(
+      headlines.map((headline) =>
         headline.id === editingId
           ? {
               ...headline,
@@ -241,7 +246,7 @@ export const HeadlinesBar = ({ className = "", journalDate }: HeadlinesBarProps)
       return;
     }
 
-    setHeadlines((current) => current.filter((item) => item.id !== headline.id));
+    persistHeadlineList(headlines.filter((item) => item.id !== headline.id));
     if (editingId === headline.id) {
       handleCancel();
     }
