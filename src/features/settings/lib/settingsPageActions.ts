@@ -235,7 +235,7 @@ const buildWorkspaceImportConfirmationMessage = (
       return `${exportedAtLine}This transfer file contains workspace updates${scopeLabel}. Importing it will merge only those dated records into this computer and leave other dates alone.${attachmentLine} This machine keeps its own saved API keys. Continue?`;
     case "full":
     default:
-      return `${exportedAtLine}This transfer file is a full workspace export. Importing it will replace imported workspace data on this computer.${attachmentLine} This machine keeps its own saved API keys. Continue?`;
+      return `${exportedAtLine}This transfer file is a full workspace sync file. Importing it will merge the two workspace snapshots instead of replacing this computer's data.${attachmentLine} This machine keeps its own saved API keys. Continue?`;
   }
 };
 
@@ -627,11 +627,11 @@ export const createSettingsPageActions = ({
       refreshWorkspaceAfterImport();
 
       const skippedCount = result.skippedAttachmentPaths.length;
-      const wasIncremental =
+      const hasScopedDates =
         result.bundle.scope === "since-date" ||
         result.bundle.scope === "date-range" ||
         result.bundle.scope === "selected-dates";
-      const scopeLabel = wasIncremental
+      const scopeLabel = hasScopedDates
         ? getWorkspaceTransferRangeLabel(
             result.bundle.selectedDates,
             result.bundle.startDate,
@@ -640,8 +640,8 @@ export const createSettingsPageActions = ({
         : "";
       const resultMessage =
         skippedCount > 0
-          ? `${wasIncremental ? "Workspace updates merged" : "Workspace imported"} from ${selectedPath}${scopeLabel}. Restored ${result.restoredAttachmentCount} attachments and skipped ${skippedCount} missing attachment reference${skippedCount === 1 ? "" : "s"}. This machine kept its saved API keys.`
-          : `${wasIncremental ? "Workspace updates merged" : "Workspace imported"} from ${selectedPath}${scopeLabel}. Restored ${result.restoredAttachmentCount} attachment${result.restoredAttachmentCount === 1 ? "" : "s"}. This machine kept its saved API keys.`;
+          ? `Workspace synced from ${selectedPath}${scopeLabel}. Restored ${result.restoredAttachmentCount} attachments and skipped ${skippedCount} missing attachment reference${skippedCount === 1 ? "" : "s"}. This machine kept its saved API keys.`
+          : `Workspace synced from ${selectedPath}${scopeLabel}. Restored ${result.restoredAttachmentCount} attachment${result.restoredAttachmentCount === 1 ? "" : "s"}. This machine kept its saved API keys.`;
       setMessage(resultMessage);
       return resultMessage;
     } catch (error) {

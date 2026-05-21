@@ -409,6 +409,274 @@ const mergeStringArrayRecord = (
   return merged;
 };
 
+const getRecordText = (value: unknown, field: string): string =>
+  isRecord(value) && typeof value[field] === "string" ? value[field].trim() : "";
+
+const getRecordArray = (value: unknown, field: string): unknown[] =>
+  isRecord(value) && Array.isArray(value[field]) ? (value[field] as unknown[]) : [];
+
+const collectTradeIdsFromSession = (session: unknown, tradeIds: Set<string>): void => {
+  for (const trade of getRecordArray(session, "trades")) {
+    const tradeId = getRecordText(trade, "id");
+    if (tradeId) {
+      tradeIds.add(tradeId);
+    }
+  }
+};
+
+const collectIncludedTradeIds = (sessions: unknown, range: WorkspaceTransferDateRange): Set<string> => {
+  const tradeIds = new Set<string>();
+  const rows = Array.isArray(sessions) ? sessions : [];
+
+  for (const session of rows) {
+    if (shouldIncludeByDateRange(session, range, ["tradeDate"])) {
+      collectTradeIdsFromSession(session, tradeIds);
+    }
+  }
+
+  return tradeIds;
+};
+
+const hasIncludedTradeId = (value: unknown, tradeIds: Set<string>): boolean => {
+  const tradeId = getRecordText(value, "tradeId");
+  return Boolean(tradeId && tradeIds.has(tradeId));
+};
+
+const hasLinkedIncludedTrade = (value: unknown, tradeIds: Set<string>): boolean => {
+  const legacyLinkedTradeId = getRecordText(value, "linkedTradeId");
+  if (hasIncludedTradeId(value, tradeIds) || (legacyLinkedTradeId && tradeIds.has(legacyLinkedTradeId))) {
+    return true;
+  }
+
+  return getRecordArray(value, "linkedTrades").some((link) => hasIncludedTradeId(link, tradeIds));
+};
+
+const hasJournalPageLinkedIncludedTrade = (value: unknown, tradeIds: Set<string>): boolean => {
+  if (tradeIds.size === 0 || !isRecord(value)) {
+    return false;
+  }
+
+  return (
+    getRecordArray(value, "tradeNotes").some((note) => hasLinkedIncludedTrade(note, tradeIds)) ||
+    getRecordArray(value, "screenshotTags").some((tag) => hasLinkedIncludedTrade(tag, tradeIds))
+  );
+};
+
+const hasPlaybookExampleInRange = (
+  value: unknown,
+  range: WorkspaceTransferDateRange,
+  tradeIds: Set<string>
+): boolean =>
+  getRecordArray(value, "aPlusExamples").some(
+    (example) =>
+      shouldIncludeByDateRange(example, range, ["tradeDate"]) || hasIncludedTradeId(example, tradeIds)
+  );
+
+const LIBRARY_DATE_PROPERTY_KEYS = ["Date", "Date Used", "tradeDate", "journalDate"] as const;
+const LIBRARY_RANGE_PROPERTY_PAIRS = [["Range Start", "Range End"]] as const;
+
+const getRecordValue = (value: unknown, field: string): unknown =>
+  isRecord(value) ? value[field] : undefined;
+
+const getRecordProperties = (value: unknown): Record<string, unknown> =>
+  isRecord(value) && isRecord(value.properties) ? value.properties : {};
+
+const isDateSpanWithinRange = (
+  startDateInput: unknown,
+  endDateInput: unknown,
+  range: WorkspaceTransferDateRange
+): boolean => {
+  const startDate = normalizeDateOnly(startDateInput);
+  const endDate = normalizeDateOnly(endDateInput);
+  if (!startDate && !endDate) {
+    return false;
+  }
+
+  const spanStart = startDate && endDate && endDate < startDate ? endDate : startDate || endDate;
+  const spanEnd = startDate && endDate && endDate < startDate ? startDate : endDate || startDate;
+  if (!spanStart || !spanEnd) {
+    return false;
+  }
+
+  if (range.selectedDateSet && range.selectedDateSet.size > 0) {
+    return Array.from(range.selectedDateSet).some(
+      (selectedDate) => selectedDate >= spanStart && selectedDate <= spanEnd
+    );
+  }
+
+  if (range.startDate && spanEnd < range.startDate) {
+    return false;
+  }
+
+  if (range.endDate && spanStart > range.endDate) {
+    return false;
+  }
+
+  return true;
+};
+
+const hasLibraryDateInRange = (value: unknown, range: WorkspaceTransferDateRange): boolean => {
+  const properties = getRecordProperties(value);
+
+  if (
+    LIBRARY_DATE_PROPERTY_KEYS.some((field) =>
+      isDateWithinRange(normalizeDateOnly(properties[field] ?? getRecordValue(value, field)), range)
+    )
+  ) {
+    return true;
+  }
+
+  return LIBRARY_RANGE_PROPERTY_PAIRS.some(([startField, endField]) =>
+    isDateSpanWithinRange(properties[startField], properties[endField], range)
+  );
+};
+
+const getRecordTimestamp = (value: unknown, field: string): string | undefined => {
+  const text = getRecordText(value, field);
+  return text || undefined;
+};
+
+const pickNewestRecord = (left: unknown, right: unknown): unknown => {
+  const leftTimestamp = parseTimestamp(getRecordTimestamp(left, "updatedAt"));
+  const rightTimestamp = parseTimestamp(getRecordTimestamp(right, "updatedAt"));
+
+  if (rightTimestamp > leftTimestamp) {
+    return right;
+  }
+
+  if (rightTimestamp < leftTimestamp) {
+    return left;
+  }
+
+  return stringifySize(right) >= stringifySize(left) ? right : left;
+};
+
+const pickNewestTimestampText = (left: unknown, right: unknown): string | undefined => {
+  const leftText = typeof left === "string" ? left : "";
+  const rightText = typeof right === "string" ? right : "";
+  const leftTimestamp = parseTimestamp(leftText);
+  const rightTimestamp = parseTimestamp(rightText);
+
+  if (rightTimestamp > leftTimestamp) {
+    return rightText;
+  }
+
+  if (leftTimestamp > rightTimestamp) {
+    return leftText;
+  }
+
+  return rightText || leftText || undefined;
+};
+
+const pickOldestTimestampText = (left: unknown, right: unknown): string | undefined => {
+  const leftText = typeof left === "string" ? left : "";
+  const rightText = typeof right === "string" ? right : "";
+  const leftTimestamp = parseTimestamp(leftText);
+  const rightTimestamp = parseTimestamp(rightText);
+
+  if (leftTimestamp > 0 && (rightTimestamp <= 0 || leftTimestamp <= rightTimestamp)) {
+    return leftText;
+  }
+
+  if (rightTimestamp > 0) {
+    return rightText;
+  }
+
+  return leftText || rightText || undefined;
+};
+
+const mergePlaybookExamples = (existing: unknown[], incoming: unknown[]): unknown[] =>
+  mergeArrayByKey(
+    existing,
+    incoming,
+    (entry) => {
+      const id = getRecordText(entry, "id");
+      const tradeId = getRecordText(entry, "tradeId");
+      const tradeDate = getRecordText(entry, "tradeDate");
+      return id || [tradeId, tradeDate].filter(Boolean).join("|");
+    },
+    (entry) => getRecordTimestamp(entry, "updatedAt")
+  );
+
+const mergePlaybookRecord = (existing: unknown, incoming: unknown): unknown => {
+  if (!isRecord(existing) || !isRecord(incoming)) {
+    return pickNewestRecord(existing, incoming);
+  }
+
+  const base = pickNewestRecord(existing, incoming);
+  const preferred = isRecord(base) ? base : incoming;
+
+  return {
+    ...preferred,
+    aliases: dedupeStrings([
+      ...getRecordArray(existing, "aliases"),
+      ...getRecordArray(incoming, "aliases")
+    ]),
+    screenshotUrls: dedupeStrings([
+      ...getRecordArray(existing, "screenshotUrls"),
+      ...getRecordArray(incoming, "screenshotUrls")
+    ]),
+    aPlusExamples: mergePlaybookExamples(
+      getRecordArray(existing, "aPlusExamples"),
+      getRecordArray(incoming, "aPlusExamples")
+    ),
+    createdAt: pickOldestTimestampText(existing.createdAt, incoming.createdAt) ?? preferred.createdAt,
+    updatedAt: pickNewestTimestampText(existing.updatedAt, incoming.updatedAt) ?? preferred.updatedAt
+  };
+};
+
+const mergePlaybooks = (existing: unknown, incoming: unknown): unknown[] => {
+  const merged = new Map<string, unknown>();
+  const rows = [
+    ...(Array.isArray(existing) ? existing : []),
+    ...(Array.isArray(incoming) ? incoming : [])
+  ];
+
+  for (const playbook of rows) {
+    const key = getRecordText(playbook, "id");
+    if (!key) {
+      continue;
+    }
+
+    const current = merged.get(key);
+    merged.set(key, current ? mergePlaybookRecord(current, playbook) : playbook);
+  }
+
+  return Array.from(merged.values());
+};
+
+const getNamedTemplateKey = (entry: unknown): string => {
+  const id = getRecordText(entry, "id");
+  const name = getRecordText(entry, "name");
+  return id || (name ? `name:${name.toLowerCase()}` : "");
+};
+
+const mergeNamedTemplateArray = (existing: unknown, incoming: unknown): unknown[] =>
+  mergeArrayByKey(
+    Array.isArray(existing) ? existing : [],
+    Array.isArray(incoming) ? incoming : [],
+    getNamedTemplateKey
+  );
+
+const mergeTemplateRecord = (
+  existing: unknown,
+  incoming: unknown,
+  groups: string[]
+): Record<string, unknown> => {
+  const existingRecord = isRecord(existing) ? existing : {};
+  const incomingRecord = isRecord(incoming) ? incoming : {};
+  const merged: Record<string, unknown> = {
+    ...existingRecord,
+    ...incomingRecord
+  };
+
+  for (const group of groups) {
+    merged[group] = mergeNamedTemplateArray(existingRecord[group], incomingRecord[group]);
+  }
+
+  return merged;
+};
+
 const mergeHeadlinesRecord = (existing: unknown, incoming: unknown): Record<string, unknown> => {
   const mergedById = new Map<string, Record<string, unknown>>();
 
@@ -525,6 +793,7 @@ const mergeWorkspaceTransferValue = (storageKey: string, existing: unknown, inco
     case "trade-engine-workspace":
       return existing ?? incoming;
     case PLAYBOOK_STORAGE_KEY:
+      return mergePlaybooks(existing, incoming);
     case "trade-engine-library-pages":
       return mergeArrayByKey(
         Array.isArray(existing) ? existing : [],
@@ -535,8 +804,9 @@ const mergeWorkspaceTransferValue = (storageKey: string, existing: unknown, inco
     case "trade-engine-headlines":
       return mergeHeadlinesRecord(existing, incoming);
     case "trade-engine-journal-checklist-templates":
+      return mergeTemplateRecord(existing, incoming, ["morningTemplates", "closingTemplates", "mppTemplates"]);
     case "trade-engine-review-templates":
-      return incoming;
+      return mergeTemplateRecord(existing, incoming, ["weeklyTemplates", "monthlyTemplates"]);
     default:
       if (storageKey.startsWith("trade-engine-journal-editor-draft::")) {
         return mergeJournalDraft(existing, incoming);
@@ -617,6 +887,7 @@ export const prepareWorkspaceTransferSnapshot = (
   }
 
   const filtered: Record<string, unknown> = {};
+  const includedTradeIds = collectIncludedTradeIds(snapshot["trade-engine-trade-sessions"], range);
 
   for (const [storageKey, value] of Object.entries(snapshot)) {
     if (shouldSkipDateRangeStorageKey(storageKey)) {
@@ -634,7 +905,11 @@ export const prepareWorkspaceTransferSnapshot = (
       }
       case "trade-engine-journal-pages": {
         const rows = Array.isArray(value) ? value : [];
-        const kept = rows.filter((entry) => shouldIncludeByDateRange(entry, range, ["tradeDate"]));
+        const kept = rows.filter(
+          (entry) =>
+            shouldIncludeByDateRange(entry, range, ["tradeDate"]) ||
+            hasJournalPageLinkedIncludedTrade(entry, includedTradeIds)
+        );
         if (kept.length > 0) {
           filtered[storageKey] = kept;
         }
@@ -650,7 +925,9 @@ export const prepareWorkspaceTransferSnapshot = (
       }
       case "trade-engine-trade-reviews": {
         const rows = Array.isArray(value) ? value : [];
-        const kept = rows.filter((entry) => shouldIncludeByDateRange(entry, range));
+        const kept = rows.filter(
+          (entry) => shouldIncludeByDateRange(entry, range) || hasIncludedTradeId(entry, includedTradeIds)
+        );
         if (kept.length > 0) {
           filtered[storageKey] = kept;
         }
@@ -664,10 +941,25 @@ export const prepareWorkspaceTransferSnapshot = (
         }
         break;
       }
-      case PLAYBOOK_STORAGE_KEY:
+      case PLAYBOOK_STORAGE_KEY: {
+        const rows = Array.isArray(value) ? value : [];
+        const kept = rows.filter(
+          (entry) =>
+            shouldIncludeByDateRange(entry, range) ||
+            hasPlaybookExampleInRange(entry, range, includedTradeIds)
+        );
+        if (kept.length > 0) {
+          filtered[storageKey] = kept;
+        }
+        break;
+      }
       case "trade-engine-library-pages": {
         const rows = Array.isArray(value) ? value : [];
-        const kept = rows.filter((entry) => shouldIncludeByDateRange(entry, range));
+        const kept = rows.filter(
+          (entry) =>
+            shouldIncludeByDateRange(entry, range) ||
+            hasLibraryDateInRange(entry, range)
+        );
         if (kept.length > 0) {
           filtered[storageKey] = kept;
         }
@@ -716,27 +1008,14 @@ export const buildAppliedWorkspaceTransferSnapshot = (
   bundle: WorkspaceTransferBundle,
   existingSnapshot = collectWorkspaceTransferLocalStorage()
 ): Record<string, unknown> => {
-  const isIncrementalScope =
-    bundle.scope === "since-date" ||
-    bundle.scope === "date-range" ||
-    bundle.scope === "selected-dates";
-  const nextSnapshot = isIncrementalScope
-    ? (() => {
-        const mergedSnapshot: Record<string, unknown> = { ...existingSnapshot };
-        for (const [storageKey, incomingValue] of Object.entries(bundle.localStorage ?? {})) {
-          if (shouldSkipDateRangeStorageKey(storageKey)) {
-            continue;
-          }
-
-          mergedSnapshot[storageKey] = mergeWorkspaceTransferValue(
-            storageKey,
-            existingSnapshot[storageKey],
-            incomingValue
-          );
-        }
-        return mergedSnapshot;
-      })()
-    : { ...(bundle.localStorage ?? {}) };
+  const nextSnapshot: Record<string, unknown> = { ...existingSnapshot };
+  for (const [storageKey, incomingValue] of Object.entries(bundle.localStorage ?? {})) {
+    nextSnapshot[storageKey] = mergeWorkspaceTransferValue(
+      storageKey,
+      existingSnapshot[storageKey],
+      incomingValue
+    );
+  }
 
   const importedSettings = sanitizePortableSettings(nextSnapshot[SETTINGS_STORAGE_KEY]);
   const nextSettings = mergePreservedPortableSettings(existingSnapshot[SETTINGS_STORAGE_KEY], importedSettings);
