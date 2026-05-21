@@ -551,6 +551,20 @@ const pickNewestRecord = (left: unknown, right: unknown): unknown => {
   return stringifySize(right) >= stringifySize(left) ? right : left;
 };
 
+const pickRicherRecord = (left: unknown, right: unknown): unknown => {
+  const leftSize = stringifySize(left);
+  const rightSize = stringifySize(right);
+  if (rightSize > leftSize) {
+    return right;
+  }
+
+  if (leftSize > rightSize) {
+    return left;
+  }
+
+  return right;
+};
+
 const pickNewestTimestampText = (left: unknown, right: unknown): string | undefined => {
   const leftText = typeof left === "string" ? left : "";
   const rightText = typeof right === "string" ? right : "";
@@ -583,6 +597,86 @@ const pickOldestTimestampText = (left: unknown, right: unknown): string | undefi
   }
 
   return leftText || rightText || undefined;
+};
+
+const getTradeMergeKey = (trade: unknown): string => {
+  const id = getRecordText(trade, "id");
+  if (id) {
+    return id;
+  }
+
+  return [
+    getRecordText(trade, "tradeDate"),
+    getRecordText(trade, "symbol"),
+    getRecordText(trade, "openTime"),
+    getRecordText(trade, "closeTime"),
+    getRecordText(trade, "name")
+  ]
+    .filter(Boolean)
+    .join("|");
+};
+
+const mergeSessionTrades = (existing: unknown, incoming: unknown): unknown[] =>
+  mergeArrayByKey(
+    getRecordArray(existing, "trades"),
+    getRecordArray(incoming, "trades"),
+    getTradeMergeKey
+  ).map((trade) => {
+    const key = getTradeMergeKey(trade);
+    if (!key) {
+      return trade;
+    }
+
+    const existingTrade = getRecordArray(existing, "trades").find((candidate) => getTradeMergeKey(candidate) === key);
+    const incomingTrade = getRecordArray(incoming, "trades").find((candidate) => getTradeMergeKey(candidate) === key);
+    if (existingTrade && incomingTrade) {
+      return pickRicherRecord(existingTrade, incomingTrade);
+    }
+
+    return trade;
+  });
+
+const mergeTradeSessionRecord = (existing: unknown, incoming: unknown): unknown => {
+  if (!isRecord(existing) || !isRecord(incoming)) {
+    return pickRicherRecord(existing, incoming);
+  }
+
+  const preferredMetadata = pickNewestRecord(existing, incoming);
+  const base = isRecord(preferredMetadata) ? preferredMetadata : incoming;
+
+  return {
+    ...base,
+    tradeDate: getRecordText(incoming, "tradeDate") || getRecordText(existing, "tradeDate") || base.tradeDate,
+    sourceFileName:
+      getRecordText(incoming, "sourceFileName") ||
+      getRecordText(existing, "sourceFileName") ||
+      base.sourceFileName,
+    importedAt: pickOldestTimestampText(existing.importedAt, incoming.importedAt) ?? base.importedAt,
+    updatedAt: pickNewestTimestampText(existing.updatedAt, incoming.updatedAt) ?? base.updatedAt,
+    trades: mergeSessionTrades(existing, incoming)
+  };
+};
+
+const mergeTradeSessions = (existing: unknown, incoming: unknown): unknown[] => {
+  const merged = new Map<string, unknown>();
+  const rows = [
+    ...(Array.isArray(existing) ? existing : []),
+    ...(Array.isArray(incoming) ? incoming : [])
+  ];
+
+  for (const session of rows) {
+    const tradeDate = getRecordText(session, "tradeDate");
+    if (!tradeDate) {
+      continue;
+    }
+
+    const current = merged.get(tradeDate);
+    merged.set(tradeDate, current ? mergeTradeSessionRecord(current, session) : session);
+  }
+
+  return Array.from(merged.values()).sort((left, right) =>
+    getRecordText(right, "tradeDate").localeCompare(getRecordText(left, "tradeDate"))
+  );
 };
 
 const mergePlaybookExamples = (existing: unknown[], incoming: unknown[]): unknown[] =>
@@ -752,12 +846,7 @@ const mergeWorkspaceTransferValue = (storageKey: string, existing: unknown, inco
     case SETTINGS_STORAGE_KEY:
       return incoming;
     case "trade-engine-trade-sessions":
-      return mergeArrayByKey(
-        Array.isArray(existing) ? existing : [],
-        Array.isArray(incoming) ? incoming : [],
-        (entry) => (isRecord(entry) && typeof entry.tradeDate === "string" ? entry.tradeDate : ""),
-        (entry) => (isRecord(entry) && typeof entry.updatedAt === "string" ? entry.updatedAt : undefined)
-      );
+      return mergeTradeSessions(existing, incoming);
     case "trade-engine-journal-pages":
       return mergeArrayByKey(
         Array.isArray(existing) ? existing : [],
