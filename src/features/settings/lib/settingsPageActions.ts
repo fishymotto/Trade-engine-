@@ -345,7 +345,9 @@ export const createSettingsPageActions = ({
 
     await Promise.all([
       saveSettings(importedSettings),
-      saveTradeSessions(asArray<TradeSessionRecord>(snapshot[TRADE_SESSIONS_STORAGE_KEY])),
+      saveTradeSessions(asArray<TradeSessionRecord>(snapshot[TRADE_SESSIONS_STORAGE_KEY]), {
+        mergeDesktopBackup: true
+      }),
       saveJournalPages(asArray<JournalPageRecord>(snapshot[JOURNAL_PAGES_STORAGE_KEY])),
       saveTradeTagOptions(
         isRecord(snapshot[TRADE_TAG_OPTIONS_STORAGE_KEY])
@@ -395,7 +397,6 @@ export const createSettingsPageActions = ({
   };
 
   const persistImportedWorkspaceToDesktopBackups = async (): Promise<void> => {
-    await flushWorkspaceToLocalStores();
     await Promise.all([
       savePlaybooks(loadPlaybooks()),
       saveLibraryPages(loadLibraryPages()),

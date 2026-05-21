@@ -36,45 +36,156 @@ const normalizeSessions = (value: unknown): TradeSessionRecord[] => {
   return [];
 };
 
-const countTradeTags = (sessions: TradeSessionRecord[]): number =>
-  sessions.reduce(
-    (sessionTotal, session) =>
-      sessionTotal +
-      session.trades.reduce((tradeTotal, trade) => {
-        const playbookCount = Array.isArray(trade.setups) ? trade.setups.filter(Boolean).length : 0;
-        const mistakeCount = Array.isArray(trade.mistakes) ? trade.mistakes.filter(Boolean).length : 0;
-        const catalystCount = Array.isArray(trade.catalyst) ? trade.catalyst.filter(Boolean).length : 0;
-        const outTagCount = Array.isArray(trade.outTag) ? trade.outTag.filter(Boolean).length : 0;
-        const executionCount = Array.isArray(trade.execution) ? trade.execution.filter(Boolean).length : 0;
-        const gameCount = trade.game ? 1 : 0;
-        return tradeTotal + playbookCount * 20 + mistakeCount * 10 + catalystCount * 5 + outTagCount + executionCount + gameCount;
-      }, 0),
-    0
+const stableStringify = (value: unknown): string => {
+  if (value === null || value === undefined || typeof value !== "object") {
+    return JSON.stringify(value) ?? "undefined";
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(",")}}`;
+};
+
+const getSerializedSize = (value: unknown): number => {
+  try {
+    return stableStringify(value).length;
+  } catch {
+    return 0;
+  }
+};
+
+const parseTimestamp = (value: string | undefined): number => {
+  if (!value?.trim()) {
+    return 0;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const pickOldestTimestamp = (left: string, right: string): string => {
+  const leftTimestamp = parseTimestamp(left);
+  const rightTimestamp = parseTimestamp(right);
+
+  if (leftTimestamp > 0 && (rightTimestamp <= 0 || leftTimestamp <= rightTimestamp)) {
+    return left;
+  }
+
+  return rightTimestamp > 0 ? right : left || right;
+};
+
+const pickNewestTimestamp = (left: string, right: string): string => {
+  const leftTimestamp = parseTimestamp(left);
+  const rightTimestamp = parseTimestamp(right);
+
+  if (rightTimestamp > leftTimestamp) {
+    return right;
+  }
+
+  return leftTimestamp > rightTimestamp ? left : right || left;
+};
+
+const countTextValues = (values: unknown): number =>
+  Array.isArray(values) ? values.filter((value) => typeof value === "string" && value.trim()).length : 0;
+
+const getTradeRichnessScore = (trade: GroupedTrade): number =>
+  countTextValues(trade.setups) * 20 +
+  countTextValues(trade.mistakes) * 10 +
+  countTextValues(trade.catalyst) * 5 +
+  countTextValues(trade.outTag) +
+  countTextValues(trade.execution) +
+  (trade.game ? 1 : 0);
+
+const pickRicherTrade = (left: GroupedTrade, right: GroupedTrade): GroupedTrade => {
+  const leftScore = getTradeRichnessScore(left);
+  const rightScore = getTradeRichnessScore(right);
+
+  if (rightScore > leftScore) {
+    return right;
+  }
+
+  if (leftScore > rightScore) {
+    return left;
+  }
+
+  return getSerializedSize(right) >= getSerializedSize(left) ? right : left;
+};
+
+const getTradeMergeKey = (trade: GroupedTrade): string =>
+  trade.id?.trim() ||
+  [trade.tradeDate, trade.symbol, trade.openTime, trade.closeTime, trade.name]
+    .map((value) => value?.trim())
+    .filter(Boolean)
+    .join("|");
+
+const sortTradesByTime = (trades: GroupedTrade[]): GroupedTrade[] =>
+  [...trades].sort((left, right) =>
+    `${left.tradeDate} ${left.openTime} ${left.closeTime} ${left.id}`.localeCompare(
+      `${right.tradeDate} ${right.openTime} ${right.closeTime} ${right.id}`
+    )
   );
 
-const countTrades = (sessions: TradeSessionRecord[]): number =>
-  sessions.reduce((total, session) => total + session.trades.length, 0);
+const mergeSessionTrades = (
+  existingTrades: GroupedTrade[],
+  incomingTrades: GroupedTrade[]
+): GroupedTrade[] => {
+  const merged = new Map<string, GroupedTrade>();
 
-const shouldUseDesktopSessionsForRecovery = (
-  localSessions: TradeSessionRecord[],
-  desktopSessions: TradeSessionRecord[]
-): boolean => {
-  if (desktopSessions.length === 0) {
-    return false;
-  }
+  const upsert = (trade: GroupedTrade) => {
+    const key = getTradeMergeKey(trade);
+    if (!key) {
+      return;
+    }
 
-  const localTradeCount = countTrades(localSessions);
-  const desktopTradeCount = countTrades(desktopSessions);
-  if (desktopTradeCount > localTradeCount) {
-    return true;
-  }
+    const current = merged.get(key);
+    merged.set(key, current ? pickRicherTrade(current, trade) : trade);
+  };
 
-  if (desktopTradeCount < localTradeCount) {
-    return false;
-  }
+  existingTrades.forEach(upsert);
+  incomingTrades.forEach(upsert);
 
-  return countTradeTags(desktopSessions) > countTradeTags(localSessions);
+  return sortTradesByTime(Array.from(merged.values()));
 };
+
+const mergeTradeSessionRecord = (
+  existing: TradeSessionRecord,
+  incoming: TradeSessionRecord
+): TradeSessionRecord => ({
+  ...existing,
+  ...incoming,
+  tradeDate: incoming.tradeDate || existing.tradeDate,
+  sourceFileName: incoming.sourceFileName || existing.sourceFileName,
+  importedAt: pickOldestTimestamp(existing.importedAt, incoming.importedAt),
+  updatedAt: pickNewestTimestamp(existing.updatedAt, incoming.updatedAt),
+  trades: mergeSessionTrades(existing.trades, incoming.trades)
+});
+
+const mergeTradeSessions = (...sets: TradeSessionRecord[][]): TradeSessionRecord[] => {
+  const merged = new Map<string, TradeSessionRecord>();
+
+  for (const sessions of sets) {
+    for (const session of normalizeSessions(sessions)) {
+      const tradeDate = session.tradeDate?.trim();
+      if (!tradeDate) {
+        continue;
+      }
+
+      const current = merged.get(tradeDate);
+      merged.set(tradeDate, current ? mergeTradeSessionRecord(current, session) : session);
+    }
+  }
+
+  return Array.from(merged.values()).sort((left, right) => right.tradeDate.localeCompare(left.tradeDate));
+};
+
+const areSessionsEqual = (left: TradeSessionRecord[], right: TradeSessionRecord[]): boolean =>
+  stableStringify(left) === stableStringify(right);
 
 const readTradeSessionsFromDesktopBackup = async (): Promise<TradeSessionRecord[] | null> => {
   try {
@@ -95,30 +206,51 @@ export const loadTradeSessions = async (): Promise<TradeSessionRecord[]> => {
   }
 
   const desktopSessions = await readTradeSessionsFromDesktopBackup();
-  if (desktopSessions && shouldUseDesktopSessionsForRecovery(localSessions, desktopSessions)) {
-    return desktopSessions;
+  if (!desktopSessions) {
+    return localSessions;
   }
 
-  return localSessions;
+  const mergedSessions = mergeTradeSessions(desktopSessions, localSessions);
+  if (!areSessionsEqual(mergedSessions, localSessions)) {
+    void syncStores.tradeSessions.save(mergedSessions);
+  }
+
+  if (!areSessionsEqual(mergedSessions, desktopSessions)) {
+    void invoke("save_trade_sessions", { sessions: mergedSessions }).catch((error) => {
+      if (isTauri()) {
+        console.warn("[sessions] Failed to refresh merged desktop trade sessions backup.", error);
+      }
+    });
+  }
+
+  return mergedSessions;
 };
 
-export const saveTradeSessions = async (sessions: TradeSessionRecord[]): Promise<void> => {
-  const syncPromise = syncStores.tradeSessions.save(sessions);
+interface SaveTradeSessionsOptions {
+  mergeDesktopBackup?: boolean;
+}
 
+export const saveTradeSessions = async (
+  sessions: TradeSessionRecord[],
+  options: SaveTradeSessionsOptions = {}
+): Promise<void> => {
   const activeUserId = syncStores.tradeSessions.getUserId();
-  if (!canUseMachineLegacyData(activeUserId)) {
+  const allowLegacyDesktopBackup = canUseMachineLegacyData(activeUserId);
+  const desktopSessions = allowLegacyDesktopBackup ? await readTradeSessionsFromDesktopBackup() : null;
+  const sessionsForSave =
+    options.mergeDesktopBackup && desktopSessions
+      ? mergeTradeSessions(desktopSessions, sessions)
+      : normalizeSessions(sessions);
+
+  const syncPromise = syncStores.tradeSessions.save(sessionsForSave);
+
+  if (!allowLegacyDesktopBackup) {
     await syncPromise;
     return;
   }
 
-  const desktopSessions = await readTradeSessionsFromDesktopBackup();
-  if (desktopSessions && shouldUseDesktopSessionsForRecovery(sessions, desktopSessions)) {
-    console.warn("[sessions] Skipped lossy desktop session write to protect richer backup.");
-    return;
-  }
-
   try {
-    await invoke("save_trade_sessions", { sessions });
+    await invoke("save_trade_sessions", { sessions: sessionsForSave });
   } catch (error) {
     if (isTauri()) {
       console.warn("[sessions] Failed to save desktop trade sessions backup.", error);
