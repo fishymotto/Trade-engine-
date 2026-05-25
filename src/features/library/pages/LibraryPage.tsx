@@ -42,6 +42,7 @@ import {
   saveUploadedWorkspaceAttachment
 } from "../../../lib/workspace/workspaceAttachmentClient";
 import {
+  type ReviewPeriod,
   buildReviewPropertiesPatch,
   computeOverallScore,
   computeReviewMetrics,
@@ -648,7 +649,7 @@ const ReviewTradeSpotlightCard = ({
     >
       <div className="journal-writing-header">
         <div className="journal-writing-header-title">
-          <WorkspaceIcon icon={isWorst ? "execution" : "win"} alt="" className="mini-action-icon" />
+          <WorkspaceIcon icon={isWorst ? "worst-trade" : "best-trade"} alt="" className="mini-action-icon" />
           <strong>{title}</strong>
         </div>
         {data ? (
@@ -991,6 +992,13 @@ interface LibraryPageProps {
   onSelectTrade: (tradeId: string, tradeDate: string) => void;
   onOpenJournalDate?: (tradeDate: string) => void;
   onViewReportsForPlaybook?: (playbookName: string) => void;
+  onViewReportsForReviewPeriod?: (range: {
+    period: ReviewPeriod;
+    start: string;
+    end: string;
+    comparisonStart: string;
+    comparisonEnd: string;
+  }) => void;
   initialSection?: "collections" | "playbooks" | "chart-library";
 }
 
@@ -1001,6 +1009,7 @@ export const LibraryPage = ({
   onSelectTrade,
   onOpenJournalDate,
   onViewReportsForPlaybook,
+  onViewReportsForReviewPeriod,
   initialSection = "collections"
 }: LibraryPageProps) => {
   const [activeSection, setActiveSection] = useState<"collections" | "playbooks" | "chart-library">(initialSection);
@@ -1708,6 +1717,30 @@ export const LibraryPage = ({
     };
   }, [dailyShutdownRiskUsd, isReviewCollection, selectedPage, selectedReviewPeriod, trades]);
 
+  const selectedReviewReportRange = useMemo(() => {
+    if (!selectedPage || !isReviewCollection || !selectedReviewPeriod) {
+      return null;
+    }
+
+    const range = getReviewRange(selectedPage.properties);
+    if (!range) {
+      return null;
+    }
+
+    const comparisonRange = getPreviousReviewRange(selectedReviewPeriod, range.start, range.end);
+    if (!comparisonRange) {
+      return null;
+    }
+
+    return {
+      period: selectedReviewPeriod,
+      start: range.start,
+      end: range.end,
+      comparisonStart: comparisonRange.start,
+      comparisonEnd: comparisonRange.end
+    };
+  }, [isReviewCollection, selectedPage, selectedReviewPeriod]);
+
   const bestDayEntries = useMemo(() => {
     if (!selectedPage) {
       return [];
@@ -1896,6 +1929,14 @@ export const LibraryPage = ({
     }
 
     onOpenJournalDate?.(normalized);
+  };
+
+  const handleViewReportsForSelectedReview = () => {
+    if (!selectedReviewReportRange) {
+      return;
+    }
+
+    onViewReportsForReviewPeriod?.(selectedReviewReportRange);
   };
 
   const bookCellEditorPage = useMemo(() => {
@@ -3699,13 +3740,31 @@ export const LibraryPage = ({
                     </div>
                   ) : null}
                 </div>
-                <button
-                  type="button"
-                  className="button button-danger"
-                  onClick={() => handleDeletePage(selectedPage.id)}
-                >
-                  Delete Page
-                </button>
+                <div className="library-detail-header-actions">
+                  {isReviewCollection && selectedReviewPeriod && onViewReportsForReviewPeriod ? (
+                    <button
+                      type="button"
+                      className="mini-action library-review-report-action"
+                      onClick={handleViewReportsForSelectedReview}
+                      disabled={!selectedReviewReportRange}
+                      title={
+                        selectedReviewReportRange
+                          ? "Open this review period with its comparison period in Reports"
+                          : "Set a valid review start and end date first"
+                      }
+                    >
+                      <WorkspaceIcon icon="reports" alt="" className="mini-action-icon" />
+                      <span>{selectedReviewPeriod === "monthly" ? "Compare Month in Reports" : "Compare Week in Reports"}</span>
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="button button-danger"
+                    onClick={() => handleDeletePage(selectedPage.id)}
+                  >
+                    Delete Page
+                  </button>
+                </div>
               </div>
 
               {isTickerGroups ? (

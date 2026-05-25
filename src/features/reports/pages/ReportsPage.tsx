@@ -33,6 +33,8 @@ interface ReportsPageProps {
   externalStatusFilter?: string;
   externalGameFilter?: string;
   externalExecutionFilter?: string;
+  externalComparisonDateFilterStart?: string;
+  externalComparisonDateFilterEnd?: string;
   onFiltersChange?: (filters: {
     startValue: string;
     endValue: string;
@@ -41,6 +43,10 @@ interface ReportsPageProps {
     status: string;
     game: string;
     execution: string;
+  }) => void;
+  onComparisonFiltersChange?: (filters: {
+    startValue: string;
+    endValue: string;
   }) => void;
 }
 
@@ -315,7 +321,10 @@ export const ReportsPage = ({
   externalStatusFilter = "all",
   externalGameFilter = "all",
   externalExecutionFilter = "all",
-  onFiltersChange
+  externalComparisonDateFilterStart = "",
+  externalComparisonDateFilterEnd = "",
+  onFiltersChange,
+  onComparisonFiltersChange
 }: ReportsPageProps) => {
   const [selectedTradeDateFilterStart, setSelectedTradeDateFilterStart] = useState(externalTradeDateFilterStart);
   const [selectedTradeDateFilterEnd, setSelectedTradeDateFilterEnd] = useState(externalTradeDateFilterEnd);
@@ -325,8 +334,12 @@ export const ReportsPage = ({
   const [selectedGameFilter, setSelectedGameFilter] = useState(externalGameFilter);
   const [selectedExecutionFilter, setSelectedExecutionFilter] = useState(externalExecutionFilter);
   const [reportSliceMode, setReportSliceMode] = useState<ReportSliceMode>("current");
-  const [selectedComparisonDateFilterStart, setSelectedComparisonDateFilterStart] = useState("");
-  const [selectedComparisonDateFilterEnd, setSelectedComparisonDateFilterEnd] = useState("");
+  const [selectedComparisonDateFilterStart, setSelectedComparisonDateFilterStart] = useState(
+    externalComparisonDateFilterStart
+  );
+  const [selectedComparisonDateFilterEnd, setSelectedComparisonDateFilterEnd] = useState(
+    externalComparisonDateFilterEnd
+  );
 
   useEffect(() => {
     setSelectedTradeDateFilterStart(externalTradeDateFilterStart);
@@ -357,6 +370,14 @@ export const ReportsPage = ({
   }, [externalExecutionFilter]);
 
   useEffect(() => {
+    setSelectedComparisonDateFilterStart(externalComparisonDateFilterStart);
+  }, [externalComparisonDateFilterStart]);
+
+  useEffect(() => {
+    setSelectedComparisonDateFilterEnd(externalComparisonDateFilterEnd);
+  }, [externalComparisonDateFilterEnd]);
+
+  useEffect(() => {
     onFiltersChange?.({
       startValue: selectedTradeDateFilterStart,
       endValue: selectedTradeDateFilterEnd,
@@ -376,6 +397,13 @@ export const ReportsPage = ({
     selectedTradeDateFilterEnd,
     selectedTradeDateFilterStart
   ]);
+
+  useEffect(() => {
+    onComparisonFiltersChange?.({
+      startValue: selectedComparisonDateFilterStart,
+      endValue: selectedComparisonDateFilterEnd
+    });
+  }, [onComparisonFiltersChange, selectedComparisonDateFilterEnd, selectedComparisonDateFilterStart]);
 
   const tradeDateOptions = useMemo(
     () => Array.from(new Set(trades.map((trade) => trade.tradeDate))).sort((left, right) => right.localeCompare(left)),

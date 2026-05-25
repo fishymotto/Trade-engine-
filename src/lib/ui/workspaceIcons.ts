@@ -30,7 +30,9 @@ import settingsIcon from "../../assets/ui-icons/settings.png";
 import tagsIcon from "../../assets/ui-icons/tags.png";
 import textIcon from "../../assets/ui-icons/text.png";
 import tradesIcon from "../../assets/ui-icons/trades.png";
+import bestTradeIcon from "../../assets/ui-icons/best-trade.png";
 import winIcon from "../../assets/ui-icons/win.png";
+import worstTradeIcon from "../../assets/ui-icons/worst-trade.png";
 import type { JournalBlockType } from "../../types/journal";
 
 export type WorkspaceIconKey =
@@ -56,7 +58,9 @@ export type WorkspaceIconKey =
   | "settings"
   | "camera"
   | "money"
+  | "best-trade"
   | "win"
+  | "worst-trade"
   | "filter"
   | "execution"
   | "tags"
@@ -91,7 +95,9 @@ export const workspaceIcons: Record<WorkspaceIconKey, string> = {
   settings: settingsIcon,
   camera: cameraIcon,
   money: moneyIcon,
+  "best-trade": bestTradeIcon,
   win: winIcon,
+  "worst-trade": worstTradeIcon,
   filter: filterIcon,
   execution: executionIcon,
   tags: tagsIcon,

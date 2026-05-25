@@ -9,7 +9,7 @@ import { JournalRichTextEditor } from "../../../journal/components/JournalRichTe
 const ADD_OPTION_VALUE = "__add_option__";
 
 const checklistGroupLabels = {
-  meditation: "Meditation",
+  meditation: "Meditation Check",
   riskCheck: "Risk Check",
   morningJournal: "Morning Journal",
   closingJournal: "Closing Journal"

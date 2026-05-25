@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { JournalRichTextEditor } from "../components/JournalRichTextEditor";
 import { PageHero } from "../../../components/PageHero";
 import { PreviewTable } from "../../../components/PreviewTable";
@@ -6,17 +6,21 @@ import { TagDrawer } from "../../../components/TagDrawer";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
 import { MPP_FORMULA_TOOLTIP, calculateMPPWindow } from "../../../lib/analytics/mppAnalytics";
 import { getDatabaseStats, getTradeSummary } from "../../../lib/analytics/tradeAnalytics";
+import { hasJournalDocContent } from "../../../lib/journal/journalContent";
 import type { JournalChecklistTemplates, NamedChecklistTemplate } from "../../../lib/journal/journalTemplateStore";
 import {
   JOURNAL_PAGES_STORAGE_KEY,
+  collectRichTextAttachmentPaths,
   deleteWorkspaceAttachmentIfUnused,
   resolveWorkspaceAttachmentSrc,
   saveWorkspaceInlineImage,
-  saveUploadedWorkspaceAttachment
+  saveUploadedWorkspaceAttachment,
+  type InlineImageInsertResult
 } from "../../../lib/workspace/workspaceAttachmentClient";
 import { getTickerIcon as getTickerIconSrc, getTickerSector } from "../../../lib/tickers/tickerIcons";
 import { useEditableSelectOptions } from "../../../lib/select/useEditableSelectOptions";
 import { tradeTagOptionsByField as defaultTradeTagOptionsByField } from "../../../lib/trades/tradeTagCatalog";
+import { getJournalWeekStartDate } from "../lib/journalPageActions";
 import type {
   JournalContentField,
   JournalPageRecord,
@@ -81,6 +85,24 @@ interface JournalPageProps {
   onAttachScreenshotToTrade: (tradeId: string, screenshotUrl: string) => void;
 }
 
+interface JournalPageSummary {
+  netPnl: number;
+  tradeCount: number;
+  winRate: number;
+  avgTrade: number;
+  totalSharesTraded: number;
+  tickers: string[];
+}
+
+const emptyJournalPageSummary: JournalPageSummary = {
+  netPnl: 0,
+  tradeCount: 0,
+  winRate: 0,
+  avgTrade: 0,
+  totalSharesTraded: 0,
+  tickers: []
+};
+
 const dayGradeOptions = ["", "A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-"];
 const sleepHourOptions = ["", ...Array.from({ length: 11 }, (_, index) => (4 + index * 0.5).toString())];
 const sleepScoreOptions = ["", "1", "2", "3", "4", "5"];
@@ -122,6 +144,12 @@ const defaultMoodOptions = [
 const defaultMarketRegimeOptions = ["", "Trend", "Chop", "Range", "High Vol", "Low Vol", "News", "Earnings"];
 const screenshotColumnLabels = ["Open Chart", "Close Chart", "Context Chart"] as const;
 const TRADE_LINK_SEPARATOR = "::";
+const acceptedWeeklyEarningsImageTypes = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif"
+]);
 const journalDateIconModules = import.meta.glob<string>("../../../assets/ui-icons/date-calendar/*.png", {
   eager: true,
   import: "default"
@@ -266,6 +294,11 @@ const collectPlaybooksFromTradeLinks = (
   return playbooks;
 };
 
+const getPrimaryTradePlaybook = (trade: EditableTradeRow): string =>
+  trade.setups
+    .map((playbook) => playbook.trim())
+    .find((playbook) => playbook && playbook !== "No Setup") ?? "";
+
 const buildScreenshotTagFromTradeLinks = (
   currentTag: JournalScreenshotTagRecord,
   nextLinks: JournalScreenshotTradeLink[],
@@ -380,6 +413,13 @@ const getSortableTimestamp = (value: string) => {
 
 const formatSignedMoney = (value: number) => `${value >= 0 ? "+" : ""}$${value.toFixed(2)}`;
 const formatSignedWholeNumber = (value: number) => `${value >= 0 ? "+" : ""}${value.toLocaleString()}`;
+const formatTradePrice = (value: number): string => {
+  if (!Number.isFinite(value)) {
+    return "-";
+  }
+
+  return value.toFixed(Math.abs(value) >= 100 ? 2 : 4);
+};
 
 const getJournalDateIcon = (tradeDate: string): string => {
   const dayToken = tradeDate.trim().split("-")[2] ?? "";
@@ -414,6 +454,21 @@ const formatDateInputValue = (value: Date) => {
   const month = `${value.getMonth() + 1}`.padStart(2, "0");
   const day = `${value.getDate()}`.padStart(2, "0");
   return `${year}-${month}-${day}`;
+};
+
+const formatJournalWeekRange = (tradeDate: string): string => {
+  const weekStart = getJournalWeekStartDate(tradeDate);
+  if (!weekStart) {
+    return "No week selected";
+  }
+
+  const weekEndDate = new Date(`${weekStart}T00:00:00`);
+  if (Number.isNaN(weekEndDate.getTime())) {
+    return weekStart;
+  }
+
+  weekEndDate.setDate(weekEndDate.getDate() + 4);
+  return `${formatJournalDate(weekStart)} through ${formatJournalDate(formatDateInputValue(weekEndDate))}`;
 };
 
 const getNextWeekTradeDates = (anchorTradeDate: string): string[] => {
@@ -467,6 +522,31 @@ const groupPagesByMonth = (pages: JournalPageRecord[]): Map<string, JournalPageR
 const getTagToneIndex = (value: string): number =>
   value.split("").reduce((sum, character) => sum + character.charCodeAt(0), 0) % 6;
 
+const createWeeklyEarningsImageDoc = (
+  fileName: string,
+  imageResult: string | InlineImageInsertResult
+): JournalPageRecord["weeklyEarningsContent"] => {
+  const storageSrc = typeof imageResult === "string" ? "" : imageResult.storageSrc ?? "";
+  const src = storageSrc || (typeof imageResult === "string" ? imageResult : imageResult.src);
+
+  return {
+    type: "doc",
+    content: [
+      {
+        type: "image",
+        attrs: {
+          src,
+          alt: fileName,
+          ...(storageSrc ? { filePath: storageSrc } : {})
+        }
+      },
+      {
+        type: "paragraph"
+      }
+    ]
+  };
+};
+
 export const JournalPage = ({
   pages,
   selectedPageId,
@@ -509,9 +589,11 @@ export const JournalPage = ({
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [tempDate, setTempDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [expandedMonths, setExpandedMonths] = useState<Set<string>>(() => new Set());
+  const [isWeeklyEarningsDragActive, setIsWeeklyEarningsDragActive] = useState(false);
   const lastExternalSyncRef = useRef("");
   const expandedMonthsInitializedRef = useRef(false);
   const screenshotInputRef = useRef<HTMLInputElement | null>(null);
+  const weeklyEarningsInputRef = useRef<HTMLInputElement | null>(null);
 
   const createJournalInlineImageInsertHandler = (pageId: string, fieldKey: string) => async (file: File) =>
     saveWorkspaceInlineImage({
@@ -559,6 +641,77 @@ export const JournalPage = ({
         [JOURNAL_PAGES_STORAGE_KEY]: nextPages
       }
     }).catch(() => undefined);
+  };
+
+  const buildNextPagesWithUpdatedWeeklyEarnings = (
+    page: JournalPageRecord,
+    content: JournalPageRecord["weeklyEarningsContent"]
+  ): JournalPageRecord[] => {
+    const weekStart = getJournalWeekStartDate(page.tradeDate);
+    return pages.map((currentPage) =>
+      getJournalWeekStartDate(currentPage.tradeDate) === weekStart
+        ? {
+            ...currentPage,
+            weeklyEarningsContent: content
+          }
+        : currentPage
+    );
+  };
+
+  const discardRemovedWeeklyEarningsAttachments = (
+    page: JournalPageRecord,
+    nextContent: JournalPageRecord["weeklyEarningsContent"],
+    nextPages: JournalPageRecord[]
+  ) => {
+    const weekStart = getJournalWeekStartDate(page.tradeDate);
+    const previousAttachmentPaths = new Set(
+      pages
+        .filter((currentPage) => getJournalWeekStartDate(currentPage.tradeDate) === weekStart)
+        .flatMap((currentPage) => collectRichTextAttachmentPaths(currentPage.weeklyEarningsContent))
+    );
+    const nextAttachmentPaths = new Set(collectRichTextAttachmentPaths(nextContent));
+    Array.from(previousAttachmentPaths)
+      .filter((path) => !nextAttachmentPaths.has(path))
+      .forEach((path) => {
+        void deleteWorkspaceAttachmentIfUnused(path, {
+          delayMs: 0,
+          storageOverrides: {
+            [JOURNAL_PAGES_STORAGE_KEY]: nextPages
+          }
+        }).catch(() => undefined);
+      });
+  };
+
+  const handleWeeklyEarningsImageFile = (page: JournalPageRecord, file: File) => {
+    if (!acceptedWeeklyEarningsImageTypes.has(file.type)) {
+      window.alert("Please use a PNG, JPG, WEBP, or GIF image.");
+      return;
+    }
+
+    void createJournalInlineImageInsertHandler(page.id, "weeklyEarningsContent")(file)
+      .then((imageResult) => {
+        const nextContent = createWeeklyEarningsImageDoc(file.name, imageResult);
+        const nextPages = buildNextPagesWithUpdatedWeeklyEarnings(page, nextContent);
+        onUpdateContent(page.id, "weeklyEarningsContent", nextContent);
+        discardRemovedWeeklyEarningsAttachments(page, nextContent, nextPages);
+      })
+      .catch(() => {
+        window.alert("The weekly earnings image could not be saved.");
+      });
+  };
+
+  const handleWeeklyEarningsDrop = (page: JournalPageRecord, event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsWeeklyEarningsDragActive(false);
+    const imageFile = Array.from(event.dataTransfer.files ?? []).find((file) =>
+      acceptedWeeklyEarningsImageTypes.has(file.type)
+    );
+    if (!imageFile) {
+      window.alert("Drop a PNG, JPG, WEBP, or GIF image.");
+      return;
+    }
+
+    handleWeeklyEarningsImageFile(page, imageFile);
   };
 
   const handleScreenshotFileSelection = (page: JournalPageRecord, files: File[]) => {
@@ -632,6 +785,14 @@ export const JournalPage = ({
   const selectedPageHeaderIcon = useMemo(
     () => getJournalDateIcon(selectedPage?.tradeDate ?? ""),
     [selectedPage?.tradeDate]
+  );
+  const selectedWeekRangeLabel = useMemo(
+    () => (selectedPage ? formatJournalWeekRange(selectedPage.tradeDate) : ""),
+    [selectedPage]
+  );
+  const weeklyEarningsHasContent = useMemo(
+    () => Boolean(selectedPage && hasJournalDocContent(selectedPage.weeklyEarningsContent)),
+    [selectedPage]
   );
 
   const { options: moodOptions, addOption: addMoodOption } = useEditableSelectOptions(
@@ -797,15 +958,43 @@ export const JournalPage = ({
     onCreatePages(nextWeekTradeDates);
   };
 
+  const tradesByDate = useMemo(() => {
+    const grouped = new Map<string, EditableTradeRow[]>();
+    for (const trade of trades) {
+      const current = grouped.get(trade.tradeDate) ?? [];
+      current.push(trade);
+      grouped.set(trade.tradeDate, current);
+    }
+
+    for (const dateTrades of grouped.values()) {
+      dateTrades.sort((left, right) => left.openTime.localeCompare(right.openTime));
+    }
+
+    return grouped;
+  }, [trades]);
+
+  const tradeSummariesByDate = useMemo(() => {
+    const summaries = new Map<string, JournalPageSummary>();
+    for (const [tradeDate, dateTrades] of tradesByDate.entries()) {
+      const summary = getTradeSummary(dateTrades);
+      summaries.set(tradeDate, {
+        netPnl: summary.totalNetPnl,
+        tradeCount: summary.totalTrades,
+        winRate: summary.winRate,
+        avgTrade: summary.avgTrade,
+        totalSharesTraded: summary.totalSharesTraded,
+        tickers: Array.from(new Set(dateTrades.map((trade) => trade.symbol))).sort()
+      });
+    }
+
+    return summaries;
+  }, [tradesByDate]);
+
   const linkedTrades = useMemo(
-    () =>
-      selectedPage
-        ? trades
-            .filter((trade) => trade.tradeDate === selectedPage.tradeDate)
-            .sort((left, right) => left.openTime.localeCompare(right.openTime))
-        : [],
-    [selectedPage, trades]
+    () => (selectedPage?.tradeDate ? tradesByDate.get(selectedPage.tradeDate) ?? [] : []),
+    [selectedPage?.tradeDate, tradesByDate]
   );
+  const linkedTradeIdSet = useMemo(() => new Set(linkedTrades.map((trade) => trade.id)), [linkedTrades]);
 
   const linkedTickers = useMemo(
     () => Array.from(new Set(linkedTrades.map((trade) => trade.symbol))).sort(),
@@ -814,23 +1003,12 @@ export const JournalPage = ({
   const journalPageSummaries = useMemo(
     () =>
       new Map(
-        pages.map((page) => {
-          const pageTrades = trades.filter((trade) => trade.tradeDate === page.tradeDate);
-          const summary = getTradeSummary(pageTrades);
-          return [
-            page.id,
-            {
-              netPnl: summary.totalNetPnl,
-              tradeCount: summary.totalTrades,
-              winRate: summary.winRate,
-              avgTrade: summary.avgTrade,
-              totalSharesTraded: summary.totalSharesTraded,
-              tickers: Array.from(new Set(pageTrades.map((trade) => trade.symbol))).sort()
-            }
-          ];
-        })
+        pages.map((page) => [
+          page.id,
+          tradeSummariesByDate.get(page.tradeDate) ?? emptyJournalPageSummary
+        ])
       ),
-    [pages, trades]
+    [pages, tradeSummariesByDate]
   );
 
   const linkedTradeSummary = useMemo(() => getTradeSummary(linkedTrades), [linkedTrades]);
@@ -844,7 +1022,8 @@ export const JournalPage = ({
       return;
     }
 
-    const selectedTrades = linkedTrades.filter((trade) => tradeIds.includes(trade.id));
+    const selectedTradeIdSet = new Set(tradeIds);
+    const selectedTrades = linkedTrades.filter((trade) => selectedTradeIdSet.has(trade.id));
     if (selectedTrades.length === 0) {
       return;
     }
@@ -994,6 +1173,10 @@ export const JournalPage = ({
       })),
     [linkedTrades]
   );
+  const screenshotTradeOptionValueSet = useMemo(
+    () => new Set(screenshotTradeOptions.map((option) => option.value)),
+    [screenshotTradeOptions]
+  );
   const linkedTradeByLink = useMemo(
     () =>
       new Map(
@@ -1118,12 +1301,12 @@ export const JournalPage = ({
 
   useEffect(() => {
     setSelectedJournalTradeIds((current) =>
-      current.filter((tradeId) => linkedTrades.some((trade) => trade.id === tradeId))
+      current.filter((tradeId) => linkedTradeIdSet.has(tradeId))
     );
     setSelectedJournalTradeId((current) =>
-      linkedTrades.some((trade) => trade.id === current) ? current : linkedTrades[0]?.id ?? ""
+      linkedTradeIdSet.has(current) ? current : linkedTrades[0]?.id ?? ""
     );
-  }, [linkedTrades]);
+  }, [linkedTradeIdSet, linkedTrades]);
 
   useEffect(() => {
     if (!selectedMorningTemplateId && checklistTemplates.morningTemplates[0]) {
@@ -2209,25 +2392,83 @@ export const JournalPage = ({
                   />
                 </section>
 
-                <section className="journal-writing-section">
+                <section className="journal-writing-section journal-weekly-earnings-section">
                   <div className="journal-writing-header">
                     <div className="journal-writing-header-title">
-                      <WorkspaceIcon icon="trades" alt="In play stocks icon" className="mini-action-icon" />
-                      <strong>In Play Stocks</strong>
+                      <WorkspaceIcon icon="money" alt="Weekly earnings icon" className="mini-action-icon" />
+                      <div className="journal-weekly-title-copy">
+                        <strong>Weekly Earnings</strong>
+                        <span>{selectedWeekRangeLabel}</span>
+                      </div>
+                    </div>
+                    <div className="journal-writing-header-actions">
+                      <input
+                        ref={weeklyEarningsInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
+                        className="drop-zone-input"
+                        onChange={(event) => {
+                          const file = event.target.files?.item(0);
+                          if (file && selectedPage) {
+                            handleWeeklyEarningsImageFile(selectedPage, file);
+                          }
+
+                          event.currentTarget.value = "";
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="mini-action"
+                        onClick={() => weeklyEarningsInputRef.current?.click()}
+                      >
+                        <WorkspaceIcon icon="chart-screenshots" alt="Upload weekly earnings icon" className="mini-action-icon" />
+                        {weeklyEarningsHasContent ? "Replace Image" : "Add Screenshot"}
+                      </button>
                     </div>
                   </div>
-                  <JournalRichTextEditor
-                    key={`${selectedPage.id}-in-play-stocks`}
-                    content={selectedPage.inPlayStocksContent}
-                    onChange={(content) => onUpdateContent(selectedPage.id, "inPlayStocksContent", content)}
-                    onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "inPlayStocksContent")}
-                    draftStorageKey={`${selectedPage.id}:inPlayStocksContent`}
-                    sourceUpdatedAt={selectedPage.updatedAt}
-                    placeholder="Type '/' for commands"
-                    appearance="notion"
-                    autosize
-                    heightPreset="short"
-                  />
+                  {weeklyEarningsHasContent ? (
+                    <JournalRichTextEditor
+                      key={`${selectedPage.id}-weekly-earnings`}
+                      content={selectedPage.weeklyEarningsContent}
+                      onChange={(content) => onUpdateContent(selectedPage.id, "weeklyEarningsContent", content)}
+                      onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "weeklyEarningsContent")}
+                      onImageOpen={setExpandedScreenshotUrl}
+                      draftStorageKey={`${selectedPage.id}:weeklyEarningsContent`}
+                      sourceUpdatedAt={selectedPage.updatedAt}
+                      placeholder="Drop or paste the weekly earnings image here"
+                      appearance="notion"
+                      autosize
+                      heightPreset="short"
+                    />
+                  ) : (
+                    <div
+                      className={`journal-weekly-drop-zone${isWeeklyEarningsDragActive ? " is-dragging" : ""}`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => weeklyEarningsInputRef.current?.click()}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          weeklyEarningsInputRef.current?.click();
+                        }
+                      }}
+                      onDragEnter={(event) => {
+                        event.preventDefault();
+                        setIsWeeklyEarningsDragActive(true);
+                      }}
+                      onDragOver={(event) => {
+                        event.preventDefault();
+                        setIsWeeklyEarningsDragActive(true);
+                      }}
+                      onDragLeave={() => setIsWeeklyEarningsDragActive(false)}
+                      onDrop={(event) => handleWeeklyEarningsDrop(selectedPage, event)}
+                    >
+                      <WorkspaceIcon icon="chart-screenshots" alt="Weekly earnings upload icon" className="journal-weekly-drop-zone-icon" />
+                      <strong>Weekly Earnings</strong>
+                      <span>{selectedWeekRangeLabel}</span>
+                      <em>Add Screenshot</em>
+                    </div>
+                  )}
                 </section>
               </section>
 
@@ -2390,12 +2631,9 @@ export const JournalPage = ({
                               journalScreenshotTags[index] ??
                               createDefaultScreenshotTag(selectedPage.tradeDate);
                             const screenshotTradeLinks = getScreenshotTradeLinks(screenshotTag);
-                            const availableTradeValueSet = new Set(
-                              screenshotTradeOptions.map((option) => option.value)
-                            );
                             const selectedTradeValues = screenshotTradeLinks
                               .map((link) => serializeTradeLink(link.tradeId, link.tradeDate))
-                              .filter((value) => availableTradeValueSet.has(value));
+                              .filter((value) => screenshotTradeOptionValueSet.has(value));
                             const selectedTradeValueSet = new Set(selectedTradeValues);
                             const selectedTradeLinks = parseTradeLinkValues(selectedTradeValues);
                             const resolvedLinkedTrades = selectedTradeLinks
@@ -2483,6 +2721,7 @@ export const JournalPage = ({
                                         <div className="journal-screenshot-trade-picker-list">
                                           {screenshotTradeOptions.map(({ value, trade }) => {
                                             const isChecked = selectedTradeValueSet.has(value);
+                                            const primaryPlaybook = getPrimaryTradePlaybook(trade);
                                             return (
                                               <label
                                                 key={`${selectedPage.id}-${value}`}
@@ -2502,10 +2741,37 @@ export const JournalPage = ({
                                                   }}
                                                 />
                                                 <span className="journal-screenshot-trade-option-main">
-                                                  <strong>{trade.symbol}</strong>
-                                                  <span>{trade.name}</span>
-                                                  <span className="journal-screenshot-trade-option-time">
-                                                    {trade.openTime} to {trade.closeTime}
+                                                  <span className="journal-screenshot-trade-option-title">
+                                                    <strong>{trade.symbol}</strong>
+                                                    <span className="journal-screenshot-trade-option-name">{trade.name}</span>
+                                                    <span className="journal-screenshot-trade-option-time">
+                                                      {trade.openTime} to {trade.closeTime}
+                                                    </span>
+                                                  </span>
+                                                  <span className="journal-screenshot-trade-option-tags">
+                                                    <span className="journal-screenshot-trade-option-chip">{trade.side}</span>
+                                                    {primaryPlaybook ? (
+                                                      <span
+                                                        className={`journal-screenshot-trade-option-chip journal-screenshot-trade-option-playbook tag-option-pill-${getTagToneIndex(
+                                                          primaryPlaybook
+                                                        )}`}
+                                                        title={primaryPlaybook}
+                                                      >
+                                                        {primaryPlaybook}
+                                                      </span>
+                                                    ) : (
+                                                      <span className="journal-screenshot-trade-option-empty">No playbook</span>
+                                                    )}
+                                                  </span>
+                                                </span>
+                                                <span className="journal-screenshot-trade-option-prices">
+                                                  <span>
+                                                    <em>Entry</em>
+                                                    <strong>{formatTradePrice(trade.entryPrice)}</strong>
+                                                  </span>
+                                                  <span>
+                                                    <em>Exit</em>
+                                                    <strong>{formatTradePrice(trade.exitPrice)}</strong>
                                                   </span>
                                                 </span>
                                                 <span className="journal-screenshot-trade-option-meta">

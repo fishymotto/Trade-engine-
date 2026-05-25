@@ -168,23 +168,6 @@ const parseTimestamp = (value: string): number => {
 };
 
 const cloneValue = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-const stableStringify = (value: unknown): string => {
-  if (value === null || value === undefined) {
-    return JSON.stringify(value);
-  }
-
-  if (typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
-  }
-
-  const record = value as Record<string, unknown>;
-  const keys = Object.keys(record).sort();
-  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
-};
 
 const summarizeTradeList = (tradeList: GroupedTrade[]) => ({
   tradeCount: tradeList.length,
@@ -253,6 +236,7 @@ type RecoverableJournalDraftField =
   | "morningContent"
   | "closingContent"
   | "mppPlanContent"
+  | "weeklyEarningsContent"
   | "inPlayStocksContent"
   | "traderReachOutsContent"
   | "notesContent";
@@ -275,6 +259,7 @@ const recoverableJournalDraftFields: RecoverableJournalDraftField[] = [
   "morningContent",
   "closingContent",
   "mppPlanContent",
+  "weeklyEarningsContent",
   "inPlayStocksContent",
   "traderReachOutsContent",
   "notesContent"
@@ -517,6 +502,8 @@ function App() {
   const [dashboardStatusFilter, setDashboardStatusFilter] = useState("all");
   const [dashboardGameFilter, setDashboardGameFilter] = useState("all");
   const [dashboardExecutionFilter, setDashboardExecutionFilter] = useState("all");
+  const [reportComparisonDateFilterStart, setReportComparisonDateFilterStart] = useState("");
+  const [reportComparisonDateFilterEnd, setReportComparisonDateFilterEnd] = useState("");
   const [dashboardSelectedTradeId, setDashboardSelectedTradeId] = useState("");
   const [dashboardSelectedTradeRequestId, setDashboardSelectedTradeRequestId] = useState(0);
   const [reviewChartInterval, setReviewChartInterval] = useState<ChartInterval>("1m");
@@ -826,9 +813,7 @@ function App() {
     setTradeReviewsLoaded(true);
   };
 
-  const journalPagesForSave = useMemo(() => dedupeJournalPages(journalPages), [journalPages]);
-  const journalPagesSignature = useMemo(() => stableStringify(journalPages), [journalPages]);
-  const journalPagesForSaveSignature = useMemo(() => stableStringify(journalPagesForSave), [journalPagesForSave]);
+  const journalPagesForSave = journalPages;
   const loadedTradeDates = useMemo(
     () => Array.from(new Set(trades.map((trade) => trade.tradeDate))).sort(),
     [trades]
@@ -983,25 +968,22 @@ function App() {
       return;
     }
 
-    if (journalPages.length === 0 && !hasRetriedJournalDesktopRecoveryRef.current) {
-      hasRetriedJournalDesktopRecoveryRef.current = true;
-      void (async () => {
-        const desktopPages = await loadJournalPages();
-        if (desktopPages.length === 0) {
-          return;
-        }
-
-        setJournalPages(desktopPages);
-        setSelectedJournalPageId(desktopPages[0]?.id ?? "");
-        setMessage(`Recovered ${desktopPages.length} journal pages from the desktop backup.`);
-      })();
+    if (journalPages.length > 0 || hasRetriedJournalDesktopRecoveryRef.current) {
       return;
     }
 
-    if (journalPagesForSaveSignature !== journalPagesSignature) {
-      setJournalPages(journalPagesForSave);
-    }
-  }, [journalPagesForSave, journalPagesForSaveSignature, journalPagesLoaded, journalPagesSignature]);
+    hasRetriedJournalDesktopRecoveryRef.current = true;
+    void (async () => {
+      const desktopPages = await loadJournalPages();
+      if (desktopPages.length === 0) {
+        return;
+      }
+
+      setJournalPages(desktopPages);
+      setSelectedJournalPageId(desktopPages[0]?.id ?? "");
+      setMessage(`Recovered ${desktopPages.length} journal pages from the desktop backup.`);
+    })();
+  }, [journalPages.length, journalPagesLoaded]);
 
   useEffect(() => {
     if (!journalPagesLoaded || !tradeReviewsLoaded) {
@@ -1890,6 +1872,20 @@ function App() {
               setDashboardStatusFilter("all");
               setDashboardGameFilter("all");
               setDashboardExecutionFilter("all");
+              setReportComparisonDateFilterStart("");
+              setReportComparisonDateFilterEnd("");
+              handleNavigate("reports");
+            }}
+            onViewReportsForReviewPeriod={({ start, end, comparisonStart, comparisonEnd }) => {
+              setDashboardTradeDateFilterStart(start);
+              setDashboardTradeDateFilterEnd(end);
+              setDashboardPlaybookFilter("all");
+              setDashboardSymbolFilter("all");
+              setDashboardStatusFilter("all");
+              setDashboardGameFilter("all");
+              setDashboardExecutionFilter("all");
+              setReportComparisonDateFilterStart(comparisonStart);
+              setReportComparisonDateFilterEnd(comparisonEnd);
               handleNavigate("reports");
             }}
           />
@@ -1922,6 +1918,20 @@ function App() {
               setDashboardStatusFilter("all");
               setDashboardGameFilter("all");
               setDashboardExecutionFilter("all");
+              setReportComparisonDateFilterStart("");
+              setReportComparisonDateFilterEnd("");
+              handleNavigate("reports");
+            }}
+            onViewReportsForReviewPeriod={({ start, end, comparisonStart, comparisonEnd }) => {
+              setDashboardTradeDateFilterStart(start);
+              setDashboardTradeDateFilterEnd(end);
+              setDashboardPlaybookFilter("all");
+              setDashboardSymbolFilter("all");
+              setDashboardStatusFilter("all");
+              setDashboardGameFilter("all");
+              setDashboardExecutionFilter("all");
+              setReportComparisonDateFilterStart(comparisonStart);
+              setReportComparisonDateFilterEnd(comparisonEnd);
               handleNavigate("reports");
             }}
           />
@@ -1933,21 +1943,27 @@ function App() {
               externalTradeDateFilterStart={dashboardTradeDateFilterStart}
               externalTradeDateFilterEnd={dashboardTradeDateFilterEnd}
               externalPlaybookFilter={dashboardPlaybookFilter}
-            externalSymbolFilter={dashboardSymbolFilter}
-            externalStatusFilter={dashboardStatusFilter}
-            externalGameFilter={dashboardGameFilter}
-            externalExecutionFilter={dashboardExecutionFilter}
-            onFiltersChange={({ startValue, endValue, playbook, symbol, status, game, execution }) => {
-              setDashboardTradeDateFilterStart(startValue);
-              setDashboardTradeDateFilterEnd(endValue);
-              setDashboardPlaybookFilter(playbook);
-              setDashboardSymbolFilter(symbol);
-              setDashboardStatusFilter(status);
-              setDashboardGameFilter(game);
-              setDashboardExecutionFilter(execution);
-            }}
-          />
-        );
+              externalSymbolFilter={dashboardSymbolFilter}
+              externalStatusFilter={dashboardStatusFilter}
+              externalGameFilter={dashboardGameFilter}
+              externalExecutionFilter={dashboardExecutionFilter}
+              externalComparisonDateFilterStart={reportComparisonDateFilterStart}
+              externalComparisonDateFilterEnd={reportComparisonDateFilterEnd}
+              onFiltersChange={({ startValue, endValue, playbook, symbol, status, game, execution }) => {
+                setDashboardTradeDateFilterStart(startValue);
+                setDashboardTradeDateFilterEnd(endValue);
+                setDashboardPlaybookFilter(playbook);
+                setDashboardSymbolFilter(symbol);
+                setDashboardStatusFilter(status);
+                setDashboardGameFilter(game);
+                setDashboardExecutionFilter(execution);
+              }}
+              onComparisonFiltersChange={({ startValue, endValue }) => {
+                setReportComparisonDateFilterStart(startValue);
+                setReportComparisonDateFilterEnd(endValue);
+              }}
+            />
+          );
       case "import":
         return (
           <ImportPage

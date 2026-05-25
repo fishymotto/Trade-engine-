@@ -378,6 +378,10 @@ const getJournalContentScore = (page: JournalPageRecord): number => {
     score += 6;
   }
 
+  if (hasJournalDocContent(page.weeklyEarningsContent)) {
+    score += 6;
+  }
+
   if (!isEmptyJournalDoc(page.inPlayStocksContent) && readDocText(page.inPlayStocksContent).length > 0) {
     score += 6;
   }
@@ -581,6 +585,7 @@ const normalizeJournalPage = (
     morningContent?: JSONContent;
     closingContent?: JSONContent;
     mppPlanContent?: JSONContent;
+    weeklyEarningsContent?: JSONContent;
     inPlayStocksContent?: JSONContent;
     traderReachOutsContent?: JSONContent;
     notesContent?: JSONContent;
@@ -674,6 +679,7 @@ const normalizeJournalPage = (
     morningContent: ensureContent(page.morningContent, morningBlocks, page.morningJournal ?? ""),
     closingContent: ensureContent(page.closingContent, closingBlocks, page.closingJournal ?? ""),
     mppPlanContent: ensureContent(page.mppPlanContent, mppPlanBlocks, page.mppPlan ?? ""),
+    weeklyEarningsContent: ensureContent(page.weeklyEarningsContent),
     inPlayStocksContent: ensureContent(page.inPlayStocksContent),
     traderReachOutsContent: ensureContent(page.traderReachOutsContent),
     notesContent: ensureContent(page.notesContent, blocks, page.content ?? ""),

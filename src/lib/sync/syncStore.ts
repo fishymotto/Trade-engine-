@@ -274,6 +274,10 @@ const countNonEmptyDocText = (value: unknown): number => {
       total += record.text.trim().length;
     }
 
+    if (record.type === 'image') {
+      total += 40;
+    }
+
     if (Array.isArray(record.content)) {
       total += record.content.reduce((sum, child) => sum + visit(child), 0);
     }
@@ -338,6 +342,7 @@ const getRecordRichnessScore = (value: unknown): number => {
     'morningContent',
     'closingContent',
     'mppPlanContent',
+    'weeklyEarningsContent',
     'inPlayStocksContent',
     'traderReachOutsContent',
     'notesContent',

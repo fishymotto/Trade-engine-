@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { TagDrawer } from "../../../components/TagDrawer";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
 import { createEmptyJournalDoc, hasJournalDocContent } from "../../../lib/journal/journalContent";
@@ -136,8 +136,21 @@ const formatJournalDate = (tradeDate: string) => {
 
 const formatSignedMoney = (value: number): string => `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`;
 
+const formatTradePrice = (value: number): string => {
+  if (!Number.isFinite(value)) {
+    return "-";
+  }
+
+  return value.toFixed(Math.abs(value) >= 100 ? 2 : 4);
+};
+
 const getToneIndex = (value: string): number =>
   value.split("").reduce((sum, character) => sum + character.charCodeAt(0), 0) % 6;
+
+const getPrimaryTradePlaybook = (trade: EditableTradeRow): string =>
+  trade.setups
+    .map((playbook) => playbook.trim())
+    .find((playbook) => playbook && playbook !== "No Setup") ?? "";
 
 const getTradePlaybooks = (trades: EditableTradeRow[], fallbackPlaybook: string): string[] => {
   if (trades.length > 0) {
@@ -216,7 +229,7 @@ const buildTradeNoteWithLinks = (
   };
 };
 
-export const JournalTradeNotesPanel = ({
+const JournalTradeNotesPanelComponent = ({
   page,
   linkedTrades,
   tagOptionsByField,
@@ -361,7 +374,7 @@ export const JournalTradeNotesPanel = ({
           <button
             type="button"
             className="mini-action"
-            onClick={() => updateTradeNotes([createTradeNoteRecord(page.tradeDate), ...tradeNotes])}
+            onClick={() => updateTradeNotes([...tradeNotes, createTradeNoteRecord(page.tradeDate)])}
           >
             + Add note
           </button>
@@ -387,6 +400,7 @@ export const JournalTradeNotesPanel = ({
           {tradeNotes.map((note, index) => {
             const selectedTradeValues = assignedTradeValuesByNoteId.get(note.id) ?? [];
             const selectedTradeValueSet = new Set(selectedTradeValues);
+            const isTradePickerOpen = openTradePickerId === note.id;
             const linkedTradeLinks = collectTradeNoteLinks(note);
             const linkedTradeRecords = linkedTradeLinks
               .map((link) => linkedTradeByKey.get(serializeTradeLink(link.tradeId, link.tradeDate)) ?? null)
@@ -424,7 +438,7 @@ export const JournalTradeNotesPanel = ({
                 <div className="journal-screenshot-tag-grid">
                   <div className="journal-screenshot-tag-field journal-screenshot-tag-field-wide">
                     <span>Attach Trade</span>
-                    <details className="journal-screenshot-trade-picker" open={openTradePickerId === note.id}>
+                    <details className="journal-screenshot-trade-picker" open={isTradePickerOpen}>
                       <summary
                         className="journal-screenshot-trade-picker-summary"
                         onClick={(event) => {
@@ -437,68 +451,100 @@ export const JournalTradeNotesPanel = ({
                           v
                         </span>
                       </summary>
-                      <div className="journal-screenshot-trade-picker-controls">
-                        <button
-                          type="button"
-                          className="mini-action mini-action-soft"
-                          disabled={selectedTradeValues.length === 0}
-                          onClick={() =>
-                            updateTradeNote(note.id, (current) =>
-                              buildTradeNoteWithLinks(current, [], linkedTradeByKey, page.tradeDate)
-                            )
-                          }
-                        >
-                          Clear
-                        </button>
-                      </div>
-                      {linkedTradeOptions.length > 0 ? (
-                        <div className="journal-screenshot-trade-picker-list">
-                          {linkedTradeOptions.map(({ value, trade }) => {
-                            const isChecked = selectedTradeValueSet.has(value);
-                            const isUsedByAnotherNote = !isChecked && usedTradeValueSet.has(value);
+                      {isTradePickerOpen ? (
+                        <>
+                          <div className="journal-screenshot-trade-picker-controls">
+                            <button
+                              type="button"
+                              className="mini-action mini-action-soft"
+                              disabled={selectedTradeValues.length === 0}
+                              onClick={() =>
+                                updateTradeNote(note.id, (current) =>
+                                  buildTradeNoteWithLinks(current, [], linkedTradeByKey, page.tradeDate)
+                                )
+                              }
+                            >
+                              Clear
+                            </button>
+                          </div>
+                          {linkedTradeOptions.length > 0 ? (
+                            <div className="journal-screenshot-trade-picker-list">
+                              {linkedTradeOptions.map(({ value, trade }) => {
+                                const isChecked = selectedTradeValueSet.has(value);
+                                const isUsedByAnotherNote = !isChecked && usedTradeValueSet.has(value);
+                                const primaryPlaybook = getPrimaryTradePlaybook(trade);
 
-                            return (
-                              <label
-                                key={`${note.id}-${value}`}
-                                className={`journal-screenshot-trade-option${isChecked ? " is-checked" : ""}${
-                                  isUsedByAnotherNote ? " is-disabled" : ""
-                                }`}
-                              >
-                                <input
-                                  type="checkbox"
-                                  name={`trade-note-link-${note.id}`}
-                                  checked={isChecked}
-                                  disabled={isUsedByAnotherNote}
-                                  onChange={() => {
-                                    const nextValues = isChecked
-                                      ? selectedTradeValues.filter((currentValue) => currentValue !== value)
-                                      : [...selectedTradeValues, value];
-                                    const nextLinks = nextValues
-                                      .map((currentValue) => parseTradeLink(currentValue))
-                                      .filter((link): link is JournalScreenshotTradeLink => link !== null);
+                                return (
+                                  <label
+                                    key={`${note.id}-${value}`}
+                                    className={`journal-screenshot-trade-option${isChecked ? " is-checked" : ""}${
+                                      isUsedByAnotherNote ? " is-disabled" : ""
+                                    }`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      name={`trade-note-link-${note.id}`}
+                                      checked={isChecked}
+                                      disabled={isUsedByAnotherNote}
+                                      onChange={() => {
+                                        const nextValues = isChecked
+                                          ? selectedTradeValues.filter((currentValue) => currentValue !== value)
+                                          : [...selectedTradeValues, value];
+                                        const nextLinks = nextValues
+                                          .map((currentValue) => parseTradeLink(currentValue))
+                                          .filter((link): link is JournalScreenshotTradeLink => link !== null);
 
-                                    updateTradeNote(note.id, (current) =>
-                                      buildTradeNoteWithLinks(current, nextLinks, linkedTradeByKey, page.tradeDate)
-                                    );
-                                  }}
-                                />
-                                <span className="journal-screenshot-trade-option-main">
-                                  <strong>{trade.symbol}</strong>
-                                  <span>{trade.name}</span>
-                                  <span className="journal-screenshot-trade-option-time">
-                                    {trade.openTime} to {trade.closeTime}
-                                  </span>
-                                </span>
-                                <span className="journal-screenshot-trade-option-meta">
-                                  {isUsedByAnotherNote ? "Linked" : formatSignedMoney(trade.netPnlUsd)}
-                                </span>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <div className="empty-inline-state">No trades found for this journal date yet.</div>
-                      )}
+                                        updateTradeNote(note.id, (current) =>
+                                          buildTradeNoteWithLinks(current, nextLinks, linkedTradeByKey, page.tradeDate)
+                                        );
+                                      }}
+                                    />
+                                    <span className="journal-screenshot-trade-option-main">
+                                      <span className="journal-screenshot-trade-option-title">
+                                        <strong>{trade.symbol}</strong>
+                                        <span className="journal-screenshot-trade-option-name">{trade.name}</span>
+                                        <span className="journal-screenshot-trade-option-time">
+                                          {trade.openTime} to {trade.closeTime}
+                                        </span>
+                                      </span>
+                                      <span className="journal-screenshot-trade-option-tags">
+                                        <span className="journal-screenshot-trade-option-chip">{trade.side}</span>
+                                        {primaryPlaybook ? (
+                                          <span
+                                            className={`journal-screenshot-trade-option-chip journal-screenshot-trade-option-playbook tag-option-pill-${getToneIndex(
+                                              primaryPlaybook
+                                            )}`}
+                                            title={primaryPlaybook}
+                                          >
+                                            {primaryPlaybook}
+                                          </span>
+                                        ) : (
+                                          <span className="journal-screenshot-trade-option-empty">No playbook</span>
+                                        )}
+                                      </span>
+                                    </span>
+                                    <span className="journal-screenshot-trade-option-prices">
+                                      <span>
+                                        <em>Entry</em>
+                                        <strong>{formatTradePrice(trade.entryPrice)}</strong>
+                                      </span>
+                                      <span>
+                                        <em>Exit</em>
+                                        <strong>{formatTradePrice(trade.exitPrice)}</strong>
+                                      </span>
+                                    </span>
+                                    <span className="journal-screenshot-trade-option-meta">
+                                      {isUsedByAnotherNote ? "Linked" : formatSignedMoney(trade.netPnlUsd)}
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <div className="empty-inline-state">No trades found for this journal date yet.</div>
+                          )}
+                        </>
+                      ) : null}
                     </details>
                   </div>
 
@@ -700,3 +746,13 @@ export const JournalTradeNotesPanel = ({
     </section>
   );
 };
+
+export const JournalTradeNotesPanel = memo(
+  JournalTradeNotesPanelComponent,
+  (previous, next) =>
+    previous.page.id === next.page.id &&
+    previous.page.tradeDate === next.page.tradeDate &&
+    previous.page.tradeNotes === next.page.tradeNotes &&
+    previous.linkedTrades === next.linkedTrades &&
+    previous.tagOptionsByField === next.tagOptionsByField
+);

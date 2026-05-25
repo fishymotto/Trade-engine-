@@ -197,7 +197,9 @@ export const DateFilterPopover = (props: DateFilterPopoverProps) => {
   const triggerLabel =
     mode === "range"
       ? startValue && endValue
-        ? `${formatDisplayDate(startValue)} - ${formatDisplayDate(endValue)}`
+        ? startValue === endValue
+          ? formatDisplayDate(startValue)
+          : `${formatDisplayDate(startValue)} - ${formatDisplayDate(endValue)}`
         : startValue
           ? `${formatDisplayDate(startValue)} - ...`
           : endValue

@@ -44,11 +44,14 @@ interface JournalRichTextEditorProps {
   showBlockActions?: boolean;
   blockActionsVisibility?: "always" | "focus";
   onImageInsert?: (file: File) => Promise<string | InlineImageInsertResult>;
+  onImageOpen?: (src: string) => void;
   draftStorageKey?: string;
   sourceUpdatedAt?: string;
 }
 
 const MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024;
+const CONTENT_SAVE_DEBOUNCE_MS = 250;
+const DRAFT_SAVE_DEBOUNCE_MS = 900;
 const ACCEPTED_INLINE_IMAGE_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -541,6 +544,7 @@ export const JournalRichTextEditor = ({
   showBlockActions = true,
   blockActionsVisibility = "always",
   onImageInsert,
+  onImageOpen,
   draftStorageKey,
   sourceUpdatedAt
 }: JournalRichTextEditorProps) => {
@@ -565,10 +569,14 @@ export const JournalRichTextEditor = ({
   const filteredCommandsRef = useRef<JournalSlashCommandItem[]>([]);
   const activeSlashIndexRef = useRef(0);
   const editorRef = useRef<Editor | null>(null);
+  const onChangeRef = useRef(onChange);
+  const onImageOpenRef = useRef(onImageOpen);
   const lastCommittedContentRef = useRef(serializeNormalizedContent(initialStorageContent));
   const latestEditorContentRef = useRef<JSONContent>(initialContent);
   const trackedAttachmentPathsRef = useRef(createAttachmentPathSet(initialStorageContent));
   const imageStatusTimeoutRef = useRef<number | null>(null);
+  onChangeRef.current = onChange;
+  onImageOpenRef.current = onImageOpen;
 
   const updateSlashState = useCallback((editor: Editor) => {
     const query = getCurrentSlashQuery(editor);
@@ -705,14 +713,14 @@ export const JournalRichTextEditor = ({
 
       lastCommittedContentRef.current = nextSerialized;
       latestEditorContentRef.current = nextContent;
-      onChange(normalizedContent);
+      onChangeRef.current(normalizedContent);
       if (!options?.skipUiState) {
         setSaveState("saved");
         setLastSavedAt(new Date());
       }
       return true;
     },
-    [onChange, syncTrackedAttachmentPaths]
+    [syncTrackedAttachmentPaths]
   );
 
   const flushEditorContent = useCallback(
@@ -801,6 +809,22 @@ export const JournalRichTextEditor = ({
     editable: !readOnly,
     immediatelyRender: false,
     editorProps: {
+      handleClickOn: (_view, _pos, node, _nodePos, event, direct) => {
+        if (!direct || node.type.name !== "image" || !onImageOpenRef.current) {
+          return false;
+        }
+
+        event.preventDefault();
+        const filePath = typeof node.attrs.filePath === "string" ? node.attrs.filePath.trim() : "";
+        const src = typeof node.attrs.src === "string" ? node.attrs.src.trim() : "";
+        const imageSrc = filePath || src;
+        if (!imageSrc) {
+          return false;
+        }
+
+        onImageOpenRef.current(imageSrc);
+        return true;
+      },
       handleKeyDown: (_view, event) => {
         const currentEditor = editorRef.current;
         if (!currentEditor) {
@@ -948,7 +972,7 @@ export const JournalRichTextEditor = ({
 
   useDebouncedSave(
     pendingContent,
-    450,
+    CONTENT_SAVE_DEBOUNCE_MS,
     (nextContent) => {
       commitContent(nextContent);
     },
@@ -957,7 +981,7 @@ export const JournalRichTextEditor = ({
 
   useDebouncedSave(
     pendingContent,
-    900,
+    DRAFT_SAVE_DEBOUNCE_MS,
     (nextContent) => {
       if (!draftStorageKey) {
         return;
@@ -1150,7 +1174,9 @@ export const JournalRichTextEditor = ({
         {!readOnly && showBlockActions ? <JournalBlockActionsMenu editor={editor} appearance={appearance} /> : null}
         <EditorContent
           editor={editor}
-          className={`journal-rich-editor${taskListColumns === 2 ? " journal-rich-editor-task-columns-2" : ""}`}
+          className={`journal-rich-editor${taskListColumns === 2 ? " journal-rich-editor-task-columns-2" : ""}${
+            onImageOpen ? " journal-rich-editor-image-openable" : ""
+          }`}
         />
         {!readOnly && slashQuery !== null && slashQuery !== undefined && getCurrentSlashQuery(editor) !== null ? (
           <JournalSlashMenu

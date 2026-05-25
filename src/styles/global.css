@@ -3004,6 +3004,13 @@ body {
   font-size: 0.8rem;
 }
 
+.calendar-date-trigger > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .calendar-date-popover {
   position: absolute;
   top: calc(100% + 8px);
@@ -3034,6 +3041,12 @@ body {
 .calendar-date-preset-row {
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.calendar-date-range-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
 }
 
 .calendar-date-popover-header {
@@ -3126,15 +3139,16 @@ body {
 }
 
 .calendar-date-range-field {
-  flex: 1 1 120px;
   display: grid;
   gap: 4px;
+  min-width: 0;
+  width: 100%;
   text-align: left;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.04);
   color: var(--text-soft);
-  padding: 10px 12px;
+  padding: 9px 10px;
   font: inherit;
 }
 
@@ -3147,8 +3161,12 @@ body {
 
 .calendar-date-range-field strong {
   color: #ffffff;
-  font-size: 0.92rem;
+  font-size: 0.88rem;
   font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .calendar-date-range-field-active {
@@ -7185,6 +7203,72 @@ body {
   min-height: 0;
 }
 
+.journal-weekly-earnings-section {
+  min-height: 420px;
+}
+
+.journal-weekly-title-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.journal-weekly-title-copy span {
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  line-height: 1.25;
+}
+
+.journal-weekly-drop-zone {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 28px;
+  min-height: 340px;
+  padding: 28px;
+  border-radius: 14px;
+  border: 1px dashed rgba(93, 168, 255, 0.28);
+  background: rgba(14, 17, 22, 0.88);
+  color: var(--text-soft);
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+
+.journal-weekly-drop-zone:hover,
+.journal-weekly-drop-zone:focus-visible,
+.journal-weekly-drop-zone.is-dragging {
+  outline: none;
+  border-color: rgba(93, 168, 255, 0.52);
+  background: rgba(20, 26, 34, 0.94);
+  box-shadow: 0 0 0 2px rgba(93, 168, 255, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.journal-weekly-drop-zone.is-dragging {
+  transform: translateY(-1px);
+}
+
+.journal-weekly-drop-zone-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.journal-weekly-drop-zone strong {
+  color: #f1f3f7;
+  font-size: 0.95rem;
+}
+
+.journal-weekly-drop-zone span {
+  color: #9eb0c8;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.journal-weekly-drop-zone em {
+  color: #9eb0c8;
+  font-size: 0.82rem;
+  font-style: normal;
+}
+
 .journal-headlines-bar {
   margin: 14px 0;
 }
@@ -7998,14 +8082,14 @@ body {
 .journal-screenshot-trade-picker-list {
   display: grid;
   gap: 2px;
-  max-height: 170px;
+  max-height: 220px;
   overflow: auto;
   padding: 0 6px 6px;
 }
 
 .journal-screenshot-trade-option {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
   border-radius: 8px;
@@ -8032,17 +8116,31 @@ body {
 }
 
 .journal-screenshot-trade-option-main {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  display: grid;
+  gap: 4px;
   min-width: 0;
-  white-space: nowrap;
 }
 
 .journal-screenshot-trade-option-main strong {
   font-size: 0.82rem;
   color: #f8fafc;
   flex: 0 0 auto;
+}
+
+.journal-screenshot-trade-option-title,
+.journal-screenshot-trade-option-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.journal-screenshot-trade-option-title {
+  white-space: nowrap;
+}
+
+.journal-screenshot-trade-option-tags {
+  flex-wrap: wrap;
 }
 
 .journal-screenshot-trade-option-main span {
@@ -8052,7 +8150,7 @@ body {
   letter-spacing: 0;
 }
 
-.journal-screenshot-trade-option-main span:not(.journal-screenshot-trade-option-time) {
+.journal-screenshot-trade-option-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -8063,9 +8161,63 @@ body {
   flex: 0 0 auto;
 }
 
+.journal-screenshot-trade-option-main .journal-screenshot-trade-option-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  max-width: 100%;
+  border-radius: 999px;
+  padding: 0 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: #dce7f7;
+  line-height: 1;
+}
+
+.journal-screenshot-trade-option-main .journal-screenshot-trade-option-playbook {
+  max-width: min(180px, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.journal-screenshot-trade-option-main .journal-screenshot-trade-option-empty {
+  color: var(--text-muted);
+}
+
+.journal-screenshot-trade-option-prices {
+  display: grid;
+  gap: 2px;
+  justify-items: end;
+  min-width: 90px;
+  color: var(--text-soft);
+  font-size: 0.72rem;
+  line-height: 1.15;
+}
+
+.journal-screenshot-trade-option-prices span {
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.journal-screenshot-trade-option-prices em {
+  color: var(--text-muted);
+  font-style: normal;
+}
+
+.journal-screenshot-trade-option-prices strong {
+  color: #dbeafe;
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
 .journal-screenshot-trade-option-meta {
   font-size: 0.75rem;
   color: var(--text-muted);
+  min-width: 48px;
+  text-align: right;
 }
 
 .journal-screenshot-tag-actions {
@@ -8911,6 +9063,10 @@ body {
   margin: 14px 0;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(6, 8, 12, 0.5);
+}
+
+.journal-rich-editor-image-openable .journal-image {
+  cursor: zoom-in;
 }
 
 .journal-rich-editor-image-status {
@@ -10995,6 +11151,27 @@ body {
   margin-bottom: 18px;
 }
 
+.library-detail-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.library-review-report-action {
+  min-height: 42px;
+  border-color: rgba(93, 168, 255, 0.34);
+  background: rgba(93, 168, 255, 0.12);
+  color: #eaf3ff;
+  font-weight: 800;
+}
+
+.library-review-report-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
 .library-database-header h2 {
   margin: 4px 0 8px;
   font-size: 1.4rem;
@@ -12684,6 +12861,11 @@ body {
     rgba(6, 10, 15, 0.6);
 }
 
+.review-best-trade-section > .journal-writing-header .journal-writing-header-title > .mini-action-icon {
+  width: 28px;
+  height: 28px;
+}
+
 .review-best-trade-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.85fr);
@@ -13896,6 +14078,15 @@ body {
   .library-detail-header {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .library-detail-header-actions {
+    justify-content: flex-start;
+  }
+
+  .library-detail-header-actions .button,
+  .library-detail-header-actions .mini-action {
+    justify-content: center;
   }
 
   .library-collection-panel {

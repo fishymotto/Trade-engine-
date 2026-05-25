@@ -25,6 +25,7 @@ export type JournalContentField =
   | "morningContent"
   | "closingContent"
   | "mppPlanContent"
+  | "weeklyEarningsContent"
   | "inPlayStocksContent"
   | "traderReachOutsContent"
   | "notesContent";
@@ -78,6 +79,7 @@ export interface JournalPageRecord {
   morningContent: JSONContent;
   closingContent: JSONContent;
   mppPlanContent: JSONContent;
+  weeklyEarningsContent: JSONContent;
   inPlayStocksContent: JSONContent;
   traderReachOutsContent: JSONContent;
   notesContent: JSONContent;

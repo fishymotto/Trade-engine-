@@ -1,4 +1,4 @@
-import { createEmptyJournalDoc } from "../../../lib/journal/journalContent";
+import { createEmptyJournalDoc, hasJournalDocContent } from "../../../lib/journal/journalContent";
 import {
   getDefaultChecklistContent,
   type JournalChecklistTemplates,
@@ -72,7 +72,48 @@ export interface JournalPageActions {
 const sortJournalPagesByTradeDateDesc = (pages: JournalPageRecord[]): JournalPageRecord[] =>
   [...pages].sort((left, right) => right.tradeDate.localeCompare(left.tradeDate));
 
-const buildJournalTemplate = (checklistTemplates: JournalChecklistTemplates) => ({
+const formatDateInputValue = (value: Date) => {
+  const year = value.getFullYear();
+  const month = `${value.getMonth() + 1}`.padStart(2, "0");
+  const day = `${value.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+export const getJournalWeekStartDate = (tradeDate: string): string => {
+  const normalized = normalizeJournalTradeDate(tradeDate);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return normalized;
+  }
+
+  const date = new Date(`${normalized}T00:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return normalized;
+  }
+
+  const mondayOffset = (date.getDay() + 6) % 7;
+  date.setDate(date.getDate() - mondayOffset);
+  return formatDateInputValue(date);
+};
+
+const isSameJournalWeek = (leftTradeDate: string, rightTradeDate: string): boolean =>
+  Boolean(leftTradeDate && rightTradeDate) &&
+  getJournalWeekStartDate(leftTradeDate) === getJournalWeekStartDate(rightTradeDate);
+
+const getWeeklyEarningsContentForTradeDate = (
+  pages: JournalPageRecord[],
+  tradeDate: string
+): JournalPageRecord["weeklyEarningsContent"] => {
+  const sameWeekPages = pages
+    .filter((page) => isSameJournalWeek(page.tradeDate, tradeDate))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  const pageWithContent = sameWeekPages.find((page) => hasJournalDocContent(page.weeklyEarningsContent));
+  return pageWithContent?.weeklyEarningsContent ?? sameWeekPages[0]?.weeklyEarningsContent ?? createEmptyJournalDoc();
+};
+
+const buildJournalTemplate = (
+  checklistTemplates: JournalChecklistTemplates,
+  weeklyEarningsContent: JournalPageRecord["weeklyEarningsContent"] = createEmptyJournalDoc()
+) => ({
   title: "Daily Journal",
   dayGrade: "",
   marketRegime: "",
@@ -91,6 +132,7 @@ const buildJournalTemplate = (checklistTemplates: JournalChecklistTemplates) => 
   morningContent: createEmptyJournalDoc(),
   closingContent: createEmptyJournalDoc(),
   mppPlanContent: getDefaultChecklistContent(checklistTemplates, "mpp"),
+  weeklyEarningsContent,
   inPlayStocksContent: createEmptyJournalDoc(),
   traderReachOutsContent: createEmptyJournalDoc(),
   notesContent: createEmptyJournalDoc()
@@ -134,9 +176,12 @@ export const normalizeJournalTradeDate = (value: string): string => {
 export const createJournalPageRecord = (
   tradeDate: string,
   checklistTemplates: JournalChecklistTemplates,
-  timestamp: string
+  timestamp: string,
+  options?: {
+    weeklyEarningsContent?: JournalPageRecord["weeklyEarningsContent"];
+  }
 ): JournalPageRecord => {
-  const templateContent = buildJournalTemplate(checklistTemplates);
+  const templateContent = buildJournalTemplate(checklistTemplates, options?.weeklyEarningsContent);
 
   return {
     id: `journal-${tradeDate}-${timestamp}`,
@@ -159,6 +204,7 @@ export const createJournalPageRecord = (
     morningContent: templateContent.morningContent,
     closingContent: templateContent.closingContent,
     mppPlanContent: templateContent.mppPlanContent,
+    weeklyEarningsContent: templateContent.weeklyEarningsContent,
     inPlayStocksContent: templateContent.inPlayStocksContent,
     traderReachOutsContent: templateContent.traderReachOutsContent,
     notesContent: templateContent.notesContent,
@@ -188,7 +234,17 @@ export const createMissingJournalPages = ({
   const missingPages: JournalPageRecord[] = [];
 
   for (const [index, tradeDate] of sortedMissingDates.entries()) {
-    const nextPage = createJournalPageRecord(tradeDate, checklistTemplates, new Date(startTimestamp + index).toISOString());
+    const nextPage = createJournalPageRecord(
+      tradeDate,
+      checklistTemplates,
+      new Date(startTimestamp + index).toISOString(),
+      {
+        weeklyEarningsContent: getWeeklyEarningsContentForTradeDate(
+          [...currentPages, ...missingPages],
+          tradeDate
+        )
+      }
+    );
     missingPages.push(nextPage);
   }
 
@@ -271,7 +327,9 @@ export const createJournalPageActions = ({
     }
 
     const timestamp = new Date().toISOString();
-    const newPage = createJournalPageRecord(normalizedTradeDate, journalChecklistTemplates, timestamp);
+    const newPage = createJournalPageRecord(normalizedTradeDate, journalChecklistTemplates, timestamp, {
+      weeklyEarningsContent: getWeeklyEarningsContentForTradeDate(currentPages, normalizedTradeDate)
+    });
     persistJournalPages(sortJournalPagesByTradeDateDesc([...currentPages, newPage]));
     setSelectedJournalPageId(newPage.id);
   };
@@ -298,12 +356,18 @@ export const createJournalPageActions = ({
     field: JournalContentField,
     content: JournalPageRecord[JournalContentField]
   ) => {
-    const nextPages = getJournalPages().map((page) =>
-      page.id === pageId
+    const currentPages = getJournalPages();
+    const sourcePage = currentPages.find((page) => page.id === pageId);
+    const targetWeekStart =
+      field === "weeklyEarningsContent" && sourcePage ? getJournalWeekStartDate(sourcePage.tradeDate) : "";
+    const updatedAt = new Date().toISOString();
+    const nextPages = currentPages.map((page) =>
+      page.id === pageId ||
+      (field === "weeklyEarningsContent" && targetWeekStart && getJournalWeekStartDate(page.tradeDate) === targetWeekStart)
         ? {
             ...page,
             [field]: content,
-            updatedAt: new Date().toISOString()
+            updatedAt
           }
         : page
     );

@@ -32,6 +32,39 @@ const getTodayTradeDateKey = (): string => {
   return `${year}-${month}-${day}`;
 };
 
+const formatTradeDate = (value: string): string => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value;
+  }
+
+  const [year, month, day] = value.split("-");
+  return new Date(Number(year), Number(month) - 1, Number(day)).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  });
+};
+
+const formatTradeDateRange = (startValue: string, endValue: string): string => {
+  if (startValue && endValue) {
+    if (startValue === endValue) {
+      return formatTradeDate(startValue);
+    }
+
+    return `${formatTradeDate(startValue)} to ${formatTradeDate(endValue)}`;
+  }
+
+  if (startValue) {
+    return `From ${formatTradeDate(startValue)}`;
+  }
+
+  if (endValue) {
+    return `Through ${formatTradeDate(endValue)}`;
+  }
+
+  return "All dates";
+};
+
 const getSearchableTradeText = (trade: EditableTradeRow): string =>
   [
     trade.name,
@@ -64,7 +97,8 @@ export const TradeDatabasePage = ({
   onDeleteTradeTagOption
 }: TradeDatabasePageProps) => {
   const todayTradeDate = useMemo(() => getTodayTradeDateKey(), []);
-  const [selectedTradeDateFilter, setSelectedTradeDateFilter] = useState(todayTradeDate);
+  const [selectedTradeDateFilterStart, setSelectedTradeDateFilterStart] = useState(todayTradeDate);
+  const [selectedTradeDateFilterEnd, setSelectedTradeDateFilterEnd] = useState(todayTradeDate);
   const [selectedPlaybookFilter, setSelectedPlaybookFilter] = useState("all");
   const [selectedSymbolFilter, setSelectedSymbolFilter] = useState("all");
   const [selectedStatusFilter, setSelectedStatusFilter] = useState("all");
@@ -133,10 +167,15 @@ export const TradeDatabasePage = ({
   );
 
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const activeDateRangeLabel = formatTradeDateRange(selectedTradeDateFilterStart, selectedTradeDateFilterEnd);
   const filteredTrades = useMemo(() => {
     return [...trades]
       .filter((trade) => {
-        if (selectedTradeDateFilter !== "all" && trade.tradeDate !== selectedTradeDateFilter) {
+        if (selectedTradeDateFilterStart && trade.tradeDate < selectedTradeDateFilterStart) {
+          return false;
+        }
+
+        if (selectedTradeDateFilterEnd && trade.tradeDate > selectedTradeDateFilterEnd) {
           return false;
         }
 
@@ -189,7 +228,8 @@ export const TradeDatabasePage = ({
     selectedPlaybookFilter,
     selectedStatusFilter,
     selectedSymbolFilter,
-    selectedTradeDateFilter,
+    selectedTradeDateFilterEnd,
+    selectedTradeDateFilterStart,
     showUntaggedMistakesOnly,
     showUntaggedPlaybookOnly,
     trades
@@ -218,7 +258,7 @@ export const TradeDatabasePage = ({
     {
       key: "date",
       label: "Date",
-      value: selectedTradeDateFilter === "all" ? "All dates" : selectedTradeDateFilter
+      value: activeDateRangeLabel
     },
     normalizedSearchQuery
       ? { key: "search", label: "Search", value: searchQuery.trim() }
@@ -247,7 +287,8 @@ export const TradeDatabasePage = ({
   ].filter((value): value is { key: string; label: string; value: string } => value !== null);
 
   const clearFilters = () => {
-    setSelectedTradeDateFilter(todayTradeDate);
+    setSelectedTradeDateFilterStart(todayTradeDate);
+    setSelectedTradeDateFilterEnd(todayTradeDate);
     setSelectedPlaybookFilter("all");
     setSelectedSymbolFilter("all");
     setSelectedStatusFilter("all");
@@ -260,7 +301,7 @@ export const TradeDatabasePage = ({
   };
 
   const emptyStateLabel =
-    selectedTradeDateFilter === todayTradeDate && !hasNonDateFilters
+    selectedTradeDateFilterStart === todayTradeDate && selectedTradeDateFilterEnd === todayTradeDate && !hasNonDateFilters
       ? "No trades saved for today's date yet."
       : "No trades match the current trade history filters.";
 
@@ -283,7 +324,7 @@ export const TradeDatabasePage = ({
             <div className="trade-database-summary-grid">
               <div className="page-hero-stat-card">
                 <span>Date</span>
-                <strong>{selectedTradeDateFilter === "all" ? "All dates" : selectedTradeDateFilter}</strong>
+                <strong>{activeDateRangeLabel}</strong>
               </div>
               <div className="page-hero-stat-card">
                 <span>Trades</span>
@@ -302,10 +343,14 @@ export const TradeDatabasePage = ({
               <label className="trade-filter-field">
                 <span>Date</span>
                 <DateFilterPopover
-                  value={selectedTradeDateFilter}
-                  onChange={setSelectedTradeDateFilter}
+                  mode="range"
+                  startValue={selectedTradeDateFilterStart}
+                  endValue={selectedTradeDateFilterEnd}
+                  onRangeChange={(startValue, endValue) => {
+                    setSelectedTradeDateFilterStart(startValue);
+                    setSelectedTradeDateFilterEnd(endValue);
+                  }}
                   availableDates={tradeDateOptions}
-                  allValue="all"
                   allLabel="All Dates"
                 />
               </label>
