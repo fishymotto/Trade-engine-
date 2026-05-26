@@ -283,7 +283,7 @@ export const ImportPage = ({
             <div className="import-workspace-summary-card">
               <span>Date-Filtered Files</span>
               <strong>Merge only the included dates</strong>
-              <small>Best for missing sessions plus shared tags, templates, and workspace definitions.</small>
+              <small>Best for missing sessions plus journal notes, checklists, headlines, library pages, shared tags, templates, and workspace definitions.</small>
             </div>
             <div className="import-workspace-summary-card">
               <span>Full Files</span>

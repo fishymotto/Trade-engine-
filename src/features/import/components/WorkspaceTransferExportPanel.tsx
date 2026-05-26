@@ -137,7 +137,7 @@ export const WorkspaceTransferExportPanel = ({
         includedDayCount: selectedWorkspaceExportDates.length,
         coverageLabel: selectedDateSummary,
         detailLabel:
-          "Only the checked saved sessions will be included, along with related workspace records and shared tags/templates."
+          "Only the checked saved sessions will be included, along with their journal notes, checklists, headlines, library pages, and shared tags/templates."
       }
     : hasDateWindowScope
       ? {
@@ -146,8 +146,8 @@ export const WorkspaceTransferExportPanel = ({
           coverageLabel: `${settings.workspaceExportStartDate || "Beginning"} -> ${settings.workspaceExportEndDate || "Latest"}`,
           detailLabel:
             windowIncludedSavedTradeDates.length > 0
-              ? "Saved sessions inside the current window will be included, plus shared workspace definitions."
-              : "No saved sessions currently fall inside the chosen window, but shared workspace definitions can still sync."
+              ? "Saved sessions inside the current window will be included, plus journal notes, checklists, headlines, library pages, and shared workspace definitions."
+              : "No saved sessions currently fall inside the chosen window, but journal notes, checklists, headlines, library pages, and shared workspace definitions can still sync."
         }
       : {
           scopeLabel: "Full Workspace",

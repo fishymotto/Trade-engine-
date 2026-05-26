@@ -56,6 +56,11 @@ interface WorkspaceTransferDateRange {
   selectedDateSet?: Set<string>;
 }
 
+interface IncludedJournalPageRefs {
+  pageIds: Set<string>;
+  tradeDates: Set<string>;
+}
+
 const PLAYBOOK_STORAGE_KEY = "trade-engine-playbooks";
 
 const EXACT_STORAGE_KEYS = [
@@ -76,8 +81,10 @@ const EXACT_STORAGE_KEYS = [
   "trade-engine-review-templates"
 ] as const;
 
+const JOURNAL_EDITOR_DRAFT_STORAGE_PREFIX = "trade-engine-journal-editor-draft::";
+
 const PREFIX_STORAGE_KEYS = [
-  "trade-engine-journal-editor-draft::",
+  JOURNAL_EDITOR_DRAFT_STORAGE_PREFIX,
   "playbook-aplus-dismissed:"
 ] as const;
 const EXACT_STORAGE_KEY_SET = new Set<string>(EXACT_STORAGE_KEYS);
@@ -462,6 +469,44 @@ const hasJournalPageLinkedIncludedTrade = (value: unknown, tradeIds: Set<string>
   );
 };
 
+const shouldIncludeJournalPage = (
+  value: unknown,
+  range: WorkspaceTransferDateRange,
+  includedTradeIds: Set<string>
+): boolean =>
+  shouldIncludeByDateRange(value, range, ["tradeDate"]) ||
+  hasJournalPageLinkedIncludedTrade(value, includedTradeIds);
+
+const collectIncludedJournalPageRefs = (
+  pages: unknown,
+  range: WorkspaceTransferDateRange,
+  includedTradeIds: Set<string>
+): IncludedJournalPageRefs => {
+  const refs: IncludedJournalPageRefs = {
+    pageIds: new Set<string>(),
+    tradeDates: new Set<string>()
+  };
+
+  const rows = Array.isArray(pages) ? pages : [];
+  for (const page of rows) {
+    if (!shouldIncludeJournalPage(page, range, includedTradeIds)) {
+      continue;
+    }
+
+    const pageId = getRecordText(page, "id");
+    if (pageId) {
+      refs.pageIds.add(pageId);
+    }
+
+    const tradeDate = normalizeDateOnly(getRecordText(page, "tradeDate"));
+    if (tradeDate) {
+      refs.tradeDates.add(tradeDate);
+    }
+  }
+
+  return refs;
+};
+
 const hasPlaybookExampleInRange = (
   value: unknown,
   range: WorkspaceTransferDateRange,
@@ -471,65 +516,6 @@ const hasPlaybookExampleInRange = (
     (example) =>
       shouldIncludeByDateRange(example, range, ["tradeDate"]) || hasIncludedTradeId(example, tradeIds)
   );
-
-const LIBRARY_DATE_PROPERTY_KEYS = ["Date", "Date Used", "tradeDate", "journalDate"] as const;
-const LIBRARY_RANGE_PROPERTY_PAIRS = [["Range Start", "Range End"]] as const;
-
-const getRecordValue = (value: unknown, field: string): unknown =>
-  isRecord(value) ? value[field] : undefined;
-
-const getRecordProperties = (value: unknown): Record<string, unknown> =>
-  isRecord(value) && isRecord(value.properties) ? value.properties : {};
-
-const isDateSpanWithinRange = (
-  startDateInput: unknown,
-  endDateInput: unknown,
-  range: WorkspaceTransferDateRange
-): boolean => {
-  const startDate = normalizeDateOnly(startDateInput);
-  const endDate = normalizeDateOnly(endDateInput);
-  if (!startDate && !endDate) {
-    return false;
-  }
-
-  const spanStart = startDate && endDate && endDate < startDate ? endDate : startDate || endDate;
-  const spanEnd = startDate && endDate && endDate < startDate ? startDate : endDate || startDate;
-  if (!spanStart || !spanEnd) {
-    return false;
-  }
-
-  if (range.selectedDateSet && range.selectedDateSet.size > 0) {
-    return Array.from(range.selectedDateSet).some(
-      (selectedDate) => selectedDate >= spanStart && selectedDate <= spanEnd
-    );
-  }
-
-  if (range.startDate && spanEnd < range.startDate) {
-    return false;
-  }
-
-  if (range.endDate && spanStart > range.endDate) {
-    return false;
-  }
-
-  return true;
-};
-
-const hasLibraryDateInRange = (value: unknown, range: WorkspaceTransferDateRange): boolean => {
-  const properties = getRecordProperties(value);
-
-  if (
-    LIBRARY_DATE_PROPERTY_KEYS.some((field) =>
-      isDateWithinRange(normalizeDateOnly(properties[field] ?? getRecordValue(value, field)), range)
-    )
-  ) {
-    return true;
-  }
-
-  return LIBRARY_RANGE_PROPERTY_PAIRS.some(([startField, endField]) =>
-    isDateSpanWithinRange(properties[startField], properties[endField], range)
-  );
-};
 
 const getRecordTimestamp = (value: unknown, field: string): string | undefined => {
   const text = getRecordText(value, field);
@@ -909,7 +895,11 @@ const mergeWorkspaceTransferValue = (storageKey: string, existing: unknown, inco
   }
 };
 
-const filterHeadlineBuckets = (value: unknown, range: WorkspaceTransferDateRange): Record<string, unknown> => {
+const filterHeadlineBuckets = (
+  value: unknown,
+  range: WorkspaceTransferDateRange,
+  includedJournalTradeDates: Set<string>
+): Record<string, unknown> => {
   if (!isRecord(value)) {
     return {};
   }
@@ -920,17 +910,51 @@ const filterHeadlineBuckets = (value: unknown, range: WorkspaceTransferDateRange
       continue;
     }
 
+    const normalizedBucketDate = normalizeDateOnly(bucketDate);
+    if (
+      (normalizedBucketDate && includedJournalTradeDates.has(normalizedBucketDate)) ||
+      isDateWithinRange(normalizedBucketDate || bucketDate, range)
+    ) {
+      filtered[bucketDate] = items;
+      continue;
+    }
+
     const kept = items.filter((item) => shouldIncludeByDateRange(item, range, ["journalDate"])) as unknown[];
-    if (kept.length > 0 || isDateWithinRange(bucketDate, range)) {
-      filtered[bucketDate] = kept.length > 0 ? kept : [];
+    if (kept.length > 0) {
+      filtered[bucketDate] = kept;
     }
   }
 
   return filtered;
 };
 
-const filterJournalDraft = (value: unknown, range: WorkspaceTransferDateRange): unknown =>
-  isRecord(value) && isTimestampWithinRange(parseTimestamp(value.updatedAt), range) ? value : undefined;
+const isJournalDraftForIncludedPage = (storageKey: string, includedJournalPageIds: Set<string>): boolean => {
+  if (!storageKey.startsWith(JOURNAL_EDITOR_DRAFT_STORAGE_PREFIX) || includedJournalPageIds.size === 0) {
+    return false;
+  }
+
+  const draftKeyBody = storageKey.slice(JOURNAL_EDITOR_DRAFT_STORAGE_PREFIX.length);
+  for (const pageId of includedJournalPageIds) {
+    if (draftKeyBody.startsWith(`${pageId}:`)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const filterJournalDraft = (
+  storageKey: string,
+  value: unknown,
+  range: WorkspaceTransferDateRange,
+  includedJournalPageIds: Set<string>
+): unknown => {
+  if (isJournalDraftForIncludedPage(storageKey, includedJournalPageIds)) {
+    return value;
+  }
+
+  return isRecord(value) && isTimestampWithinRange(parseTimestamp(value.updatedAt), range) ? value : undefined;
+};
 
 export const collectWorkspaceTransferLocalStorage = (): Record<string, unknown> => {
   if (typeof window === "undefined") {
@@ -977,6 +1001,11 @@ export const prepareWorkspaceTransferSnapshot = (
 
   const filtered: Record<string, unknown> = {};
   const includedTradeIds = collectIncludedTradeIds(snapshot["trade-engine-trade-sessions"], range);
+  const includedJournalPages = collectIncludedJournalPageRefs(
+    snapshot["trade-engine-journal-pages"],
+    range,
+    includedTradeIds
+  );
 
   for (const [storageKey, value] of Object.entries(snapshot)) {
     if (shouldSkipDateRangeStorageKey(storageKey)) {
@@ -994,11 +1023,7 @@ export const prepareWorkspaceTransferSnapshot = (
       }
       case "trade-engine-journal-pages": {
         const rows = Array.isArray(value) ? value : [];
-        const kept = rows.filter(
-          (entry) =>
-            shouldIncludeByDateRange(entry, range, ["tradeDate"]) ||
-            hasJournalPageLinkedIncludedTrade(entry, includedTradeIds)
-        );
+        const kept = rows.filter((entry) => shouldIncludeJournalPage(entry, range, includedTradeIds));
         if (kept.length > 0) {
           filtered[storageKey] = kept;
         }
@@ -1043,27 +1068,21 @@ export const prepareWorkspaceTransferSnapshot = (
         break;
       }
       case "trade-engine-library-pages": {
-        const rows = Array.isArray(value) ? value : [];
-        const kept = rows.filter(
-          (entry) =>
-            shouldIncludeByDateRange(entry, range) ||
-            hasLibraryDateInRange(entry, range)
-        );
-        if (kept.length > 0) {
-          filtered[storageKey] = kept;
-        }
+        // Library pages are shared workspace knowledge, not just trade-date records.
+        // Keep the full set in scoped sync files so Weekly/Monthly Reviews and other notes merge too.
+        filtered[storageKey] = value;
         break;
       }
       case "trade-engine-headlines": {
-        const kept = filterHeadlineBuckets(value, range);
+        const kept = filterHeadlineBuckets(value, range, includedJournalPages.tradeDates);
         if (Object.keys(kept).length > 0) {
           filtered[storageKey] = kept;
         }
         break;
       }
       default: {
-        if (storageKey.startsWith("trade-engine-journal-editor-draft::")) {
-          const kept = filterJournalDraft(value, range);
+        if (storageKey.startsWith(JOURNAL_EDITOR_DRAFT_STORAGE_PREFIX)) {
+          const kept = filterJournalDraft(storageKey, value, range, includedJournalPages.pageIds);
           if (kept !== undefined) {
             filtered[storageKey] = kept;
           }
