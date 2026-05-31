@@ -1,6 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { testNotionConnection } from "../../notion/lib/notionClient";
-import { saveJournalPages } from "../../../lib/journal/journalStore";
+import { dedupeJournalPages, saveJournalPages } from "../../../lib/journal/journalStore";
 import type { JournalChecklistTemplates } from "../../../lib/journal/journalTemplateStore";
 import { persistJournalChecklistTemplates } from "../../../lib/journal/journalTemplateStore";
 import { loadLibraryPages, saveLibraryPages } from "../../../lib/library/libraryStore";
@@ -342,13 +342,17 @@ export const createSettingsPageActions = ({
     const tradeTagCatalog = isRecord(snapshot[TRADE_TAG_CATALOG_STORAGE_KEY])
       ? snapshot[TRADE_TAG_CATALOG_STORAGE_KEY]
       : {};
+    const importedJournalPages = dedupeJournalPages([
+      ...journalPagesForSave,
+      ...asArray<JournalPageRecord>(snapshot[JOURNAL_PAGES_STORAGE_KEY])
+    ]);
 
     await Promise.all([
       saveSettings(importedSettings),
       saveTradeSessions(asArray<TradeSessionRecord>(snapshot[TRADE_SESSIONS_STORAGE_KEY]), {
         mergeDesktopBackup: true
       }),
-      saveJournalPages(asArray<JournalPageRecord>(snapshot[JOURNAL_PAGES_STORAGE_KEY])),
+      saveJournalPages(importedJournalPages, { mergeDesktopBackup: true }),
       saveTradeTagOptions(
         isRecord(snapshot[TRADE_TAG_OPTIONS_STORAGE_KEY])
           ? (snapshot[TRADE_TAG_OPTIONS_STORAGE_KEY] as TradeTagOptionsRecord)

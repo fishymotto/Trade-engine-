@@ -741,19 +741,32 @@ export const loadJournalPages = async (): Promise<JournalPageRecord[]> => {
   return localPages;
 };
 
-export const saveJournalPages = async (pages: JournalPageRecord[]): Promise<void> => {
-  const dedupedPages = dedupeJournalPages(pages);
+interface SaveJournalPagesOptions {
+  mergeDesktopBackup?: boolean;
+}
+
+export const saveJournalPages = async (
+  pages: JournalPageRecord[],
+  options: SaveJournalPagesOptions = {}
+): Promise<void> => {
+  let dedupedPages = dedupeJournalPages(pages);
+  const activeUserId = syncStores.journalPages.getUserId();
+  const canUseDesktopBackup = canUseMachineLegacyData(activeUserId);
+  const desktopPages = canUseDesktopBackup ? await readJournalPagesFromDesktopBackup() : null;
+
+  if (options.mergeDesktopBackup && desktopPages) {
+    dedupedPages = dedupeJournalPages([...desktopPages, ...dedupedPages]);
+  }
+
   const persistedPages = serializeJournalPagesForPersistence(dedupedPages);
   const syncPromise = syncStores.journalPages.save(persistedPages);
 
-  const activeUserId = syncStores.journalPages.getUserId();
-  if (!canUseMachineLegacyData(activeUserId)) {
+  if (!canUseDesktopBackup) {
     await syncPromise;
     return;
   }
 
-  const desktopPages = await readJournalPagesFromDesktopBackup();
-  if (desktopPages && shouldUseDesktopJournalPagesForRecovery(dedupedPages, desktopPages)) {
+  if (!options.mergeDesktopBackup && desktopPages && shouldUseDesktopJournalPagesForRecovery(dedupedPages, desktopPages)) {
     console.warn("[journal] Skipped lossy desktop journal write to protect richer backup.");
     return;
   }

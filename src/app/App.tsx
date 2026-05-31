@@ -502,6 +502,7 @@ function App() {
   const [dashboardStatusFilter, setDashboardStatusFilter] = useState("all");
   const [dashboardGameFilter, setDashboardGameFilter] = useState("all");
   const [dashboardExecutionFilter, setDashboardExecutionFilter] = useState("all");
+  const [journalDateRequest, setJournalDateRequest] = useState({ tradeDate: "", requestId: 0 });
   const [reportComparisonDateFilterStart, setReportComparisonDateFilterStart] = useState("");
   const [reportComparisonDateFilterEnd, setReportComparisonDateFilterEnd] = useState("");
   const [dashboardSelectedTradeId, setDashboardSelectedTradeId] = useState("");
@@ -1813,13 +1814,8 @@ function App() {
               settings={settings}
               tagOptionsByField={activeTradeTagOptionsByField}
               checklistTemplates={journalChecklistTemplates}
-              externalSelectedTradeDate={
-                dashboardTradeDateFilterStart &&
-                dashboardTradeDateFilterEnd &&
-                dashboardTradeDateFilterStart === dashboardTradeDateFilterEnd
-                  ? dashboardTradeDateFilterStart
-                  : ""
-              }
+              externalSelectedTradeDate={journalDateRequest.tradeDate}
+              externalSelectedTradeRequestId={journalDateRequest.requestId}
               onSelectPage={setSelectedJournalPageId}
               onSelectTrade={(tradeId, tradeDate) => {
                 setDashboardTradeDateFilterStart(tradeDate);
@@ -1862,6 +1858,10 @@ function App() {
             onOpenJournalDate={(tradeDate) => {
               setDashboardTradeDateFilterStart(tradeDate);
               setDashboardTradeDateFilterEnd(tradeDate);
+              setJournalDateRequest((current) => ({
+                tradeDate,
+                requestId: current.requestId + 1
+              }));
               handleNavigate("journal");
             }}
             onViewReportsForPlaybook={(playbookName) => {
@@ -1908,6 +1908,10 @@ function App() {
             onOpenJournalDate={(tradeDate) => {
               setDashboardTradeDateFilterStart(tradeDate);
               setDashboardTradeDateFilterEnd(tradeDate);
+              setJournalDateRequest((current) => ({
+                tradeDate,
+                requestId: current.requestId + 1
+              }));
               handleNavigate("journal");
             }}
             onViewReportsForPlaybook={(playbookName) => {

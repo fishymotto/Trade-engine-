@@ -4,6 +4,8 @@ import {
   removeLocalStorageItem,
   writeLocalStorageItem
 } from "../storage/localStorage";
+import { dedupeJournalPages } from "../journal/journalStore";
+import type { JournalPageRecord } from "../../types/journal";
 
 export type WorkspaceTransferScope = "full" | "since-date" | "date-range" | "selected-dates";
 
@@ -665,6 +667,12 @@ const mergeTradeSessions = (existing: unknown, incoming: unknown): unknown[] => 
   );
 };
 
+const mergeJournalPages = (existing: unknown, incoming: unknown): JournalPageRecord[] =>
+  dedupeJournalPages([
+    ...(Array.isArray(existing) ? (existing as JournalPageRecord[]) : []),
+    ...(Array.isArray(incoming) ? (incoming as JournalPageRecord[]) : [])
+  ]);
+
 const mergePlaybookExamples = (existing: unknown[], incoming: unknown[]): unknown[] =>
   mergeArrayByKey(
     existing,
@@ -834,12 +842,7 @@ const mergeWorkspaceTransferValue = (storageKey: string, existing: unknown, inco
     case "trade-engine-trade-sessions":
       return mergeTradeSessions(existing, incoming);
     case "trade-engine-journal-pages":
-      return mergeArrayByKey(
-        Array.isArray(existing) ? existing : [],
-        Array.isArray(incoming) ? incoming : [],
-        (entry) => (isRecord(entry) && typeof entry.id === "string" ? entry.id : ""),
-        (entry) => (isRecord(entry) && typeof entry.updatedAt === "string" ? entry.updatedAt : undefined)
-      );
+      return mergeJournalPages(existing, incoming);
     case "trade-engine-trade-tag-options":
     case "trade-engine-select-option-additions":
     case "trade-engine-trade-tag-catalog":

@@ -323,6 +323,20 @@ const JournalTradeNotesPanelComponent = ({
     onUpdatePage(page.id, { tradeNotes: nextTradeNotes });
   };
 
+  const handleCreateTradeNote = (insertAfterIndex?: number) => {
+    const nextTradeNote = createTradeNoteRecord(page.tradeDate);
+    if (insertAfterIndex === undefined) {
+      updateTradeNotes([...tradeNotes, nextTradeNote]);
+      return;
+    }
+
+    updateTradeNotes([
+      ...tradeNotes.slice(0, insertAfterIndex + 1),
+      nextTradeNote,
+      ...tradeNotes.slice(insertAfterIndex + 1)
+    ]);
+  };
+
   const updateTradeNote = (
     noteId: string,
     updater: (current: JournalTradeNoteRecord) => JournalTradeNoteRecord
@@ -374,7 +388,7 @@ const JournalTradeNotesPanelComponent = ({
           <button
             type="button"
             className="mini-action"
-            onClick={() => updateTradeNotes([...tradeNotes, createTradeNoteRecord(page.tradeDate)])}
+            onClick={() => handleCreateTradeNote()}
           >
             + Add note
           </button>
@@ -390,7 +404,7 @@ const JournalTradeNotesPanelComponent = ({
           <button
             type="button"
             className="mini-action headline-mini-action headline-open-action"
-            onClick={() => updateTradeNotes([createTradeNoteRecord(page.tradeDate)])}
+            onClick={() => handleCreateTradeNote()}
           >
             + Add trade note
           </button>
@@ -657,6 +671,13 @@ const JournalTradeNotesPanelComponent = ({
                         Open {trade.symbol} {trade.name}
                       </button>
                     ))}
+                    <button
+                      type="button"
+                      className="mini-action mini-action-soft"
+                      onClick={() => handleCreateTradeNote(index)}
+                    >
+                      + New trade note
+                    </button>
                     <button
                       type="button"
                       className="mini-action mini-action-danger"

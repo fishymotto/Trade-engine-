@@ -83,6 +83,7 @@ interface JournalPageProps {
   onRenameTradeTagOption: (field: EditableTradeTagField, currentValue: string, nextValue: string) => void;
   onDeleteTradeTagOption: (field: EditableTradeTagField, value: string) => void;
   onAttachScreenshotToTrade: (tradeId: string, screenshotUrl: string) => void;
+  externalSelectedTradeRequestId: number;
 }
 
 interface JournalPageSummary {
@@ -569,7 +570,8 @@ export const JournalPage = ({
   onCreateTradeTagOption,
   onRenameTradeTagOption,
   onDeleteTradeTagOption,
-  onAttachScreenshotToTrade
+  onAttachScreenshotToTrade,
+  externalSelectedTradeRequestId
 }: JournalPageProps) => {
   const [draftTradeDate, setDraftTradeDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [visibleScreenshotRows, setVisibleScreenshotRows] = useState(1);
@@ -592,6 +594,7 @@ export const JournalPage = ({
   const [isWeeklyEarningsDragActive, setIsWeeklyEarningsDragActive] = useState(false);
   const lastExternalSyncRef = useRef("");
   const expandedMonthsInitializedRef = useRef(false);
+  const draftTradeDateInputRef = useRef<HTMLInputElement | null>(null);
   const screenshotInputRef = useRef<HTMLInputElement | null>(null);
   const weeklyEarningsInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -782,6 +785,23 @@ export const JournalPage = ({
     () => pages.find((page) => page.id === selectedPageId) ?? pages[0] ?? null,
     [pages, selectedPageId]
   );
+
+  useEffect(() => {
+    if (!selectedPage?.tradeDate) {
+      return;
+    }
+
+    if (
+      draftTradeDateInputRef.current &&
+      typeof document !== "undefined" &&
+      document.activeElement === draftTradeDateInputRef.current
+    ) {
+      return;
+    }
+
+    setDraftTradeDate(selectedPage.tradeDate);
+  }, [selectedPage?.tradeDate]);
+
   const selectedPageHeaderIcon = useMemo(
     () => getJournalDateIcon(selectedPage?.tradeDate ?? ""),
     [selectedPage?.tradeDate]
@@ -918,6 +938,11 @@ export const JournalPage = ({
     });
   };
 
+  const selectJournalPage = (page: JournalPageRecord) => {
+    setDraftTradeDate(page.tradeDate);
+    onSelectPage(page.id);
+  };
+
   const navigateToJournalDate = (value: string) => {
     const normalized = normalizeDateForInput(value);
     if (!normalized) {
@@ -926,8 +951,13 @@ export const JournalPage = ({
 
     const matchingPage = sortedPagesRef.current.find((page) => page.tradeDate === normalized);
     if (matchingPage) {
-      onSelectPage(matchingPage.id);
+      selectJournalPage(matchingPage);
     }
+  };
+
+  const handleDraftTradeDateChange = (value: string) => {
+    setDraftTradeDate(value);
+    navigateToJournalDate(value);
   };
 
   const promptForNewJournalDate = () => {
@@ -1263,21 +1293,22 @@ export const JournalPage = ({
   );
 
   useEffect(() => {
-    if (!externalSelectedTradeDate) {
+    if (!externalSelectedTradeDate || externalSelectedTradeRequestId <= 0) {
       return;
     }
 
-    if (lastExternalSyncRef.current === externalSelectedTradeDate) {
+    const externalSyncKey = `${externalSelectedTradeRequestId}:${externalSelectedTradeDate}`;
+    if (lastExternalSyncRef.current === externalSyncKey) {
       return;
     }
 
-    lastExternalSyncRef.current = externalSelectedTradeDate;
+    lastExternalSyncRef.current = externalSyncKey;
     setDraftTradeDate(externalSelectedTradeDate);
     const matchingPage = sortedPagesRef.current.find((page) => page.tradeDate === externalSelectedTradeDate);
     if (matchingPage) {
       onSelectPage(matchingPage.id);
     }
-  }, [externalSelectedTradeDate, onSelectPage]);
+  }, [externalSelectedTradeDate, externalSelectedTradeRequestId, onSelectPage]);
 
   useEffect(() => {
     const imageCount = selectedPage?.screenshotUrls.length ?? 0;
@@ -1493,13 +1524,10 @@ export const JournalPage = ({
               <label className="journal-date-label">
                 <span>Journal Date</span>
                 <input
+                  ref={draftTradeDateInputRef}
                   type="date"
                   value={draftTradeDate}
-                  onChange={(event) => {
-                    setDraftTradeDate(event.target.value);
-                    navigateToJournalDate(event.target.value);
-                  }}
-                  onClick={() => navigateToJournalDate(draftTradeDate)}
+                  onChange={(event) => handleDraftTradeDateChange(event.target.value)}
                   className="journal-date-input"
                 />
               </label>
@@ -1548,7 +1576,7 @@ export const JournalPage = ({
                                 key={page.id}
                                 type="button"
                                 className={`journal-page-item ${page.id === selectedPage?.id ? "journal-page-item-active" : ""}`}
-                                onClick={() => onSelectPage(page.id)}
+                                onClick={() => selectJournalPage(page)}
                               >
                                 <div className="journal-page-row">
                                   <div className="journal-page-title">
