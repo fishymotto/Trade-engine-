@@ -43,6 +43,10 @@ fn default_mpp_lock_in_steps() -> Vec<u32> {
     vec![5, 10, 20, 30, 40, 50]
 }
 
+fn default_currency_symbol_list() -> String {
+    "ETH".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -58,8 +62,12 @@ pub struct AppSettings {
     twelve_data_api_key: String,
     brl_to_usd_rate: f64,
     brl_ticker_list: String,
+    #[serde(default = "default_currency_symbol_list")]
+    currency_symbol_list: String,
     #[serde(default)]
     daily_shutdown_risk_usd: f64,
+    #[serde(default)]
+    currency_daily_shutdown_risk_usd: f64,
     #[serde(default = "default_mpp_lock_in_steps")]
     mpp_lock_in_steps: Vec<u32>,
     #[serde(default = "default_trade_tag_visibility")]
@@ -81,7 +89,9 @@ pub fn default_settings() -> AppSettings {
         brl_ticker_list:
             "BBAS3, ITSA4, BBDC4, VALE3, ASAI3, CEAB3, ABEV3, PETR4, PRIO3, CSAN3, BRAV3, RECV3, COGN3, AMBP3, GGPS3, WEGE3, EMBJ3, HAPV3"
                 .to_string(),
+        currency_symbol_list: default_currency_symbol_list(),
         daily_shutdown_risk_usd: 0.0,
+        currency_daily_shutdown_risk_usd: 0.0,
         mpp_lock_in_steps: default_mpp_lock_in_steps(),
         trade_tag_visibility: default_trade_tag_visibility(),
         desktop_backup_interval_minutes: default_backup_interval_minutes(),

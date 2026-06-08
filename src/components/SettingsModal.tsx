@@ -125,7 +125,17 @@ export const SettingsModal = ({
           <small>Comma, space, or new-line separated. These symbols will convert from BRL to USD on import.</small>
         </label>
         <label>
-          <span>Daily Shutdown Risk (USD)</span>
+          <span>Currency Symbols</span>
+          <textarea
+            rows={3}
+            value={settings.currencySymbolList}
+            onChange={(event) => update({ currencySymbolList: event.target.value })}
+            placeholder="ETH, ETHUSD"
+          />
+          <small>Comma, space, or new-line separated. These symbols use Currency MPP and Currency Shutdown Risk.</small>
+        </label>
+        <label>
+          <span>Stock Daily Shutdown Risk (USD)</span>
           <input
             type="number"
             min="0"
@@ -134,7 +144,19 @@ export const SettingsModal = ({
             onChange={(event) => update({ dailyShutdownRiskUsd: Number(event.target.value) || 0 })}
             placeholder="Example: 30"
           />
-          <small>Used to count breach days in Weekly/Monthly Review entries.</small>
+          <small>Used to count stock breach days in Weekly/Monthly Review entries.</small>
+        </label>
+        <label>
+          <span>Currency Daily Shutdown Risk (USD)</span>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            value={settings.currencyDailyShutdownRiskUsd || ""}
+            onChange={(event) => update({ currencyDailyShutdownRiskUsd: Number(event.target.value) || 0 })}
+            placeholder="Example: 10"
+          />
+          <small>Used to count ETH/currency breach days separately from stock breach days.</small>
         </label>
         <section className="settings-section">
           <div>

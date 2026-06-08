@@ -24,12 +24,14 @@ import {
   getTradeSummary,
   getVisibleMonthNavigation
 } from "../../../lib/analytics/tradeAnalytics";
+import { getMPPDayRecordsForTrades } from "../../../lib/analytics/assetMppAnalytics";
 import { getTradePlaybookOptions, tradeHasPlaybook } from "../../../lib/trades/playbookFilters";
 import { getTickerIcon, getTickerSector } from "../../../lib/tickers/tickerIcons";
-import type { GroupedTrade } from "../../../types/trade";
+import type { GroupedTrade, Settings } from "../../../types/trade";
 
 interface DashboardPageProps {
   trades: GroupedTrade[];
+  settings: Settings;
   externalTradeDateFilterStart?: string;
   externalTradeDateFilterEnd?: string;
   externalPlaybookFilter?: string;
@@ -280,6 +282,7 @@ const getOverallPerformanceBadge = (startValue: string, endValue: string): strin
 
 export const DashboardPage = ({
   trades,
+  settings,
   externalTradeDateFilterStart = "",
   externalTradeDateFilterEnd = "",
   externalPlaybookFilter = "all",
@@ -507,40 +510,60 @@ export const DashboardPage = ({
     filteredTrades.length > 0
       ? filteredTrades.reduce((sum, trade) => sum + trade.size, 0) / filteredTrades.length
       : 0;
-  const mppSourceDays = useMemo(
+  const stockMppSourceDays = useMemo(
     () =>
-      getCalendarSummary(attributeFilteredTrades).map((day) => ({
-        tradeDate: day.tradeDate,
-        netPnl: day.netPnl,
-        trades: day.trades
-      })),
-    [attributeFilteredTrades]
+      getMPPDayRecordsForTrades(attributeFilteredTrades, {
+        assetClass: "stock",
+        currencySymbolList: settings.currencySymbolList
+      }),
+    [attributeFilteredTrades, settings.currencySymbolList]
   );
-  const mppWindow = useMemo(() => calculateMPPWindow(mppSourceDays), [mppSourceDays]);
+  const currencyMppSourceDays = useMemo(
+    () =>
+      getMPPDayRecordsForTrades(attributeFilteredTrades, {
+        assetClass: "currency",
+        currencySymbolList: settings.currencySymbolList
+      }),
+    [attributeFilteredTrades, settings.currencySymbolList]
+  );
+  const stockMppWindow = useMemo(() => calculateMPPWindow(stockMppSourceDays), [stockMppSourceDays]);
+  const currencyMppWindow = useMemo(
+    () => calculateMPPWindow(currencyMppSourceDays),
+    [currencyMppSourceDays]
+  );
   const mppIncludedDaySet = useMemo(
-    () => new Set(getMPPIncludedDays(mppWindow).map((day) => day.tradeDate)),
-    [mppWindow]
+    () => new Set(getMPPIncludedDays(stockMppWindow).map((day) => day.tradeDate)),
+    [stockMppWindow]
   );
   const mppExcludedDaySet = useMemo(
-    () => new Set(getMPPExcludedDays(mppWindow).map((day) => day.tradeDate)),
-    [mppWindow]
+    () => new Set(getMPPExcludedDays(stockMppWindow).map((day) => day.tradeDate)),
+    [stockMppWindow]
   );
   const mppByTradeDate = useMemo(() => {
     const mppMap = new Map<string, number>();
 
-    for (const day of mppSourceDays) {
-      const snapshot = calculateMPPWindow(mppSourceDays, { anchorTradeDate: day.tradeDate });
+    for (const day of stockMppSourceDays) {
+      const snapshot = calculateMPPWindow(stockMppSourceDays, { anchorTradeDate: day.tradeDate });
       mppMap.set(day.tradeDate, snapshot.currentMPP);
     }
 
     return mppMap;
-  }, [mppSourceDays]);
-  const removedDaysLabel = `${
-    mppWindow.formulaBreakdown.excludedDaysRemoved
-  } worst day${mppWindow.formulaBreakdown.excludedDaysRemoved === 1 ? "" : "s"} removed`;
-  const mppCardDetail = mppWindow.isPartialWindow
-    ? `Not enough days yet (${mppWindow.formulaBreakdown.eligibleDayCount}/${mppWindow.formulaBreakdown.windowSize} days) | ${removedDaysLabel}`
-    : removedDaysLabel;
+  }, [stockMppSourceDays]);
+  const getMppCardDetail = (window: typeof stockMppWindow, dayCount: number): string => {
+    if (dayCount === 0) {
+      return "No eligible days yet";
+    }
+
+    const removedDaysLabel = `${
+      window.formulaBreakdown.excludedDaysRemoved
+    } worst day${window.formulaBreakdown.excludedDaysRemoved === 1 ? "" : "s"} removed`;
+
+    return window.isPartialWindow
+      ? `Not enough days yet (${window.formulaBreakdown.eligibleDayCount}/${window.formulaBreakdown.windowSize} days) | ${removedDaysLabel}`
+      : removedDaysLabel;
+  };
+  const stockMppCardDetail = getMppCardDetail(stockMppWindow, stockMppSourceDays.length);
+  const currencyMppCardDetail = getMppCardDetail(currencyMppWindow, currencyMppSourceDays.length);
 
   const availableMonthKeys = useMemo(() => getVisibleMonthNavigation(filteredTrades), [filteredTrades]);
   const latestMonthKey = availableMonthKeys[availableMonthKeys.length - 1] ?? getTodayMonthKey();
@@ -792,10 +815,17 @@ export const DashboardPage = ({
       </section>
       <section className="dashboard-widget-strip">
         <DashboardWidgetCard
-          title={mppWindow.isPartialWindow ? "MPP partial" : "MPP"}
-          value={mppWindow.currentMPP.toLocaleString()}
-          detail={mppCardDetail}
-          tone={mppWindow.currentMPP > 0 ? "positive" : mppWindow.currentMPP < 0 ? "negative" : "neutral"}
+          title={stockMppWindow.isPartialWindow ? "Stock MPP partial" : "Stock MPP"}
+          value={stockMppWindow.currentMPP.toLocaleString()}
+          detail={stockMppCardDetail}
+          tone={stockMppWindow.currentMPP > 0 ? "positive" : stockMppWindow.currentMPP < 0 ? "negative" : "neutral"}
+          tooltip={MPP_FORMULA_TOOLTIP}
+        />
+        <DashboardWidgetCard
+          title={currencyMppWindow.isPartialWindow ? "Currency MPP partial" : "Currency MPP"}
+          value={currencyMppWindow.currentMPP.toLocaleString()}
+          detail={currencyMppCardDetail}
+          tone={currencyMppWindow.currentMPP > 0 ? "positive" : currencyMppWindow.currentMPP < 0 ? "negative" : "neutral"}
           tooltip={MPP_FORMULA_TOOLTIP}
         />
         <DashboardWidgetCard
@@ -976,7 +1006,7 @@ export const DashboardPage = ({
                       <span>{day.session.winRate.toFixed(0)}% WR</span>
                       {typeof dayMPP === "number" ? (
                         <span className="session-month-cell-mpp" title={MPP_FORMULA_TOOLTIP}>
-                          MPP {dayMPP.toLocaleString()}
+                          Stock MPP {dayMPP.toLocaleString()}
                         </span>
                       ) : null}
                     </>

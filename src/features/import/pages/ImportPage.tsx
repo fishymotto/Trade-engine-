@@ -36,7 +36,7 @@ interface ImportPageProps {
   busy: boolean;
   isCurrentImportSaved: boolean;
   settings: Settings;
-  savedTradeDates: string[];
+  workspaceTransferDates: string[];
   onFileDrop: (file: File) => void;
   onSettingsChange: (settings: Settings) => void;
   onBrowseExportFolder: () => Promise<void>;
@@ -99,7 +99,7 @@ export const ImportPage = ({
   busy,
   isCurrentImportSaved,
   settings,
-  savedTradeDates,
+  workspaceTransferDates,
   onFileDrop,
   onSettingsChange,
   onBrowseExportFolder,
@@ -263,7 +263,7 @@ export const ImportPage = ({
       ) : isSendWorkspaceTab ? (
         <WorkspaceTransferExportPanel
           settings={settings}
-          savedTradeDates={savedTradeDates}
+          workspaceTransferDates={workspaceTransferDates}
           onChange={onSettingsChange}
           onBrowse={onBrowseExportFolder}
           onExportWorkspaceBundle={onExportWorkspaceBundle}
@@ -283,7 +283,7 @@ export const ImportPage = ({
             <div className="import-workspace-summary-card">
               <span>Date-Filtered Files</span>
               <strong>Merge only the included dates</strong>
-              <small>Best for missing sessions plus journal notes, checklists, headlines, library pages, shared tags, templates, and workspace definitions.</small>
+              <small>Best for missing sessions plus notes, journals, Strong Views, headlines, library pages, shared tags, templates, and workspace definitions.</small>
             </div>
             <div className="import-workspace-summary-card">
               <span>Full Files</span>

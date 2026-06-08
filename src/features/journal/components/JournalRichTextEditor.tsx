@@ -50,8 +50,8 @@ interface JournalRichTextEditorProps {
 }
 
 const MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024;
-const CONTENT_SAVE_DEBOUNCE_MS = 250;
-const DRAFT_SAVE_DEBOUNCE_MS = 900;
+const CONTENT_SAVE_DEBOUNCE_MS = 800;
+const DRAFT_SAVE_DEBOUNCE_MS = 3000;
 const ACCEPTED_INLINE_IMAGE_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -965,6 +965,9 @@ export const JournalRichTextEditor = ({
       setWordCount(countWords(nextEditor.getText()));
       updateSlashState(nextEditor);
     },
+    onBlur: () => {
+      flushEditorContent({ persistDraft: true });
+    },
     onSelectionUpdate: ({ editor: nextEditor }) => {
       updateSlashState(nextEditor);
     }
@@ -989,7 +992,8 @@ export const JournalRichTextEditor = ({
 
       saveStoredDraft(draftStorageKey, normalizeRichTextContentForStorage(nextContent), new Date().toISOString());
     },
-    Boolean(draftStorageKey)
+    Boolean(draftStorageKey),
+    { skipInitialSave: true }
   );
 
   const filteredSlashCommands = useMemo(() => {

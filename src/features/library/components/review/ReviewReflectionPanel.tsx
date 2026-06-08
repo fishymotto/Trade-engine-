@@ -15,10 +15,33 @@ const checklistGroupLabels = {
   closingJournal: "Closing Journal"
 } as const;
 
+const riskCheckMetricRows = [
+  {
+    key: "riskSplitFollowed",
+    title: "Protect Risk Across the Full Day",
+    label: "Risk split followed:",
+    suffix: "/ 5 days"
+  },
+  {
+    key: "corePlaybookTrades",
+    title: "Build Tall Then Wide",
+    label: "Trades tagged to core playbooks:",
+    suffix: ""
+  },
+  {
+    key: "wakeUpPlanFollowed",
+    title: "Wake-Up Time",
+    label: "Wake-up plan followed:",
+    suffix: "/ 5 days"
+  }
+] as const;
+
 const cloneJson = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 const ensureTwoRows = (rows: ReviewReflectionState["reading"]) =>
   rows.length >= 2 ? rows : [...rows, ...Array.from({ length: 2 - rows.length }, () => ({ book: "", author: "", pages: "" }))];
+
+const normalizeLinkedOptionKey = (value: string): string => value.trim().replace(/\s+/g, " ").toLowerCase();
 
 type ReviewReflectionPanelProps = {
   period: ReviewPeriod;
@@ -30,6 +53,7 @@ type ReviewReflectionPanelProps = {
   reflection: ReviewReflectionState;
   defaultBookOptions: string[];
   defaultAuthorOptions: string[];
+  bookAuthorByTitle: Record<string, string>;
   onSelectTemplateId: (templateId: string) => void;
   onChangeReflection: (
     next: ReviewReflectionState | ((current: ReviewReflectionState) => ReviewReflectionState)
@@ -51,6 +75,7 @@ export const ReviewReflectionPanel = ({
   reflection,
   defaultBookOptions,
   defaultAuthorOptions,
+  bookAuthorByTitle,
   onSelectTemplateId,
   onChangeReflection,
   onSaveTemplate,
@@ -99,6 +124,16 @@ export const ReviewReflectionPanel = ({
     });
   };
 
+  const setReadingBook = (index: number, book: string) => {
+    const linkedAuthor = bookAuthorByTitle[normalizeLinkedOptionKey(book)] ?? "";
+    if (!book.trim()) {
+      setReadingRow(index, { book, author: "" });
+      return;
+    }
+
+    setReadingRow(index, linkedAuthor ? { book, author: linkedAuthor } : { book });
+  };
+
   const removeReadingRow = (index: number) => {
     onChangeReflection((current) => {
       const rows = ensureTwoRows(current.reading);
@@ -130,6 +165,16 @@ export const ReviewReflectionPanel = ({
         }
       };
     });
+  };
+
+  const setRiskCheckMetric = (key: keyof ReviewReflectionState["riskCheckMetrics"], value: string) => {
+    onChangeReflection((current) => ({
+      ...current,
+      riskCheckMetrics: {
+        ...current.riskCheckMetrics,
+        [key]: value
+      }
+    }));
   };
 
   const loadTemplate = () => {
@@ -283,7 +328,7 @@ export const ReviewReflectionPanel = ({
                 <select
                   value={row.book}
                   onChange={(event) =>
-                    handleSelectWithAdd(event.target.value, addBookOption, (book) => setReadingRow(index, { book }), "book")
+                    handleSelectWithAdd(event.target.value, addBookOption, (book) => setReadingBook(index, book), "book")
                   }
                 >
                   <option value="">Select...</option>
@@ -359,26 +404,49 @@ export const ReviewReflectionPanel = ({
             <section key={groupKey} className="review-checklist-card" aria-label={checklistGroupLabels[groupKey]}>
               <div className="review-checklist-card-header">
                 <strong>{checklistGroupLabels[groupKey]}</strong>
-                <span>{timeLabels.length} checks</span>
+                <span>{groupKey === "riskCheck" ? "3 metrics" : `${timeLabels.length} checks`}</span>
               </div>
-              <div className="review-checklist-items">
-                {timeLabels.map((label, index) => (
-                  <label
-                    key={`${groupKey}-${label}`}
-                    className={`journal-checklist-field review-checklist-item${
-                      reflection.checklist[groupKey]?.[index] ? " journal-block-checked" : ""
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      className="journal-checklist-box"
-                      checked={Boolean(reflection.checklist[groupKey]?.[index])}
-                      onChange={() => toggleChecklistCell(groupKey, index)}
-                    />
-                    <div className="journal-block-input journal-block-input-checklist">{label}</div>
-                  </label>
-                ))}
-              </div>
+              {groupKey === "riskCheck" ? (
+                <div className="review-risk-metric-list">
+                  {riskCheckMetricRows.map((metric, index) => (
+                    <div key={metric.key} className="review-risk-metric-row">
+                      <div className="review-risk-metric-title">
+                        <span>{index + 1}.</span>
+                        <strong>{metric.title}</strong>
+                      </div>
+                      <label className="review-risk-metric-field">
+                        <span>{metric.label}</span>
+                        <input
+                          value={reflection.riskCheckMetrics[metric.key]}
+                          onChange={(event) => setRiskCheckMetric(metric.key, event.target.value)}
+                          inputMode="numeric"
+                          aria-label={metric.label.replace(":", "")}
+                        />
+                        {metric.suffix ? <em>{metric.suffix}</em> : null}
+                      </label>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="review-checklist-items">
+                  {timeLabels.map((label, index) => (
+                    <label
+                      key={`${groupKey}-${label}`}
+                      className={`journal-checklist-field review-checklist-item${
+                        reflection.checklist[groupKey]?.[index] ? " journal-block-checked" : ""
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="journal-checklist-box"
+                        checked={Boolean(reflection.checklist[groupKey]?.[index])}
+                        onChange={() => toggleChecklistCell(groupKey, index)}
+                      />
+                      <div className="journal-block-input journal-block-input-checklist">{label}</div>
+                    </label>
+                  ))}
+                </div>
+              )}
             </section>
           ))}
         </div>

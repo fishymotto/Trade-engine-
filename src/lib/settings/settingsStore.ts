@@ -2,6 +2,10 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { Settings } from "../../types/trade";
 import { canUseMachineLegacyData, syncStores } from "../sync/syncStore";
 import { readLocalStorageItem, writeLocalStorageItem } from "../storage/localStorage";
+import {
+  DEFAULT_CURRENCY_SYMBOL_LIST,
+  normalizeCurrencySymbolList
+} from "../trades/assetClassification";
 
 const STORAGE_KEY = "trade-engine-settings";
 const MACHINE_SETTINGS_KEY = "trade-engine-machine-settings";
@@ -41,7 +45,9 @@ export const defaultSettings: Settings = {
   twelveDataApiKey: "",
   brlToUsdRate: 0,
   brlTickerList: DEFAULT_BRL_TICKER_LIST,
+  currencySymbolList: DEFAULT_CURRENCY_SYMBOL_LIST,
   dailyShutdownRiskUsd: 0,
+  currencyDailyShutdownRiskUsd: 0,
   mppLockInSteps: [...DEFAULT_MPP_LOCK_IN_STEPS],
   desktopBackupIntervalMinutes: 0,
   tradeTagVisibility: {
@@ -286,6 +292,7 @@ const normalizeSettings = (settings: Partial<Settings>): Settings => ({
   ...defaultSettings,
   ...settings,
   brlTickerList: settings.brlTickerList?.trim() ? settings.brlTickerList : DEFAULT_BRL_TICKER_LIST,
+  currencySymbolList: normalizeCurrencySymbolList(settings.currencySymbolList),
   workspaceExportStartDate: normalizeWorkspaceExportStartDate(settings.workspaceExportStartDate),
   workspaceExportEndDate: normalizeWorkspaceExportEndDate(settings.workspaceExportEndDate),
   workspaceExportSelectedDates: normalizeWorkspaceExportSelectedDates(
@@ -298,6 +305,7 @@ const normalizeSettings = (settings: Partial<Settings>): Settings => ({
     settings.workspaceTransferLastImportedAt
   ),
   dailyShutdownRiskUsd: Number(settings.dailyShutdownRiskUsd) || 0,
+  currencyDailyShutdownRiskUsd: Number(settings.currencyDailyShutdownRiskUsd) || 0,
   mppLockInSteps: normalizeMppLockInSteps(settings.mppLockInSteps),
   desktopBackupIntervalMinutes: normalizeBackupIntervalMinutes(settings.desktopBackupIntervalMinutes),
   tradeTagVisibility: {

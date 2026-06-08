@@ -335,7 +335,6 @@ export const createJournalPageActions = ({
   };
 
   const updateJournalPage = (pageId: string, updates: JournalPageUpdates) => {
-    setSelectedJournalPageId(pageId);
     const nextTradeDate = updates.tradeDate ? normalizeJournalTradeDate(updates.tradeDate) : null;
     const nextPages = getJournalPages().map((page) =>
       page.id === pageId

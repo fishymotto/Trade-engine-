@@ -325,15 +325,23 @@ export const DailyPnlOverview = ({
     const cumulativeAxis = buildNiceAxis(Math.min(...cumulativeValues), Math.max(...cumulativeValues));
     const dailyRange = dailyAxis.max - dailyAxis.min || 1;
     const cumulativeRange = cumulativeAxis.max - cumulativeAxis.min || 1;
+    const slotWidth = innerWidth / Math.max(dailyDetails.length, 1);
+    const barWidth = Math.max(5, Math.min(34, slotWidth * 0.48));
+    const compareBarWidth = Math.max(4, Math.min(22, barWidth * 0.58));
+    const horizontalInset = Math.ceil(Math.max(barWidth, compareBarWidth) / 2) + 2;
+    const xScaleForLength = (length: number, index: number) => {
+      if (length <= 1) {
+        return paddingLeft + innerWidth / 2;
+      }
+
+      const usableWidth = Math.max(1, innerWidth - horizontalInset * 2);
+      return paddingLeft + horizontalInset + (index / (length - 1)) * usableWidth;
+    };
     const yDailyScale = (value: number) =>
       paddingTop + innerHeight - ((value - dailyAxis.min) / dailyRange) * innerHeight;
     const yCumulativeScale = (value: number) =>
       paddingTop + innerHeight - ((value - cumulativeAxis.min) / cumulativeRange) * innerHeight;
-    const xScale = (index: number) =>
-      paddingLeft + (dailyDetails.length <= 1 ? innerWidth / 2 : (index / (dailyDetails.length - 1)) * innerWidth);
-    const slotWidth = innerWidth / Math.max(dailyDetails.length, 1);
-    const barWidth = Math.max(5, Math.min(34, slotWidth * 0.48));
-    const compareBarWidth = Math.max(4, Math.min(22, barWidth * 0.58));
+    const xScale = (index: number) => xScaleForLength(dailyDetails.length, index);
     const baselineY = yDailyScale(0);
     const chartBars: ChartBar[] = dailyDetails.map((point, index) => {
       const x = xScale(index);
@@ -382,10 +390,7 @@ export const DailyPnlOverview = ({
     }));
     const compareLinePoints = compareDetails.map((point, index) => ({
       ...point,
-      x:
-        compareDetails.length <= 1
-          ? paddingLeft + innerWidth / 2
-          : paddingLeft + (index / (compareDetails.length - 1)) * innerWidth,
+      x: xScaleForLength(compareDetails.length, index),
       y: yCumulativeScale(point.cumulative)
     }));
     const linePath = buildLinePath(linePoints);
@@ -416,6 +421,7 @@ export const DailyPnlOverview = ({
       compareBars,
       compareLinePath,
       height,
+      horizontalInset,
       innerHeight,
       innerWidth,
       linePath,
@@ -505,8 +511,10 @@ export const DailyPnlOverview = ({
     }
 
     const svgX = ((event.clientX - bounds.left) / bounds.width) * chart.width;
-    const boundedX = Math.max(chart.paddingLeft, Math.min(chart.width - chart.paddingRight, svgX));
-    const ratio = (boundedX - chart.paddingLeft) / chart.innerWidth;
+    const xStart = chart.paddingLeft + chart.horizontalInset;
+    const xEnd = chart.width - chart.paddingRight - chart.horizontalInset;
+    const boundedX = Math.max(xStart, Math.min(xEnd, svgX));
+    const ratio = (boundedX - xStart) / Math.max(xEnd - xStart, 1);
     const nextIndex = dailyDetails.length <= 1 ? 0 : Math.round(ratio * (dailyDetails.length - 1));
     setHoveredIndex(nextIndex);
   };

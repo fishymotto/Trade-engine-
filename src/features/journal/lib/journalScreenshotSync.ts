@@ -17,6 +17,11 @@ export interface JournalTradeContext {
   playbook: string;
 }
 
+type JournalTradeNoteSyncTrade = Pick<
+  GroupedTrade,
+  "id" | "tradeDate" | "symbol" | "setups" | "openTime" | "closeTime" | "name"
+>;
+
 const TRADE_LINK_SEPARATOR = "::";
 
 const parseTimestamp = (value: string): number => {
@@ -74,6 +79,50 @@ const createJournalTradeNote = (
 
 const createTradeLinkKey = (tradeId: string, tradeDate: string) => `${tradeId}${TRADE_LINK_SEPARATOR}${tradeDate}`;
 
+const getPrimaryTradePlaybook = (trade: Pick<GroupedTrade, "setups">): string =>
+  trade.setups
+    ?.map((playbook) => playbook.trim())
+    .find((playbook) => playbook && playbook !== "No Setup") ?? "";
+
+const getTradeOrderKey = (trade: JournalTradeNoteSyncTrade): string =>
+  [
+    normalizeJournalTradeDate(trade.tradeDate),
+    trade.openTime,
+    trade.closeTime,
+    trade.symbol,
+    trade.name,
+    trade.id
+  ]
+    .map((value) => value?.trim() ?? "")
+    .join("|");
+
+const groupTradesByJournalDate = (
+  trades: JournalTradeNoteSyncTrade[]
+): Map<string, JournalTradeNoteSyncTrade[]> => {
+  const grouped = new Map<string, JournalTradeNoteSyncTrade[]>();
+  const seenTradeIds = new Set<string>();
+
+  for (const trade of trades) {
+    const tradeId = trade.id?.trim();
+    const tradeDate = normalizeJournalTradeDate(trade.tradeDate);
+    if (!tradeId || !tradeDate || seenTradeIds.has(tradeId)) {
+      continue;
+    }
+
+    seenTradeIds.add(tradeId);
+    grouped.set(tradeDate, [...(grouped.get(tradeDate) ?? []), trade]);
+  }
+
+  for (const [tradeDate, dateTrades] of grouped.entries()) {
+    grouped.set(
+      tradeDate,
+      [...dateTrades].sort((left, right) => getTradeOrderKey(left).localeCompare(getTradeOrderKey(right)))
+    );
+  }
+
+  return grouped;
+};
+
 const dedupeTradeLinks = (links: JournalScreenshotTradeLink[]): JournalScreenshotTradeLink[] => {
   const unique = new Map<string, JournalScreenshotTradeLink>();
   for (const link of links) {
@@ -128,6 +177,162 @@ const applyTradeLinksToNote = (
     linkedTrades,
     linkedTradeId: primaryLinkedTrade?.tradeId ?? "",
     linkedTradeDate: primaryLinkedTrade?.tradeDate ?? ""
+  };
+};
+
+const buildTradeLinkedNote = (
+  note: JournalTradeNoteRecord,
+  trade: JournalTradeNoteSyncTrade,
+  timestamp: string
+): JournalTradeNoteRecord => {
+  const tradeDate = normalizeJournalTradeDate(trade.tradeDate);
+  const tradeLink = {
+    tradeId: trade.id,
+    tradeDate
+  };
+  const linkedNote = applyTradeLinksToNote(note, [tradeLink]);
+  const playbook = getPrimaryTradePlaybook(trade);
+
+  return {
+    ...linkedNote,
+    ticker: linkedNote.ticker || trade.symbol,
+    playbook: linkedNote.playbook || playbook,
+    taggedDate: normalizeJournalTradeDate(linkedNote.taggedDate) || tradeDate,
+    updatedAt: timestamp
+  };
+};
+
+const createTradeLinkedNote = (
+  tradeDate: string,
+  trade: JournalTradeNoteSyncTrade,
+  timestamp: string
+): JournalTradeNoteRecord =>
+  createJournalTradeNote(tradeDate, {
+    linkedTrades: [
+      {
+        tradeId: trade.id,
+        tradeDate
+      }
+    ],
+    linkedTradeId: trade.id,
+    linkedTradeDate: tradeDate,
+    ticker: trade.symbol,
+    playbook: getPrimaryTradePlaybook(trade),
+    taggedDate: tradeDate,
+    createdAt: timestamp,
+    updatedAt: timestamp
+  });
+
+const getTradeNoteOrderRank = (
+  note: JournalTradeNoteRecord,
+  tradeOrderByLink: Map<string, number>
+): number => {
+  const linkRanks = collectTradeNoteLinks(note)
+    .map((link) => tradeOrderByLink.get(createTradeLinkKey(link.tradeId, link.tradeDate)))
+    .filter((rank): rank is number => typeof rank === "number");
+
+  return linkRanks.length > 0 ? Math.min(...linkRanks) : Number.MAX_SAFE_INTEGER;
+};
+
+const sortTradeNotesByTradeOrder = (
+  tradeNotes: JournalTradeNoteRecord[],
+  orderedTrades: JournalTradeNoteSyncTrade[]
+): JournalTradeNoteRecord[] => {
+  const tradeOrderByLink = new Map<string, number>();
+  orderedTrades.forEach((trade, index) => {
+    tradeOrderByLink.set(createTradeLinkKey(trade.id, normalizeJournalTradeDate(trade.tradeDate)), index);
+  });
+
+  return tradeNotes
+    .map((note, index) => ({
+      note,
+      index,
+      rank: getTradeNoteOrderRank(note, tradeOrderByLink)
+    }))
+    .sort((left, right) => left.rank - right.rank || left.index - right.index)
+    .map((entry) => entry.note);
+};
+
+const hasSameTradeNoteOrder = (
+  left: JournalTradeNoteRecord[],
+  right: JournalTradeNoteRecord[]
+): boolean =>
+  left.length === right.length && left.every((note, index) => note.id === right[index]?.id);
+
+const syncTradeNotesFromTrades = (
+  page: JournalPageRecord,
+  orderedTrades: JournalTradeNoteSyncTrade[]
+): { tradeNotes: JournalTradeNoteRecord[]; changed: boolean } => {
+  if (orderedTrades.length === 0) {
+    return { tradeNotes: page.tradeNotes, changed: false };
+  }
+
+  const timestamp = new Date().toISOString();
+  const pageTradeDate = normalizeJournalTradeDate(page.tradeDate);
+  let changed = false;
+  const tradeNotes = [...page.tradeNotes];
+  const claimedUnlinkedNoteIndexes = new Set<number>();
+
+  for (const trade of orderedTrades) {
+    const tradeDate = normalizeJournalTradeDate(trade.tradeDate);
+    const linkedNoteIndex = tradeNotes.findIndex((note) => noteHasTradeLink(note, trade.id, tradeDate));
+    if (linkedNoteIndex >= 0) {
+      const linkedNote = tradeNotes[linkedNoteIndex];
+      if (!linkedNote) {
+        continue;
+      }
+
+      const playbook = getPrimaryTradePlaybook(trade);
+      const nextLinkedNote: JournalTradeNoteRecord = {
+        ...linkedNote,
+        linkedTradeId: linkedNote.linkedTradeId || trade.id,
+        linkedTradeDate: normalizeJournalTradeDate(linkedNote.linkedTradeDate) || tradeDate,
+        ticker: linkedNote.ticker || trade.symbol,
+        playbook: linkedNote.playbook || playbook,
+        taggedDate: normalizeJournalTradeDate(linkedNote.taggedDate) || tradeDate
+      };
+
+      if (stableStringify(linkedNote) !== stableStringify(nextLinkedNote)) {
+        tradeNotes[linkedNoteIndex] = {
+          ...nextLinkedNote,
+          updatedAt: timestamp
+        };
+        changed = true;
+      }
+      continue;
+    }
+
+    const reusableNoteIndex = tradeNotes.findIndex(
+      (note, index) =>
+        !claimedUnlinkedNoteIndexes.has(index) &&
+        collectTradeNoteLinks(note).length === 0 &&
+        (normalizeJournalTradeDate(note.taggedDate) || pageTradeDate) === pageTradeDate
+    );
+
+    if (reusableNoteIndex >= 0) {
+      const reusableNote = tradeNotes[reusableNoteIndex];
+      if (!reusableNote) {
+        continue;
+      }
+
+      tradeNotes[reusableNoteIndex] = buildTradeLinkedNote(reusableNote, trade, timestamp);
+      claimedUnlinkedNoteIndexes.add(reusableNoteIndex);
+      changed = true;
+      continue;
+    }
+
+    tradeNotes.push(createTradeLinkedNote(tradeDate, trade, timestamp));
+    changed = true;
+  }
+
+  const sortedTradeNotes = sortTradeNotesByTradeOrder(tradeNotes, orderedTrades);
+  if (!hasSameTradeNoteOrder(tradeNotes, sortedTradeNotes)) {
+    changed = true;
+  }
+
+  return {
+    tradeNotes: sortedTradeNotes,
+    changed
   };
 };
 
@@ -446,10 +651,12 @@ export const syncTradeReviewsFromJournalPages = (
 export const syncJournalPagesFromTradeReviews = (
   currentPages: JournalPageRecord[],
   tradeReviews: TradeReviewRecord[],
-  tradeContextById: Map<string, JournalTradeContext>
+  tradeContextById: Map<string, JournalTradeContext>,
+  trades: JournalTradeNoteSyncTrade[] = []
 ): JournalPageRecord[] => {
   const next = [...currentPages];
   let changed = false;
+  const tradesByDate = groupTradesByJournalDate(trades);
   const indexByTradeDate = new Map<string, number>(
     next.map((page, index) => [normalizeJournalTradeDate(page.tradeDate), index])
   );
@@ -549,6 +756,30 @@ export const syncJournalPagesFromTradeReviews = (
       };
       changed = true;
     }
+  }
+
+  for (const [tradeDate, orderedTrades] of tradesByDate.entries()) {
+    const pageIndex = indexByTradeDate.get(tradeDate);
+    if (pageIndex === undefined) {
+      continue;
+    }
+
+    const page = next[pageIndex];
+    if (!page) {
+      continue;
+    }
+
+    const syncedTradeNotes = syncTradeNotesFromTrades(page, orderedTrades);
+    if (!syncedTradeNotes.changed) {
+      continue;
+    }
+
+    next[pageIndex] = {
+      ...page,
+      tradeNotes: syncedTradeNotes.tradeNotes,
+      updatedAt: new Date().toISOString()
+    };
+    changed = true;
   }
 
   for (const review of tradeReviews) {

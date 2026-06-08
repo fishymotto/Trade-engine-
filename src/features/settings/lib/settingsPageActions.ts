@@ -5,7 +5,7 @@ import type { JournalChecklistTemplates } from "../../../lib/journal/journalTemp
 import { persistJournalChecklistTemplates } from "../../../lib/journal/journalTemplateStore";
 import { loadLibraryPages, saveLibraryPages } from "../../../lib/library/libraryStore";
 import { loadPlaybooks, savePlaybooks } from "../../../lib/playbooks/playbookStore";
-import { persistHeadlinesRecord } from "../../../lib/headlines/headlineStore";
+import { loadHeadlinesRecord, persistHeadlinesRecord } from "../../../lib/headlines/headlineStore";
 import {
   loadReviewTemplates,
   persistReviewTemplates
@@ -13,6 +13,7 @@ import {
 import { saveTradeReviews } from "../../../lib/reviews/tradeReviewStore";
 import { saveSettings } from "../../../lib/settings/settingsStore";
 import {
+  loadSelectOptionAdditions,
   persistSelectOptionAdditions,
   type SelectOptionAdditionsRecord
 } from "../../../lib/select/selectOptionAdditionsStore";
@@ -331,6 +332,8 @@ export const createSettingsPageActions = ({
       "trade-engine-workspace": workspaceStateForSave,
       "trade-engine-playbooks": loadPlaybooks(),
       "trade-engine-library-pages": loadLibraryPages(),
+      "trade-engine-headlines": loadHeadlinesRecord(),
+      "trade-engine-select-option-additions": loadSelectOptionAdditions(),
       "trade-engine-review-templates": loadReviewTemplates()
     };
   };

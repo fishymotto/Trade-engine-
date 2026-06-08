@@ -4,7 +4,13 @@ import { PageHero } from "../../../components/PageHero";
 import { PreviewTable } from "../../../components/PreviewTable";
 import { TagDrawer } from "../../../components/TagDrawer";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
-import { MPP_FORMULA_TOOLTIP, calculateMPPWindow } from "../../../lib/analytics/mppAnalytics";
+import {
+  MPP_FORMULA_TOOLTIP,
+  calculateMPPWindow,
+  type MPPDayRecord,
+  type MPPWindowResult
+} from "../../../lib/analytics/mppAnalytics";
+import { getMPPDayRecordsForTrades } from "../../../lib/analytics/assetMppAnalytics";
 import { getDatabaseStats, getTradeSummary } from "../../../lib/analytics/tradeAnalytics";
 import { hasJournalDocContent } from "../../../lib/journal/journalContent";
 import type { JournalChecklistTemplates, NamedChecklistTemplate } from "../../../lib/journal/journalTemplateStore";
@@ -414,6 +420,79 @@ const getSortableTimestamp = (value: string) => {
 
 const formatSignedMoney = (value: number) => `${value >= 0 ? "+" : ""}$${value.toFixed(2)}`;
 const formatSignedWholeNumber = (value: number) => `${value >= 0 ? "+" : ""}${value.toLocaleString()}`;
+
+interface MppLockInProjectionRow {
+  step: number;
+  positiveProjection: number;
+  negativeProjection: number;
+}
+
+const getMppWindowNote = (mppWindow: MPPWindowResult, sourceDayCount: number): string => {
+  if (sourceDayCount === 0) {
+    return "No eligible days yet";
+  }
+
+  return mppWindow.isPartialWindow
+    ? `Not enough days yet (${mppWindow.formulaBreakdown.eligibleDayCount}/${mppWindow.formulaBreakdown.windowSize})`
+    : `${mppWindow.formulaBreakdown.excludedDaysRemoved} worst day${
+        mppWindow.formulaBreakdown.excludedDaysRemoved === 1 ? "" : "s"
+      } removed`;
+};
+
+const buildMppLockInProjectionRows = ({
+  anchorTradeDate,
+  mppLockInSteps,
+  mppTradeDays,
+  selectedPageMPP
+}: {
+  anchorTradeDate: string;
+  mppLockInSteps: number[];
+  mppTradeDays: MPPDayRecord[];
+  selectedPageMPP: MPPWindowResult;
+}): MppLockInProjectionRow[] => {
+  const {
+    windowSize,
+    targetExcludedDays,
+    projectionDays
+  } = selectedPageMPP.formulaBreakdown;
+
+  const computeProjectedMPP = (replacementNetPnl: number): number => {
+    if (!anchorTradeDate) {
+      return selectedPageMPP.currentMPP;
+    }
+
+    const projectedDays = [...mppTradeDays];
+    const replacementIndex = projectedDays.findIndex((day) => day.tradeDate === anchorTradeDate);
+
+    if (replacementIndex >= 0) {
+      projectedDays[replacementIndex] = {
+        ...projectedDays[replacementIndex],
+        netPnl: replacementNetPnl
+      };
+    } else {
+      projectedDays.push({
+        tradeDate: anchorTradeDate,
+        netPnl: replacementNetPnl
+      });
+      projectedDays.sort((left, right) => left.tradeDate.localeCompare(right.tradeDate));
+    }
+
+    const projectedMPP = calculateMPPWindow(projectedDays, {
+      anchorTradeDate,
+      windowSize,
+      excludedWorstDays: targetExcludedDays,
+      projectionDays
+    });
+
+    return projectedMPP.currentMPP;
+  };
+
+  return mppLockInSteps.map((step) => ({
+    step,
+    positiveProjection: computeProjectedMPP(step),
+    negativeProjection: computeProjectedMPP(-step)
+  }));
+};
 const formatTradePrice = (value: number): string => {
   if (!Number.isFinite(value)) {
     return "-";
@@ -1062,77 +1141,48 @@ export const JournalPage = ({
       onUpdateTradeTag(trade, field, value);
     }
   };
-  const mppTradeDays = useMemo(
+  const stockMppTradeDays = useMemo(
     () =>
-      Array.from(
-        trades.reduce((byTradeDate, trade) => {
-          byTradeDate.set(trade.tradeDate, (byTradeDate.get(trade.tradeDate) ?? 0) + trade.netPnlUsd);
-          return byTradeDate;
-        }, new Map<string, number>())
-      )
-        .map(([tradeDate, netPnl]) => ({ tradeDate, netPnl }))
-        .sort((left, right) => left.tradeDate.localeCompare(right.tradeDate)),
-    [trades]
+      getMPPDayRecordsForTrades(trades, {
+        assetClass: "stock",
+        currencySymbolList: settings.currencySymbolList
+      }),
+    [trades, settings.currencySymbolList]
   );
-  const selectedPageMPP = useMemo(
+  const currencyMppTradeDays = useMemo(
     () =>
-      calculateMPPWindow(mppTradeDays, {
+      getMPPDayRecordsForTrades(trades, {
+        assetClass: "currency",
+        currencySymbolList: settings.currencySymbolList
+      }),
+    [trades, settings.currencySymbolList]
+  );
+  const selectedStockPageMPP = useMemo(
+    () =>
+      calculateMPPWindow(stockMppTradeDays, {
         anchorTradeDate: selectedPage?.tradeDate ?? ""
       }),
-    [mppTradeDays, selectedPage?.tradeDate]
+    [stockMppTradeDays, selectedPage?.tradeDate]
   );
-  const selectedPageMPPNote = selectedPageMPP.isPartialWindow
-    ? `Not enough days yet (${selectedPageMPP.formulaBreakdown.eligibleDayCount}/${selectedPageMPP.formulaBreakdown.windowSize})`
-    : `${selectedPageMPP.formulaBreakdown.excludedDaysRemoved} worst day${
-        selectedPageMPP.formulaBreakdown.excludedDaysRemoved === 1 ? "" : "s"
-      } removed`;
-  const mppProjectionDays = selectedPageMPP.formulaBreakdown.projectionDays;
+  const selectedCurrencyPageMPP = useMemo(
+    () =>
+      calculateMPPWindow(currencyMppTradeDays, {
+        anchorTradeDate: selectedPage?.tradeDate ?? ""
+      }),
+    [currencyMppTradeDays, selectedPage?.tradeDate]
+  );
+  const selectedStockPageMPPNote = getMppWindowNote(selectedStockPageMPP, stockMppTradeDays.length);
+  const selectedCurrencyPageMPPNote = getMppWindowNote(selectedCurrencyPageMPP, currencyMppTradeDays.length);
   const mppLockInSteps = settings.mppLockInSteps;
-  const mppLockInProjectionRows = useMemo(() => {
+  const stockMppLockInProjectionRows = useMemo(() => {
     const anchorTradeDate = selectedPage?.tradeDate?.trim() ?? "";
-    const {
-      windowSize,
-      targetExcludedDays,
-      projectionDays
-    } = selectedPageMPP.formulaBreakdown;
-
-    const computeProjectedMPP = (replacementNetPnl: number): number => {
-      if (!anchorTradeDate) {
-        return selectedPageMPP.currentMPP;
-      }
-
-      const projectedDays = [...mppTradeDays];
-      const replacementIndex = projectedDays.findIndex((day) => day.tradeDate === anchorTradeDate);
-
-      if (replacementIndex >= 0) {
-        projectedDays[replacementIndex] = {
-          ...projectedDays[replacementIndex],
-          netPnl: replacementNetPnl
-        };
-      } else {
-        projectedDays.push({
-          tradeDate: anchorTradeDate,
-          netPnl: replacementNetPnl
-        });
-        projectedDays.sort((left, right) => left.tradeDate.localeCompare(right.tradeDate));
-      }
-
-      const projectedMPP = calculateMPPWindow(projectedDays, {
-        anchorTradeDate,
-        windowSize,
-        excludedWorstDays: targetExcludedDays,
-        projectionDays
-      });
-
-      return projectedMPP.currentMPP;
-    };
-
-    return mppLockInSteps.map((step) => ({
-      step,
-      positiveProjection: computeProjectedMPP(step),
-      negativeProjection: computeProjectedMPP(-step)
-    }));
-  }, [mppLockInSteps, mppTradeDays, selectedPage?.tradeDate, selectedPageMPP.currentMPP, selectedPageMPP.formulaBreakdown]);
+    return buildMppLockInProjectionRows({
+      anchorTradeDate,
+      mppLockInSteps,
+      mppTradeDays: stockMppTradeDays,
+      selectedPageMPP: selectedStockPageMPP
+    });
+  }, [mppLockInSteps, stockMppTradeDays, selectedPage?.tradeDate, selectedStockPageMPP]);
   const linkedTickerStats = useMemo(() => {
     const grouped = new Map<string, EditableTradeRow[]>();
 
@@ -1642,7 +1692,8 @@ export const JournalPage = ({
                     <div>
                       <div className="journal-section-heading">Daily Journal</div>
                       <h2>{formatJournalDate(selectedPage.tradeDate)}</h2>
-                      <label className="journal-market-regime-card">
+                    </div>
+                    <label className="journal-market-regime-card">
                         <span>Market Regime</span>
                         <select
                           className="journal-header-select"
@@ -1661,8 +1712,7 @@ export const JournalPage = ({
                           ))}
                           <option value={ADD_OPTION_VALUE}>Add…</option>
                         </select>
-                      </label>
-                    </div>
+                    </label>
                   </div>
                   <div className="journal-header-ticker-card">
                     <div
@@ -1700,6 +1750,7 @@ export const JournalPage = ({
                     </div>
                   </div>
                   <div className="journal-header-stat-group">
+                    <div className="journal-header-stat-row journal-header-stat-row-core">
                     <label className="journal-header-stat-card">
                       <span>Hours Slept</span>
                       <select
@@ -1743,16 +1794,29 @@ export const JournalPage = ({
                       </select>
                     </label>
                     <label className="journal-header-stat-card" title={MPP_FORMULA_TOOLTIP}>
-                      <span>{selectedPageMPP.isPartialWindow ? "MPP partial" : "MPP"}</span>
+                      <span>{selectedStockPageMPP.isPartialWindow ? "Stock MPP partial" : "Stock MPP"}</span>
                       <input
                         type="text"
                         className="journal-header-stat-input"
-                        value={selectedPageMPP.currentMPP.toLocaleString()}
-                        aria-label="Calculated MPP value"
+                        value={selectedStockPageMPP.currentMPP.toLocaleString()}
+                        aria-label="Calculated stock MPP value"
                         readOnly
                       />
-                      <small className="journal-header-stat-note">{selectedPageMPPNote}</small>
+                      <small className="journal-header-stat-note">{selectedStockPageMPPNote}</small>
                     </label>
+                    <label className="journal-header-stat-card" title={MPP_FORMULA_TOOLTIP}>
+                      <span>{selectedCurrencyPageMPP.isPartialWindow ? "Currency MPP partial" : "Currency MPP"}</span>
+                      <input
+                        type="text"
+                        className="journal-header-stat-input"
+                        value={selectedCurrencyPageMPP.currentMPP.toLocaleString()}
+                        aria-label="Calculated currency MPP value"
+                        readOnly
+                      />
+                      <small className="journal-header-stat-note">{selectedCurrencyPageMPPNote}</small>
+                    </label>
+                    </div>
+                    <div className="journal-header-stat-row journal-header-stat-row-mood">
                     <label className="journal-header-stat-card">
                       <span>Morning</span>
                       <select
@@ -1833,6 +1897,7 @@ export const JournalPage = ({
                         <option value={ADD_OPTION_VALUE}>Add…</option>
                       </select>
                     </label>
+                    </div>
                   </div>
                 </div>
                 <div>
@@ -1963,12 +2028,12 @@ export const JournalPage = ({
 
                     <section className="journal-metric-card">
                       <div className="journal-metric-card-header">
-                        <strong>MPP Lock-In (+)</strong>
-                        <span>Tomorrow MPP ({mppProjectionDays}-day projection)</span>
+                        <strong>Stock MPP Lock-In (+)</strong>
+                        <span>Tomorrow MPP ({selectedStockPageMPP.formulaBreakdown.projectionDays}-day projection)</span>
                       </div>
                       <div className="journal-metric-list">
-                        {mppLockInProjectionRows.map(({ step, positiveProjection }) => (
-                          <div key={`mpp-lock-positive-${step}`}>
+                        {stockMppLockInProjectionRows.map(({ step, positiveProjection }) => (
+                          <div key={`stock-mpp-lock-positive-${step}`}>
                             <span>Replace day with +{step}</span>
                             <strong
                               className={
@@ -1984,12 +2049,12 @@ export const JournalPage = ({
 
                     <section className="journal-metric-card">
                       <div className="journal-metric-card-header">
-                        <strong>MPP Lock-In (-)</strong>
-                        <span>Tomorrow MPP ({mppProjectionDays}-day projection)</span>
+                        <strong>Stock MPP Lock-In (-)</strong>
+                        <span>Tomorrow MPP ({selectedStockPageMPP.formulaBreakdown.projectionDays}-day projection)</span>
                       </div>
                       <div className="journal-metric-list">
-                        {mppLockInProjectionRows.map(({ step, negativeProjection }) => (
-                          <div key={`mpp-lock-negative-${step}`}>
+                        {stockMppLockInProjectionRows.map(({ step, negativeProjection }) => (
+                          <div key={`stock-mpp-lock-negative-${step}`}>
                             <span>Replace day with -{step}</span>
                             <strong
                               className={

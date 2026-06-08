@@ -8,6 +8,7 @@ import type {
   ReviewChecklistState,
   ReviewPeriod,
   ReviewReflectionState,
+  ReviewRiskCheckMetrics,
   ReviewTemplates,
   ReviewReadingEntry
 } from "../../types/libraryReview";
@@ -26,6 +27,12 @@ const emptyChecklist = (): ReviewChecklistState => ({
   closingJournal: [false, false, false, false, false]
 });
 
+const emptyRiskCheckMetrics = (): ReviewRiskCheckMetrics => ({
+  riskSplitFollowed: "",
+  corePlaybookTrades: "",
+  wakeUpPlanFollowed: ""
+});
+
 const normalizeChecklist = (value: unknown): ReviewChecklistState => {
   const fallback = emptyChecklist();
   if (!value || typeof value !== "object") {
@@ -42,6 +49,32 @@ const normalizeChecklist = (value: unknown): ReviewChecklistState => {
   const closingJournal = normalizeRow(record.closingJournal) ?? fallback.closingJournal;
 
   return { meditation, riskCheck, morningJournal, closingJournal };
+};
+
+const normalizeMetricValue = (value: unknown): string => {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  return "";
+};
+
+const normalizeRiskCheckMetrics = (value: unknown): ReviewRiskCheckMetrics => {
+  const fallback = emptyRiskCheckMetrics();
+  if (!value || typeof value !== "object") {
+    return fallback;
+  }
+
+  const record = value as Partial<Record<keyof ReviewRiskCheckMetrics, unknown>>;
+  return {
+    riskSplitFollowed: normalizeMetricValue(record.riskSplitFollowed),
+    corePlaybookTrades: normalizeMetricValue(record.corePlaybookTrades),
+    wakeUpPlanFollowed: normalizeMetricValue(record.wakeUpPlanFollowed)
+  };
 };
 
 const normalizeReading = (value: unknown): ReviewReadingEntry[] => {
@@ -83,6 +116,7 @@ export const defaultReviewReflectionState = (): ReviewReflectionState => ({
     { book: "", author: "", pages: "" }
   ],
   checklist: emptyChecklist(),
+  riskCheckMetrics: emptyRiskCheckMetrics(),
   improvementGoals: createEmptyJournalDoc()
 });
 
@@ -96,6 +130,7 @@ export const coerceReviewReflectionState = (value: unknown): ReviewReflectionSta
     takeaway: isDoc(record.takeaway) ? (record.takeaway as JSONContent) : createEmptyJournalDoc(),
     reading: normalizeReading(record.reading),
     checklist: normalizeChecklist(record.checklist),
+    riskCheckMetrics: normalizeRiskCheckMetrics(record.riskCheckMetrics),
     improvementGoals: isDoc(record.improvementGoals) ? (record.improvementGoals as JSONContent) : createEmptyJournalDoc()
   };
 };
@@ -152,6 +187,7 @@ const normalizeTemplate = (value: unknown, fallbackName: string): NamedReviewTem
       takeaway,
       reading: content.reading,
       checklist: content.checklist,
+      riskCheckMetrics: content.riskCheckMetrics,
       improvementGoals
     })
   };

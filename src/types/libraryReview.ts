@@ -12,10 +12,17 @@ export interface ReviewReadingEntry {
 
 export type ReviewChecklistState = Record<ReviewChecklistGroupKey, boolean[]>;
 
+export interface ReviewRiskCheckMetrics {
+  riskSplitFollowed: string;
+  corePlaybookTrades: string;
+  wakeUpPlanFollowed: string;
+}
+
 export interface ReviewReflectionState {
   takeaway: JSONContent;
   reading: ReviewReadingEntry[];
   checklist: ReviewChecklistState;
+  riskCheckMetrics: ReviewRiskCheckMetrics;
   improvementGoals: JSONContent;
 }
 
@@ -29,4 +36,3 @@ export interface ReviewTemplates {
   weeklyTemplates: NamedReviewTemplate[];
   monthlyTemplates: NamedReviewTemplate[];
 }
-

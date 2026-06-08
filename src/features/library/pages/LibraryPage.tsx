@@ -46,6 +46,7 @@ import {
   buildReviewPropertiesPatch,
   computeOverallScore,
   computeReviewMetrics,
+  getCurrencyDailyShutdownRiskFromSettings,
   getDailyShutdownRiskFromSettings,
   getReviewPeriodForCollection,
   getPreviousReviewRange,
@@ -154,6 +155,8 @@ const bookReadingStatusOptions = ["To Read", "In Progress", "Completed", "Abando
 
 const getBookFieldValue = (page: LibraryPageRecord, propertyName: string): string =>
   renderPropertyValue(page, propertyName, "");
+
+const getBookAuthorLookupKey = (value: string): string => value.trim().replace(/\s+/g, " ").toLowerCase();
 
 type BookCustomTextField = {
   id: string;
@@ -1077,6 +1080,7 @@ export const LibraryPage = ({
   );
   const [showLegacyReviewNotes, setShowLegacyReviewNotes] = useState(false);
   const dailyShutdownRiskUsd = getDailyShutdownRiskFromSettings(settings);
+  const currencyDailyShutdownRiskUsd = getCurrencyDailyShutdownRiskFromSettings(settings);
   const hasRetriedDesktopRecoveryRef = useRef(false);
   const strongViewMorningChatInputRef = useRef<HTMLInputElement | null>(null);
   const quoteSaveStatusTimeoutRef = useRef<number | null>(null);
@@ -1241,7 +1245,9 @@ export const LibraryPage = ({
           trades,
           rangeStart: range.start,
           rangeEnd: range.end,
-          dailyShutdownRiskUsd
+          dailyShutdownRiskUsd,
+          currencyDailyShutdownRiskUsd,
+          currencySymbolList: settings.currencySymbolList
         });
 
         const nextProperties = buildReviewPropertiesPatch({
@@ -1259,7 +1265,7 @@ export const LibraryPage = ({
 
       return changed ? next : current;
     });
-  }, [dailyShutdownRiskUsd, trades]);
+  }, [currencyDailyShutdownRiskUsd, dailyShutdownRiskUsd, settings.currencySymbolList, trades]);
 
   useEffect(() => {
     if (trades.length === 0) {
@@ -1677,6 +1683,14 @@ export const LibraryPage = ({
     const rawMpp = renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.mpp, "");
     return buildReviewMppCardData(rawMpp);
   }, [selectedPage]);
+  const selectedReviewCurrencyMppCardData = useMemo(() => {
+    if (!selectedPage) {
+      return null;
+    }
+
+    const rawMpp = renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.currencyMpp, "");
+    return buildReviewMppCardData(rawMpp);
+  }, [selectedPage]);
   const selectedReviewComparisonData = useMemo(() => {
     if (!selectedPage || !isReviewCollection || !selectedReviewPeriod) {
       return null;
@@ -1696,13 +1710,17 @@ export const LibraryPage = ({
       trades,
       rangeStart: range.start,
       rangeEnd: range.end,
-      dailyShutdownRiskUsd
+      dailyShutdownRiskUsd,
+      currencyDailyShutdownRiskUsd,
+      currencySymbolList: settings.currencySymbolList
     });
     const previousMetrics = computeReviewMetrics({
       trades,
       rangeStart: previousRange.start,
       rangeEnd: previousRange.end,
-      dailyShutdownRiskUsd
+      dailyShutdownRiskUsd,
+      currencyDailyShutdownRiskUsd,
+      currencySymbolList: settings.currencySymbolList
     });
 
     return {
@@ -1715,7 +1733,15 @@ export const LibraryPage = ({
       redDays: buildReviewCountCardData(currentMetrics.redDays, previousMetrics.redDays, "decrease"),
       greenDays: buildReviewCountCardData(currentMetrics.greenDays, previousMetrics.greenDays, "increase")
     };
-  }, [dailyShutdownRiskUsd, isReviewCollection, selectedPage, selectedReviewPeriod, trades]);
+  }, [
+    currencyDailyShutdownRiskUsd,
+    dailyShutdownRiskUsd,
+    isReviewCollection,
+    selectedPage,
+    selectedReviewPeriod,
+    settings.currencySymbolList,
+    trades
+  ]);
 
   const selectedReviewReportRange = useMemo(() => {
     if (!selectedPage || !isReviewCollection || !selectedReviewPeriod) {
@@ -1873,6 +1899,26 @@ export const LibraryPage = ({
       .filter(Boolean);
 
     return Array.from(new Set(authors)).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }, [pages]);
+
+  const reviewReadingBookAuthorByTitle = useMemo(() => {
+    const links: Record<string, string> = {};
+
+    for (const page of pages) {
+      if (page.collectionId !== "book-club" || !isBookRow(page)) {
+        continue;
+      }
+
+      const key = getBookAuthorLookupKey(page.title);
+      const author = getBookFieldValue(page, "Author").trim();
+      if (!key || !author || links[key]) {
+        continue;
+      }
+
+      links[key] = author;
+    }
+
+    return links;
   }, [pages]);
 
   const handleSaveReviewTemplate = (period: "weekly" | "monthly", templateId: string, content: unknown) => {
@@ -3845,8 +3891,12 @@ export const LibraryPage = ({
                       />
                     </label>
                     <label className="library-open-page-property">
-                      <span>Daily Shutdown Risk</span>
+                      <span>Stock Daily Risk</span>
                       <input type="text" readOnly value={`$${dailyShutdownRiskUsd.toFixed(2)}`} />
+                    </label>
+                    <label className="library-open-page-property">
+                      <span>Currency Daily Risk</span>
+                      <input type="text" readOnly value={`$${currencyDailyShutdownRiskUsd.toFixed(2)}`} />
                     </label>
                     <label className="library-open-page-property">
                       <span>Closed Orders</span>
@@ -3939,12 +3989,22 @@ export const LibraryPage = ({
                       ) : null}
                     </label>
                     <label className="library-open-page-property library-open-page-property-compare library-open-page-property-mpp">
-                      <span>MPP</span>
+                      <span>Stock MPP</span>
                       <strong>{selectedReviewMppCardData?.currentLabel ?? "-"}</strong>
                       <small>Prev {selectedReviewMppCardData?.previousLabel ?? "-"}</small>
                       {selectedReviewMppCardData?.deltaLabel ? (
                         <em className={`report-period-delta report-period-delta-${selectedReviewMppCardData.deltaTone}`}>
                           {selectedReviewMppCardData.deltaLabel}
+                        </em>
+                      ) : null}
+                    </label>
+                    <label className="library-open-page-property library-open-page-property-compare library-open-page-property-mpp">
+                      <span>Currency MPP</span>
+                      <strong>{selectedReviewCurrencyMppCardData?.currentLabel ?? "-"}</strong>
+                      <small>Prev {selectedReviewCurrencyMppCardData?.previousLabel ?? "-"}</small>
+                      {selectedReviewCurrencyMppCardData?.deltaLabel ? (
+                        <em className={`report-period-delta report-period-delta-${selectedReviewCurrencyMppCardData.deltaTone}`}>
+                          {selectedReviewCurrencyMppCardData.deltaLabel}
                         </em>
                       ) : null}
                     </label>
@@ -4126,6 +4186,7 @@ export const LibraryPage = ({
                     reflection={coerceReviewReflectionState(selectedPage.properties?.[REVIEW_REFLECTION_KEY])}
                     defaultBookOptions={reviewReadingBookDefaults}
                     defaultAuthorOptions={reviewReadingAuthorDefaults}
+                    bookAuthorByTitle={reviewReadingBookAuthorByTitle}
                     onSelectTemplateId={
                       selectedReviewPeriod === "monthly"
                         ? setSelectedMonthlyReviewTemplateId

@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppLayout } from "../components/AppLayout";
 import { OFFLINE_WORKSPACE_USER, isSupabaseConfigured, type User } from "../lib/auth";
 import { hasJournalDocContent } from "../lib/journal/journalContent";
@@ -50,7 +50,7 @@ import {
   saveWorkspaceState,
   type WorkspaceState
 } from "../lib/workspace/workspaceStore";
-import { recoverHeadlinesFromDesktopBackup } from "../lib/headlines/headlineStore";
+import { loadHeadlinesRecord, recoverHeadlinesFromDesktopBackup } from "../lib/headlines/headlineStore";
 import {
   defaultSettings,
   defaultSyncedSettings,
@@ -111,6 +111,8 @@ const navItems: AppNavItem[] = [
   { id: "settings", label: "Settings", icon: "settings" }
 ];
 
+const JOURNAL_PAGES_SAVE_DEBOUNCE_MS = 4000;
+
 const DashboardPage = lazy(() =>
   import("../features/dashboard/pages/DashboardPage").then((module) => ({ default: module.DashboardPage }))
 );
@@ -165,6 +167,45 @@ const getLocalTradeDateKey = (date = new Date()): string => {
 const parseTimestamp = (value: string): number => {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const WORKSPACE_RECORD_DATE_FIELDS = [
+  "tradeDate",
+  "journalDate",
+  "taggedDate",
+  "linkedTradeDate",
+  "createdAt",
+  "updatedAt",
+  "importedAt"
+] as const;
+const LIBRARY_PROPERTY_DATE_FIELDS = ["Date", "Date Used", "Range Start", "Range End"] as const;
+
+const isWorkspaceDateRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const addWorkspaceDateCandidate = (dates: Set<string>, value: unknown): void => {
+  if (typeof value !== "string") {
+    return;
+  }
+
+  const normalized = normalizeJournalTradeDate(value.trim());
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    dates.add(normalized);
+  }
+};
+
+const addWorkspaceRecordDateFields = (
+  dates: Set<string>,
+  value: unknown,
+  fields: readonly string[] = WORKSPACE_RECORD_DATE_FIELDS
+): void => {
+  if (!isWorkspaceDateRecord(value)) {
+    return;
+  }
+
+  for (const field of fields) {
+    addWorkspaceDateCandidate(dates, value[field]);
+  }
 };
 
 const cloneValue = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -523,6 +564,13 @@ function App() {
   const [, setBootError] = useState<string | null>(null);
   const journalPagesRef = useRef<JournalPageRecord[]>([]);
   journalPagesRef.current = journalPages;
+
+  const selectJournalPageById = useCallback((pageId: string) => {
+    setSelectedJournalPageId(pageId);
+    setJournalDateRequest((current) =>
+      current.tradeDate || current.requestId > 0 ? { tradeDate: "", requestId: 0 } : current
+    );
+  }, []);
 
   const persistJournalPages = (nextPages: JournalPageRecord[]) => {
     logPersistenceEvent("edit", "journal-pages", nextPages);
@@ -999,14 +1047,15 @@ function App() {
       return;
     }
 
-    const tradeContextById = buildJournalTradeContextById(
-      applyTradeTagOverrides(
-        tradeSessions.flatMap((session) => session.trades),
-        tradeTagOverrides
-      )
+    const journalSyncTrades = applyTradeTagOverrides(
+      tradeSessions.flatMap((session) => session.trades),
+      tradeTagOverrides
     );
+    const tradeContextById = buildJournalTradeContextById(journalSyncTrades);
 
-    setJournalPages((current) => syncJournalPagesFromTradeReviews(current, tradeReviews, tradeContextById));
+    setJournalPages((current) =>
+      syncJournalPagesFromTradeReviews(current, tradeReviews, tradeContextById, journalSyncTrades)
+    );
   }, [
     journalPagesLoaded,
     tradeReviews,
@@ -1034,7 +1083,7 @@ function App() {
 
   useDebouncedSave(
     journalPagesForSave,
-    900,
+    JOURNAL_PAGES_SAVE_DEBOUNCE_MS,
     (nextJournalPages) => {
       void runTrackedSave(
         "journal pages",
@@ -1054,7 +1103,7 @@ function App() {
       void runTrackedSave(
         "journal templates",
         nextTemplates,
-        () => Promise.resolve(saveJournalChecklistTemplates(nextTemplates)),
+        () => saveJournalChecklistTemplates(nextTemplates).then(() => undefined),
         () => syncStores.journalChecklistTemplates.getStatus()
       );
     },
@@ -1275,6 +1324,68 @@ function App() {
     () => resolvedTradeSessions.flatMap((session) => session.trades as EditableTradeRow[]),
     [resolvedTradeSessions]
   );
+  const workspaceTransferDates = useMemo(() => {
+    const dates = new Set<string>();
+
+    for (const session of tradeSessions) {
+      addWorkspaceRecordDateFields(dates, session);
+      for (const trade of session.trades) {
+        addWorkspaceRecordDateFields(dates, trade, ["tradeDate"]);
+      }
+    }
+
+    for (const page of journalPages) {
+      addWorkspaceRecordDateFields(dates, page);
+      for (const tradeNote of page.tradeNotes) {
+        addWorkspaceRecordDateFields(dates, tradeNote);
+      }
+      for (const screenshotTag of page.screenshotTags) {
+        addWorkspaceRecordDateFields(dates, screenshotTag);
+      }
+    }
+
+    for (const override of tradeTagOverrides) {
+      addWorkspaceRecordDateFields(dates, override);
+    }
+
+    for (const review of tradeReviews) {
+      addWorkspaceRecordDateFields(dates, review);
+    }
+
+    for (const barSet of historicalBarSets) {
+      addWorkspaceRecordDateFields(dates, barSet);
+    }
+
+    for (const playbook of loadPlaybooks()) {
+      addWorkspaceRecordDateFields(dates, playbook);
+      for (const example of playbook.aPlusExamples) {
+        addWorkspaceRecordDateFields(dates, example);
+      }
+    }
+
+    for (const page of loadLibraryPages()) {
+      addWorkspaceRecordDateFields(dates, page);
+      addWorkspaceRecordDateFields(dates, page.properties, LIBRARY_PROPERTY_DATE_FIELDS);
+    }
+
+    const headlines = loadHeadlinesRecord();
+    for (const [bucketDate, items] of Object.entries(headlines)) {
+      addWorkspaceDateCandidate(dates, bucketDate);
+      for (const item of items) {
+        addWorkspaceRecordDateFields(dates, item);
+      }
+    }
+
+    return Array.from(dates).sort();
+  }, [
+    activeRoute,
+    historicalBarSets,
+    journalPages,
+    tradeReviews,
+    tradeSessions,
+    tradeTagOverrides,
+    workspaceRefreshKey
+  ]);
   const reportSourceTrades = useMemo(
     () =>
       resolvedTrades.length > 0 && !isCurrentImportSaved
@@ -1617,7 +1728,7 @@ function App() {
     getJournalPages: () => journalPagesRef.current,
     journalChecklistTemplates,
     persistJournalPages,
-    setSelectedJournalPageId,
+    setSelectedJournalPageId: selectJournalPageById,
     setJournalChecklistTemplates,
     setMessage
   });
@@ -1713,6 +1824,7 @@ function App() {
         return (
           <DashboardPage
             trades={allStoredTrades}
+            settings={settings}
             externalTradeDateFilterStart={dashboardTradeDateFilterStart}
             externalTradeDateFilterEnd={dashboardTradeDateFilterEnd}
             externalPlaybookFilter={dashboardPlaybookFilter}
@@ -1816,7 +1928,7 @@ function App() {
               checklistTemplates={journalChecklistTemplates}
               externalSelectedTradeDate={journalDateRequest.tradeDate}
               externalSelectedTradeRequestId={journalDateRequest.requestId}
-              onSelectPage={setSelectedJournalPageId}
+              onSelectPage={selectJournalPageById}
               onSelectTrade={(tradeId, tradeDate) => {
                 setDashboardTradeDateFilterStart(tradeDate);
                 setDashboardTradeDateFilterEnd(tradeDate);
@@ -1976,7 +2088,7 @@ function App() {
             busy={busy}
             isCurrentImportSaved={isCurrentImportSaved}
             settings={settings}
-            savedTradeDates={tradeSessions.map((session) => session.tradeDate)}
+            workspaceTransferDates={workspaceTransferDates}
             onFileDrop={handleFileDrop}
             onSettingsChange={setSettings}
             onBrowseExportFolder={handleBrowseFolder}

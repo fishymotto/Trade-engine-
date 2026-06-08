@@ -312,6 +312,15 @@ export const repairStoredHeadlineBuckets = async (): Promise<boolean> => {
   return true;
 };
 
+export const loadHeadlinesRecord = (): HeadlinesByTradeDate => {
+  const parsed = loadRawHeadlines();
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+    return {};
+  }
+
+  return normalizeHeadlinesRecord(parsed as Partial<HeadlinesByTradeDate>);
+};
+
 export const loadHeadlinesForTradeDate = (tradeDate: string): HeadlineItem[] => {
   const normalizedTradeDate = normalizeTradeDate(tradeDate) || tradeDate.trim();
   const parsed = loadRawHeadlines();

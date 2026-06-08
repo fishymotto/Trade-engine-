@@ -51,7 +51,7 @@ const toLocalDateInputValue = (value: string): string => {
 
 interface WorkspaceTransferExportPanelProps {
   settings: Settings;
-  savedTradeDates: string[];
+  workspaceTransferDates: string[];
   onChange: (settings: Settings) => void;
   onBrowse: () => Promise<void>;
   onExportWorkspaceBundle: () => Promise<string>;
@@ -59,19 +59,19 @@ interface WorkspaceTransferExportPanelProps {
 
 export const WorkspaceTransferExportPanel = ({
   settings,
-  savedTradeDates,
+  workspaceTransferDates,
   onChange,
   onBrowse,
   onExportWorkspaceBundle
 }: WorkspaceTransferExportPanelProps) => {
   const update = (patch: Partial<Settings>) => onChange({ ...settings, ...patch });
-  const availableSavedTradeDates = Array.from(
+  const availableWorkspaceTransferDates = Array.from(
     new Set(
-      savedTradeDates.filter((value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value.trim()))
+      workspaceTransferDates.filter((value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value.trim()))
     )
   ).sort();
-  const displaySavedTradeDates = [...availableSavedTradeDates].reverse();
-  const workspaceExactDateMonthCounts = displaySavedTradeDates.reduce<Record<string, number>>((counts, tradeDate) => {
+  const displayWorkspaceTransferDates = [...availableWorkspaceTransferDates].reverse();
+  const workspaceExactDateMonthCounts = displayWorkspaceTransferDates.reduce<Record<string, number>>((counts, tradeDate) => {
     const monthKey = tradeDate.slice(0, 7);
     counts[monthKey] = (counts[monthKey] ?? 0) + 1;
     return counts;
@@ -98,19 +98,21 @@ export const WorkspaceTransferExportPanel = ({
   const [workspaceExactDateMonth, setWorkspaceExactDateMonth] = useState<string>(
     () => workspaceExactDateMonthOptions[0]?.value ?? "all"
   );
-  const firstSavedTradeDate = availableSavedTradeDates[0] ?? "";
-  const lastSavedTradeDate =
-    availableSavedTradeDates.length > 0 ? availableSavedTradeDates[availableSavedTradeDates.length - 1] : "";
+  const firstWorkspaceTransferDate = availableWorkspaceTransferDates[0] ?? "";
+  const lastWorkspaceTransferDate =
+    availableWorkspaceTransferDates.length > 0
+      ? availableWorkspaceTransferDates[availableWorkspaceTransferDates.length - 1]
+      : "";
   const activeWorkspaceExactDateMonth =
     workspaceExactDateMonth === "all" ||
     workspaceExactDateMonthOptions.some((option) => option.value === workspaceExactDateMonth)
       ? workspaceExactDateMonth
       : "all";
-  const filteredDisplaySavedTradeDates =
+  const filteredDisplayWorkspaceTransferDates =
     activeWorkspaceExactDateMonth === "all"
-      ? displaySavedTradeDates
-      : displaySavedTradeDates.filter((tradeDate) => tradeDate.startsWith(activeWorkspaceExactDateMonth));
-  const windowIncludedSavedTradeDates = availableSavedTradeDates.filter((tradeDate) => {
+      ? displayWorkspaceTransferDates
+      : displayWorkspaceTransferDates.filter((tradeDate) => tradeDate.startsWith(activeWorkspaceExactDateMonth));
+  const windowIncludedWorkspaceTransferDates = availableWorkspaceTransferDates.filter((tradeDate) => {
     if (settings.workspaceExportStartDate && tradeDate < settings.workspaceExportStartDate) {
       return false;
     }
@@ -137,24 +139,24 @@ export const WorkspaceTransferExportPanel = ({
         includedDayCount: selectedWorkspaceExportDates.length,
         coverageLabel: selectedDateSummary,
         detailLabel:
-          "Only the checked saved sessions will be included, along with their journal notes, checklists, headlines, library pages, and shared tags/templates."
+          "Only the checked dates will be included, along with their saved sessions, journal notes, Strong Views, headlines, library pages, and shared tags/templates."
       }
     : hasDateWindowScope
       ? {
           scopeLabel: "Date Window",
-          includedDayCount: windowIncludedSavedTradeDates.length,
+          includedDayCount: windowIncludedWorkspaceTransferDates.length,
           coverageLabel: `${settings.workspaceExportStartDate || "Beginning"} -> ${settings.workspaceExportEndDate || "Latest"}`,
           detailLabel:
-            windowIncludedSavedTradeDates.length > 0
-              ? "Saved sessions inside the current window will be included, plus journal notes, checklists, headlines, library pages, and shared workspace definitions."
-              : "No saved sessions currently fall inside the chosen window, but journal notes, checklists, headlines, library pages, and shared workspace definitions can still sync."
+            windowIncludedWorkspaceTransferDates.length > 0
+              ? "Workspace dates inside the current window will be included, plus saved sessions, journal notes, Strong Views, headlines, library pages, and shared workspace definitions."
+              : "No workspace dates currently fall inside the chosen window, but journal notes, Strong Views, headlines, library pages, and shared workspace definitions can still sync."
         }
       : {
           scopeLabel: "Full Workspace",
-          includedDayCount: availableSavedTradeDates.length,
+          includedDayCount: availableWorkspaceTransferDates.length,
           coverageLabel:
-            availableSavedTradeDates.length > 0
-              ? `All ${availableSavedTradeDates.length.toLocaleString()} saved day${availableSavedTradeDates.length === 1 ? "" : "s"}`
+            availableWorkspaceTransferDates.length > 0
+              ? `All ${availableWorkspaceTransferDates.length.toLocaleString()} workspace day${availableWorkspaceTransferDates.length === 1 ? "" : "s"}`
               : "All workspace data",
           detailLabel: "No date filter is active, so the sync file will include the full workspace snapshot."
         };
@@ -170,10 +172,10 @@ export const WorkspaceTransferExportPanel = ({
             : "Current file scope: full workspace file with all dated records on this computer.";
   const specificDateSelectionHelp =
     selectedWorkspaceExportDates.length > 0
-      ? "Selected days override any window and include only the sessions you keep checked here."
+      ? "Selected days override any window and include only the dates you keep checked here."
       : settings.workspaceExportStartDate || settings.workspaceExportEndDate
         ? "Your current date window stays active until you pick at least one specific day."
-        : "Pick one or more missing sessions. With nothing selected, the file stays a full workspace export.";
+        : "Pick one or more missing dates. With nothing selected, the file stays a full workspace export.";
   const syncHistoryLabel =
     lastExportedLabel || lastImportedLabel
       ? `Manual sync history: last sent ${lastExportedLabel || "not yet"}; last received ${lastImportedLabel || "not yet"}.`
@@ -219,19 +221,19 @@ export const WorkspaceTransferExportPanel = ({
       </label>
       <small className="import-workspace-inline-note">{syncHistoryLabel}</small>
 
-      {availableSavedTradeDates.length > 0 ? (
+      {availableWorkspaceTransferDates.length > 0 ? (
         <div className="settings-transfer-summary" aria-label="Workspace transfer date summary">
           <div>
-            <span>Saved Days</span>
-            <strong>{availableSavedTradeDates.length.toLocaleString()}</strong>
+            <span>Workspace Days</span>
+            <strong>{availableWorkspaceTransferDates.length.toLocaleString()}</strong>
           </div>
           <div>
             <span>Earliest</span>
-            <strong>{firstSavedTradeDate}</strong>
+            <strong>{firstWorkspaceTransferDate}</strong>
           </div>
           <div>
             <span>Latest</span>
-            <strong>{lastSavedTradeDate}</strong>
+            <strong>{lastWorkspaceTransferDate}</strong>
           </div>
           <div>
             <span>Picked Days</span>
@@ -240,8 +242,8 @@ export const WorkspaceTransferExportPanel = ({
         </div>
       ) : (
         <small className="import-workspace-inline-note">
-          No saved session dates yet. A full workspace file still includes playbooks, library pages, journal entries,
-          and other synced workspace data.
+          No workspace dates yet. A full workspace file still includes playbooks, Strong Views, library pages,
+          journal entries, and other synced workspace data.
         </small>
       )}
 
@@ -252,7 +254,7 @@ export const WorkspaceTransferExportPanel = ({
           <small>{transferPreview.detailLabel}</small>
         </div>
         <div className="import-workspace-summary-card">
-          <span>Included Saved Days</span>
+          <span>Included Workspace Days</span>
           <strong>{transferPreview.includedDayCount.toLocaleString()}</strong>
           <small>{transferPreview.coverageLabel}</small>
         </div>
@@ -269,7 +271,7 @@ export const WorkspaceTransferExportPanel = ({
         </div>
       </div>
 
-      {availableSavedTradeDates.length > 0 ? (
+      {availableWorkspaceTransferDates.length > 0 ? (
         <div className="settings-transfer-mode-grid" aria-label="Transfer file scope mode">
           <button
             type="button"
@@ -280,7 +282,7 @@ export const WorkspaceTransferExportPanel = ({
             aria-pressed={workspaceTransferSelectionMode === "window"}
           >
             <strong>Date Window</strong>
-            <span>Use a clean start and end range for one uninterrupted block of missing sessions.</span>
+            <span>Use a clean start and end range for one uninterrupted block of missing dates.</span>
           </button>
           <button
             type="button"
@@ -291,51 +293,51 @@ export const WorkspaceTransferExportPanel = ({
             aria-pressed={workspaceTransferSelectionMode === "specific"}
           >
             <strong>Specific Days</strong>
-            <span>Choose scattered missing sessions without creating one oversized date window.</span>
+            <span>Choose scattered missing dates without creating one oversized date window.</span>
           </button>
         </div>
       ) : null}
 
-      {workspaceTransferSelectionMode === "window" || availableSavedTradeDates.length === 0 ? (
+      {workspaceTransferSelectionMode === "window" || availableWorkspaceTransferDates.length === 0 ? (
         <div className="settings-transfer-mode-panel">
           <div className="settings-transfer-panel-header">
             <div className="settings-transfer-panel-copy">
               <strong>Date Window</strong>
-              <span>Best when the other computer is missing one continuous block of saved sessions.</span>
+              <span>Best when the other computer is missing one continuous block of workspace dates.</span>
             </div>
-            {availableSavedTradeDates.length > 0 ? (
-            <div className="settings-transfer-actions">
-              {lastSyncStartDate ? (
+            {availableWorkspaceTransferDates.length > 0 ? (
+              <div className="settings-transfer-actions">
+                {lastSyncStartDate ? (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="settings-transfer-quick-action"
+                    onClick={() => {
+                      setWorkspaceTransferSelectionMode("window");
+                      update({
+                        workspaceExportStartDate: lastSyncStartDate,
+                        workspaceExportEndDate: "",
+                        workspaceExportSelectedDates: []
+                      });
+                    }}
+                  >
+                    Sync Since Last Send
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
-                  variant="secondary"
+                  variant={lastSyncStartDate ? "ghost" : "secondary"}
                   className="settings-transfer-quick-action"
                   onClick={() => {
                     setWorkspaceTransferSelectionMode("window");
                     update({
-                      workspaceExportStartDate: lastSyncStartDate,
-                      workspaceExportEndDate: "",
+                      workspaceExportStartDate: firstWorkspaceTransferDate,
+                      workspaceExportEndDate: lastWorkspaceTransferDate,
                       workspaceExportSelectedDates: []
                     });
                   }}
                 >
-                  Sync Since Last Send
-                </Button>
-              ) : null}
-              <Button
-                type="button"
-                variant={lastSyncStartDate ? "ghost" : "secondary"}
-                className="settings-transfer-quick-action"
-                onClick={() => {
-                  setWorkspaceTransferSelectionMode("window");
-                    update({
-                      workspaceExportStartDate: firstSavedTradeDate,
-                      workspaceExportEndDate: lastSavedTradeDate,
-                      workspaceExportSelectedDates: []
-                    });
-                  }}
-                >
-                  Use All Saved Days
+                  Use All Workspace Days
                 </Button>
                 <Button
                   type="button"
@@ -344,7 +346,7 @@ export const WorkspaceTransferExportPanel = ({
                   onClick={() => {
                     setWorkspaceTransferSelectionMode("window");
                     update({
-                      workspaceExportStartDate: firstSavedTradeDate,
+                      workspaceExportStartDate: firstWorkspaceTransferDate,
                       workspaceExportSelectedDates: []
                     });
                   }}
@@ -358,7 +360,7 @@ export const WorkspaceTransferExportPanel = ({
                   onClick={() => {
                     setWorkspaceTransferSelectionMode("window");
                     update({
-                      workspaceExportEndDate: lastSavedTradeDate,
+                      workspaceExportEndDate: lastWorkspaceTransferDate,
                       workspaceExportSelectedDates: []
                     });
                   }}
@@ -419,12 +421,12 @@ export const WorkspaceTransferExportPanel = ({
         </div>
       ) : null}
 
-      {availableSavedTradeDates.length > 0 && workspaceTransferSelectionMode === "specific" ? (
+      {availableWorkspaceTransferDates.length > 0 && workspaceTransferSelectionMode === "specific" ? (
         <div className="settings-transfer-mode-panel">
           <div className="settings-transfer-panel-header">
             <div className="settings-transfer-panel-copy">
               <strong>Specific Days</strong>
-              <span>Best when you only need to patch scattered sessions on the other computer.</span>
+              <span>Best when you only need to patch scattered dates on the other computer.</span>
             </div>
             <div className="settings-transfer-date-selector-controls">
               {workspaceExactDateMonthOptions.length > 1 ? (
@@ -434,7 +436,7 @@ export const WorkspaceTransferExportPanel = ({
                     value={activeWorkspaceExactDateMonth}
                     onChange={(event) => setWorkspaceExactDateMonth(event.target.value)}
                   >
-                    <option value="all">All Saved Days</option>
+                    <option value="all">All Workspace Days</option>
                     {workspaceExactDateMonthOptions.map((option) => (
                       <option key={option.value} value={option.value}>
                         {option.label} ({option.count})
@@ -481,7 +483,7 @@ export const WorkspaceTransferExportPanel = ({
             <p className="settings-transfer-selected-help">{specificDateSelectionHelp}</p>
           </div>
           <div className="settings-transfer-date-chip-grid">
-            {filteredDisplaySavedTradeDates.map((tradeDate) => {
+            {filteredDisplayWorkspaceTransferDates.map((tradeDate) => {
               const selected = selectedWorkspaceExportDates.includes(tradeDate);
 
               return (
@@ -496,10 +498,10 @@ export const WorkspaceTransferExportPanel = ({
               );
             })}
           </div>
-          {activeWorkspaceExactDateMonth !== "all" && filteredDisplaySavedTradeDates.length > 0 ? (
+          {activeWorkspaceExactDateMonth !== "all" && filteredDisplayWorkspaceTransferDates.length > 0 ? (
             <small className="import-workspace-inline-note">
-              Showing {filteredDisplaySavedTradeDates.length.toLocaleString()} saved day
-              {filteredDisplaySavedTradeDates.length === 1 ? "" : "s"} from{" "}
+              Showing {filteredDisplayWorkspaceTransferDates.length.toLocaleString()} workspace day
+              {filteredDisplayWorkspaceTransferDates.length === 1 ? "" : "s"} from{" "}
               {formatWorkspaceDateMonth(activeWorkspaceExactDateMonth)}.
             </small>
           ) : null}
@@ -528,7 +530,7 @@ export const WorkspaceTransferExportPanel = ({
 
       <small className="import-workspace-inline-note">
         Leave everything blank for a full workspace file. Use a date window for one continuous block, or specific
-        days for non-consecutive sessions. Editing one mode automatically clears the other.
+        days for non-consecutive dates. Editing one mode automatically clears the other.
       </small>
       <small className="import-workspace-inline-note">{workspaceTransferModeSummary}</small>
     </section>

@@ -1,6 +1,8 @@
 import type { GroupedTrade, Settings } from "../../../types/trade";
 import type { LibraryCollectionId, LibraryPageRecord } from "../../../types/library";
 import { calculateMPPWindow } from "../../../lib/analytics/mppAnalytics";
+import { getMPPDayRecordsForTrades } from "../../../lib/analytics/assetMppAnalytics";
+import { getTradeAssetClass } from "../../../lib/trades/assetClassification";
 
 export type ReviewPeriod = "weekly" | "monthly";
 
@@ -26,6 +28,7 @@ export const REVIEW_PROPERTY_KEYS = {
   net: "Net",
   gross: "Gross",
   mpp: "MPP",
+  currencyMpp: "Currency MPP",
   closedOrders: "Closed Orders",
   breachDays: "Breach Days",
   overall: "Overall",
@@ -146,12 +149,16 @@ export const computeReviewMetrics = ({
   trades,
   rangeStart,
   rangeEnd,
-  dailyShutdownRiskUsd
+  dailyShutdownRiskUsd,
+  currencyDailyShutdownRiskUsd,
+  currencySymbolList
 }: {
   trades: GroupedTrade[];
   rangeStart: string;
   rangeEnd: string;
   dailyShutdownRiskUsd: number;
+  currencyDailyShutdownRiskUsd: number;
+  currencySymbolList: string;
 }) => {
   const start = normalizeTradeDate(rangeStart);
   const end = normalizeTradeDate(rangeEnd);
@@ -169,47 +176,57 @@ export const computeReviewMetrics = ({
   const net = inRange.reduce((sum, trade) => sum + (trade.netPnlUsd || 0), 0);
   const gross = inRange.reduce((sum, trade) => sum + (trade.grossPnlUsd || 0), 0);
 
-  const allDayNetMap = trades.reduce<Map<string, number>>((acc, trade) => {
+  const getMppSummary = (assetClass: "stock" | "currency") => {
+    const mppDays = getMPPDayRecordsForTrades(trades, {
+      assetClass,
+      currencySymbolList
+    });
+    const startMppSnapshot = calculateMPPWindow(mppDays, { anchorTradeDate: start });
+    const endMppSnapshot = calculateMPPWindow(mppDays, { anchorTradeDate: end });
+    const hasStartMpp = startMppSnapshot.formulaBreakdown.eligibleDayCount > 0;
+    const hasEndMpp = endMppSnapshot.formulaBreakdown.eligibleDayCount > 0;
+    const startMppLabel = hasStartMpp ? startMppSnapshot.currentMPP.toLocaleString() : "-";
+    const endMppLabel = hasEndMpp ? endMppSnapshot.currentMPP.toLocaleString() : "-";
+
+    return `${startMppLabel} -> ${endMppLabel}`;
+  };
+
+  const stockDayNetMap = new Map<string, number>();
+  const currencyDayNetMap = new Map<string, number>();
+
+  for (const trade of inRange) {
     const date = normalizeTradeDate(trade.tradeDate);
     if (!date) {
-      return acc;
+      continue;
     }
 
-    acc.set(date, (acc.get(date) ?? 0) + (trade.netPnlUsd || 0));
-    return acc;
-  }, new Map());
+    const assetClass = getTradeAssetClass(trade, currencySymbolList);
+    const dayNetMap = assetClass === "currency" ? currencyDayNetMap : stockDayNetMap;
+    dayNetMap.set(date, (dayNetMap.get(date) ?? 0) + (trade.netPnlUsd || 0));
+  }
 
-  const mppDays = Array.from(allDayNetMap.entries())
-    .sort(([leftDate], [rightDate]) => leftDate.localeCompare(rightDate))
-    .map(([tradeDate, dayNetPnl]) => ({
-      tradeDate,
-      netPnl: dayNetPnl
-    }));
-  const startMppSnapshot = calculateMPPWindow(mppDays, { anchorTradeDate: start });
-  const endMppSnapshot = calculateMPPWindow(mppDays, { anchorTradeDate: end });
-  const hasStartMpp = startMppSnapshot.formulaBreakdown.eligibleDayCount > 0;
-  const hasEndMpp = endMppSnapshot.formulaBreakdown.eligibleDayCount > 0;
-  const startMppLabel = hasStartMpp ? startMppSnapshot.currentMPP.toLocaleString() : "-";
-  const endMppLabel = hasEndMpp ? endMppSnapshot.currentMPP.toLocaleString() : "-";
-
-  const dayNetMap = inRange.reduce<Map<string, number>>((acc, trade) => {
-    const date = normalizeTradeDate(trade.tradeDate);
-    if (!date) {
-      return acc;
-    }
-
-    acc.set(date, (acc.get(date) ?? 0) + (trade.netPnlUsd || 0));
-    return acc;
-  }, new Map());
+  const combinedDayNetMap = new Map<string, number>();
+  for (const [date, value] of stockDayNetMap) {
+    combinedDayNetMap.set(date, (combinedDayNetMap.get(date) ?? 0) + value);
+  }
+  for (const [date, value] of currencyDayNetMap) {
+    combinedDayNetMap.set(date, (combinedDayNetMap.get(date) ?? 0) + value);
+  }
 
   const breachThreshold = Math.max(0, dailyShutdownRiskUsd || 0);
-  const breachDays = Array.from(dayNetMap.entries())
+  const currencyBreachThreshold = Math.max(0, currencyDailyShutdownRiskUsd || 0);
+  const stockBreachDays = Array.from(stockDayNetMap.entries())
     .filter(([, value]) => breachThreshold > 0 && value <= -breachThreshold)
     .map(([date]) => date)
     .sort();
+  const currencyBreachDays = Array.from(currencyDayNetMap.entries())
+    .filter(([, value]) => currencyBreachThreshold > 0 && value <= -currencyBreachThreshold)
+    .map(([date]) => date)
+    .sort();
+  const breachDays = Array.from(new Set([...stockBreachDays, ...currencyBreachDays])).sort();
 
-  const redDays = Array.from(dayNetMap.values()).filter((value) => value < 0).length;
-  const greenDays = Array.from(dayNetMap.values()).filter((value) => value > 0).length;
+  const redDays = Array.from(combinedDayNetMap.values()).filter((value) => value < 0).length;
+  const greenDays = Array.from(combinedDayNetMap.values()).filter((value) => value > 0).length;
 
   return {
     tickersTraded,
@@ -218,7 +235,8 @@ export const computeReviewMetrics = ({
     winRate,
     net,
     gross,
-    mppSummary: `${startMppLabel} -> ${endMppLabel}`,
+    mppSummary: getMppSummary("stock"),
+    currencyMppSummary: getMppSummary("currency"),
     breachDays,
     redDays,
     greenDays
@@ -243,6 +261,7 @@ export const buildReviewPropertiesPatch = ({
   next[REVIEW_PROPERTY_KEYS.net] = formatSignedMoney(metrics.net);
   next[REVIEW_PROPERTY_KEYS.gross] = formatSignedMoney(metrics.gross);
   next[REVIEW_PROPERTY_KEYS.mpp] = metrics.mppSummary;
+  next[REVIEW_PROPERTY_KEYS.currencyMpp] = metrics.currencyMppSummary;
   next[REVIEW_PROPERTY_KEYS.closedOrders] = toWholeNumberString(metrics.breachDays.length);
   next[REVIEW_PROPERTY_KEYS.breachDays] = metrics.breachDays;
   next[REVIEW_PROPERTY_KEYS.redDays] = toWholeNumberString(metrics.redDays);
@@ -253,6 +272,9 @@ export const buildReviewPropertiesPatch = ({
 
 export const getDailyShutdownRiskFromSettings = (settings: Settings): number =>
   Number.isFinite(settings.dailyShutdownRiskUsd) ? settings.dailyShutdownRiskUsd : 0;
+
+export const getCurrencyDailyShutdownRiskFromSettings = (settings: Settings): number =>
+  Number.isFinite(settings.currencyDailyShutdownRiskUsd) ? settings.currencyDailyShutdownRiskUsd : 0;
 
 export const getReviewRangesFromTrades = (
   trades: GroupedTrade[],

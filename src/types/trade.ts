@@ -24,7 +24,9 @@ export interface Settings {
   twelveDataApiKey: string;
   brlToUsdRate: number;
   brlTickerList: string;
+  currencySymbolList: string;
   dailyShutdownRiskUsd: number;
+  currencyDailyShutdownRiskUsd: number;
   mppLockInSteps: number[];
   desktopBackupIntervalMinutes: number;
   tradeTagVisibility: TradeTagVisibilitySettings;

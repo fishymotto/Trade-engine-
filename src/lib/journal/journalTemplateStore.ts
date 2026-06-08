@@ -84,6 +84,15 @@ const stableStringify = (value: unknown): string => {
   return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
 };
 
+const stripTemplateIdsForComparison = (templates: JournalChecklistTemplates): JournalChecklistTemplates => ({
+  morningTemplates: templates.morningTemplates.map(({ name, content }) => ({ id: "", name, content })),
+  closingTemplates: templates.closingTemplates.map(({ name, content }) => ({ id: "", name, content })),
+  mppTemplates: templates.mppTemplates.map(({ name, content }) => ({ id: "", name, content }))
+});
+
+const getComparableTemplatesScore = (templates: JournalChecklistTemplates): string =>
+  stableStringify(stripTemplateIdsForComparison(templates));
+
 export const getDefaultChecklistContent = (
   templates: JournalChecklistTemplates,
   type: "morning" | "closing" | "mpp"
@@ -225,9 +234,9 @@ export const recoverJournalChecklistTemplatesFromDesktopBackup = async (
     mppTemplates: ensureTemplateArray(desktopTemplates.mppTemplates, "Default MPP", createMppPlanDoc)
   };
 
-  const localScore = stableStringify(localTemplates);
-  const desktopScore = stableStringify(normalizedDesktopTemplates);
-  const defaultScore = stableStringify(defaultJournalChecklistTemplates());
+  const localScore = getComparableTemplatesScore(localTemplates);
+  const desktopScore = getComparableTemplatesScore(normalizedDesktopTemplates);
+  const defaultScore = getComparableTemplatesScore(defaultJournalChecklistTemplates());
   if (desktopScore === defaultScore || (localScore !== defaultScore && localScore === desktopScore)) {
     return null;
   }
@@ -240,6 +249,6 @@ export const recoverJournalChecklistTemplatesFromDesktopBackup = async (
   return normalizedDesktopTemplates;
 };
 
-export const saveJournalChecklistTemplates = (templates: JournalChecklistTemplates): void => {
-  void persistJournalChecklistTemplates(templates);
-};
+export const saveJournalChecklistTemplates = (
+  templates: JournalChecklistTemplates
+): Promise<JournalChecklistTemplates> => persistJournalChecklistTemplates(templates);

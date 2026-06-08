@@ -84,7 +84,8 @@ export const ReviewDatabaseTable = ({
             <th>Win Rate</th>
             <th>Net</th>
             <th>Gross</th>
-            <th>MPP (S -&gt; E)</th>
+            <th>Stock MPP (S -&gt; E)</th>
+            <th>Currency MPP (S -&gt; E)</th>
             <th>Closed Orders</th>
             <th>Overall</th>
             <th>Risk</th>
@@ -121,6 +122,7 @@ export const ReviewDatabaseTable = ({
                   <td>{renderStringValue(page.properties?.[REVIEW_PROPERTY_KEYS.net])}</td>
                   <td>{renderStringValue(page.properties?.[REVIEW_PROPERTY_KEYS.gross])}</td>
                   <td>{renderStringValue(page.properties?.[REVIEW_PROPERTY_KEYS.mpp])}</td>
+                  <td>{renderStringValue(page.properties?.[REVIEW_PROPERTY_KEYS.currencyMpp])}</td>
                   <td>{renderStringValue(page.properties?.[REVIEW_PROPERTY_KEYS.closedOrders])}</td>
                   <td>{renderScorePill(page.properties?.[REVIEW_PROPERTY_KEYS.overall])}</td>
                   <td>{renderScorePill(page.properties?.[REVIEW_PROPERTY_KEYS.risk])}</td>
@@ -133,7 +135,7 @@ export const ReviewDatabaseTable = ({
             })
           ) : (
             <tr>
-              <td colSpan={16}>No entries yet. Create your first {periodLabel.toLowerCase()}ly review.</td>
+              <td colSpan={17}>No entries yet. Create your first {periodLabel.toLowerCase()}ly review.</td>
             </tr>
           )}
         </tbody>

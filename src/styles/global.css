@@ -6804,21 +6804,35 @@ body {
 
 .journal-page-header-top {
   display: grid;
-  grid-template-columns: auto minmax(260px, 1fr) minmax(320px, 880px);
-  grid-template-areas: "title tickers stats";
-  align-items: start;
+  grid-template-columns: minmax(240px, 320px) minmax(260px, 1fr);
+  grid-template-areas:
+    "title tickers"
+    "stats stats";
+  align-items: stretch;
   gap: 16px;
 }
 
 .journal-header-stat-group {
   display: grid;
-  grid-template-columns: repeat(4, minmax(130px, 1fr));
   gap: 12px;
   grid-area: stats;
   width: 100%;
-  max-width: 880px;
-  justify-self: end;
+  justify-self: stretch;
   min-width: 0;
+}
+
+.journal-header-stat-row {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.journal-header-stat-row-core {
+  grid-template-columns: repeat(5, minmax(130px, 1fr));
+}
+
+.journal-header-stat-row-mood {
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
 }
 
 .journal-page-title-row {
@@ -6826,18 +6840,20 @@ body {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: start;
   column-gap: 14px;
+  row-gap: 12px;
   grid-area: title;
 }
 
 .journal-market-regime-card {
-  margin-top: 12px;
+  grid-column: 1 / -1;
+  margin-top: 0;
   display: grid;
   gap: 8px;
   padding: 14px 16px;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.025);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  width: min(340px, 100%);
+  width: 100%;
 }
 
 .journal-market-regime-card span {
@@ -6850,13 +6866,12 @@ body {
 .journal-header-ticker-card {
   grid-area: tickers;
   padding: 16px 18px;
-  border-radius: 28px;
+  border-radius: 22px;
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  min-height: 96px;
   min-width: 0;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
 }
 
 .journal-page-header-icon {
@@ -13185,6 +13200,76 @@ body {
   gap: 10px;
 }
 
+.review-risk-metric-list {
+  display: grid;
+  gap: 10px;
+}
+
+.review-risk-metric-row {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.review-risk-metric-title {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  color: #f8fafc;
+  line-height: 1.35;
+}
+
+.review-risk-metric-title span {
+  color: var(--text-soft);
+  font-weight: 900;
+}
+
+.review-risk-metric-title strong {
+  min-width: 0;
+  font-size: 0.94rem;
+}
+
+.review-risk-metric-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(64px, 96px) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.review-risk-metric-field span {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.review-risk-metric-field input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(7, 9, 12, 0.92);
+  color: #f8fafc;
+  padding: 0 10px;
+  font: inherit;
+}
+
+.review-risk-metric-field input:focus {
+  border-color: rgba(93, 168, 255, 0.44);
+  outline: none;
+}
+
+.review-risk-metric-field em {
+  color: var(--text-soft);
+  font-size: 0.82rem;
+  font-style: normal;
+  white-space: nowrap;
+}
+
 .review-checklist-item .journal-checklist-box {
   top: 50%;
   left: 14px;
@@ -13214,6 +13299,20 @@ body {
   text-decoration: line-through;
   opacity: 0.9;
   background: rgba(255, 255, 255, 0.014);
+}
+
+@media (max-width: 760px) {
+  .review-checklist-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .review-risk-metric-field {
+    grid-template-columns: minmax(64px, 96px) auto;
+  }
+
+  .review-risk-metric-field span {
+    grid-column: 1 / -1;
+  }
 }
 
 .review-legacy-notes .journal-rich-editor-shell {
@@ -13988,8 +14087,12 @@ body {
   }
 
   .journal-header-stat-group {
-    grid-template-columns: 1fr;
     justify-self: stretch;
+  }
+
+  .journal-header-stat-row-core,
+  .journal-header-stat-row-mood {
+    grid-template-columns: 1fr;
   }
 
   .month-session-grid {
