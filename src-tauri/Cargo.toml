@@ -2,7 +2,7 @@
 name = "trade-engine"
 version = "0.1.0"
 description = "Trade Engine desktop app"
-authors = ["Owner"]
+authors = ["Trade Engine"]
 edition = "2021"
 
 [build-dependencies]

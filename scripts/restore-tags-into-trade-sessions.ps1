@@ -1,10 +1,14 @@
 param(
   [string]$SessionsPath = "$env:APPDATA\com.tradeengine.desktop\trade-sessions.json",
-  [string]$OverridesPath = ".\exports\trade-tag-overrides.recovered.json",
+  [string]$OverridesPath = "",
   [string]$BackupDirectory = ".\exports"
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $OverridesPath.Trim()) {
+  throw "Pass the recovered trade tag overrides path with -OverridesPath <path>."
+}
 
 if (-not (Test-Path -LiteralPath $SessionsPath)) {
   throw "Trade sessions file not found: $SessionsPath"

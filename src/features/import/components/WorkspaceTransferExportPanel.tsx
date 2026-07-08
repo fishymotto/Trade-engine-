@@ -211,7 +211,7 @@ export const WorkspaceTransferExportPanel = ({
             type="text"
             value={settings.exportFolder}
             onChange={(event) => update({ exportFolder: event.target.value })}
-            placeholder="C:\\Users\\Owner\\Documents\\Trade Engine\\exports"
+            placeholder="C:\\Path\\To\\Trade Engine\\exports"
           />
           <Button type="button" variant="secondary" onClick={() => void onBrowse()}>
             Browse

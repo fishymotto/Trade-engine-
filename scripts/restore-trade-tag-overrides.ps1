@@ -1,9 +1,13 @@
 param(
-  [string]$SourcePath = ".\exports\trade-tag-overrides.recovered.json",
+  [string]$SourcePath = "",
   [string]$DestinationPath = "$env:APPDATA\com.tradeengine.desktop\trade-tag-overrides.json"
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $SourcePath.Trim()) {
+  throw "Pass the recovered trade tag overrides path with -SourcePath <path>."
+}
 
 if (-not (Test-Path -LiteralPath $SourcePath)) {
   throw "Recovery file not found: $SourcePath"

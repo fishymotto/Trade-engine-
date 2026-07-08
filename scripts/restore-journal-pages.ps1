@@ -1,9 +1,13 @@
 param(
-  [string]$SourcePath = ".\exports\journal-pages.recovered-photos-20260501-143018.json",
+  [string]$SourcePath = "",
   [string]$DestinationPath = "$env:APPDATA\com.tradeengine.desktop\journal-pages.json"
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $SourcePath.Trim()) {
+  throw "Pass the recovered journal pages path with -SourcePath <path>."
+}
 
 if (-not (Test-Path -LiteralPath $SourcePath)) {
   throw "Recovered journal pages file not found: $SourcePath"
