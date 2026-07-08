@@ -17,7 +17,6 @@ import { TableKit } from "@tiptap/extension-table";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useDebouncedSave } from "../../../lib/hooks/useDebouncedSave";
 import { FLUSH_DEBOUNCED_SAVES_EVENT } from "../../../lib/sync/pendingSaveFlush";
 import {
   collectRichTextAttachmentPaths,
@@ -27,6 +26,8 @@ import {
   type InlineImageInsertResult
 } from "../../../lib/workspace/workspaceAttachmentClient";
 import type { JournalSaveState, JournalSlashCommandItem } from "../../../types/journalEditor";
+import { ACCEPTED_INLINE_IMAGE_TYPES, pickInlineImageFile } from "../lib/inlineImageFiles";
+import { createCleanPastedContent, shouldNormalizePastedText } from "../lib/richTextPaste";
 import { JournalBlockActionsMenu } from "./JournalBlockActionsMenu";
 import { JournalBubbleMenu } from "./JournalBubbleMenu";
 import { JournalSlashMenu } from "./JournalSlashMenu";
@@ -52,13 +53,7 @@ interface JournalRichTextEditorProps {
 const MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024;
 const CONTENT_SAVE_DEBOUNCE_MS = 800;
 const DRAFT_SAVE_DEBOUNCE_MS = 3000;
-const ACCEPTED_INLINE_IMAGE_TYPES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "image/gif",
-  "image/svg+xml"
-]);
+const WORD_COUNT_UPDATE_DEBOUNCE_MS = 800;
 const EDITOR_DRAFT_STORAGE_PREFIX = "trade-engine-journal-editor-draft::";
 const MAX_STORED_DRAFT_BYTES = 512 * 1024;
 
@@ -305,7 +300,14 @@ const JournalInlineImage = Image.extend({
   }
 });
 
-const createSlashCommands = (): JournalSlashCommandItem[] => [
+const createSlashCommands = (options: { onImageInsert: (editor: Editor) => void }): JournalSlashCommandItem[] => [
+  {
+    key: "image",
+    label: "Image",
+    description: "Upload an inline image",
+    keywords: ["i", "img", "photo", "picture", "screenshot", "upload", "chart"],
+    command: options.onImageInsert
+  },
   {
     key: "paragraph",
     label: "Paragraph",
@@ -555,9 +557,8 @@ export const JournalRichTextEditor = ({
       : content
   );
   const initialContent = prepareRichTextContentForEditor(initialStorageContent);
-  const [pendingContent, setPendingContent] = useState<JSONContent>(initialContent);
   const [saveState, setSaveState] = useState<JournalSaveState>("saved");
-  const [slashQuery, setSlashQuery] = useState("");
+  const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [activeSlashIndex, setActiveSlashIndex] = useState(0);
   const [lastSavedAt, setLastSavedAt] = useState<Date>(() => new Date());
   const [wordCount, setWordCount] = useState(0);
@@ -565,28 +566,53 @@ export const JournalRichTextEditor = ({
   const [imageStatusMessage, setImageStatusMessage] = useState<string | null>(null);
   const [imageStatusError, setImageStatusError] = useState(false);
 
-  const slashCommands = useMemo(() => createSlashCommands(), []);
   const filteredCommandsRef = useRef<JournalSlashCommandItem[]>([]);
   const activeSlashIndexRef = useRef(0);
   const editorRef = useRef<Editor | null>(null);
   const onChangeRef = useRef(onChange);
   const onImageOpenRef = useRef(onImageOpen);
+  const draftStorageKeyRef = useRef(draftStorageKey);
   const lastCommittedContentRef = useRef(serializeNormalizedContent(initialStorageContent));
   const latestEditorContentRef = useRef<JSONContent>(initialContent);
   const trackedAttachmentPathsRef = useRef(createAttachmentPathSet(initialStorageContent));
   const imageStatusTimeoutRef = useRef<number | null>(null);
+  const contentSaveTimeoutRef = useRef<number | null>(null);
+  const draftSaveTimeoutRef = useRef<number | null>(null);
+  const wordCountTimeoutRef = useRef<number | null>(null);
   onChangeRef.current = onChange;
   onImageOpenRef.current = onImageOpen;
+  draftStorageKeyRef.current = draftStorageKey;
 
   const updateSlashState = useCallback((editor: Editor) => {
     const query = getCurrentSlashQuery(editor);
-    setSlashQuery(query ?? "");
+    setSlashQuery(query);
   }, []);
 
   const clearImageStatusTimeout = useCallback(() => {
     if (imageStatusTimeoutRef.current !== null) {
       window.clearTimeout(imageStatusTimeoutRef.current);
       imageStatusTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearContentSaveTimeout = useCallback(() => {
+    if (contentSaveTimeoutRef.current !== null) {
+      window.clearTimeout(contentSaveTimeoutRef.current);
+      contentSaveTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearDraftSaveTimeout = useCallback(() => {
+    if (draftSaveTimeoutRef.current !== null) {
+      window.clearTimeout(draftSaveTimeoutRef.current);
+      draftSaveTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearWordCountTimeout = useCallback(() => {
+    if (wordCountTimeoutRef.current !== null) {
+      window.clearTimeout(wordCountTimeoutRef.current);
+      wordCountTimeoutRef.current = null;
     }
   }, []);
 
@@ -699,6 +725,29 @@ export const JournalRichTextEditor = ({
     [onImageInsert, readOnly, updateImageStatus]
   );
 
+  const openSlashImagePicker = useCallback(
+    (nextEditor: Editor) => {
+      if (imageUploadInProgress) {
+        return;
+      }
+
+      clearCurrentParagraph(nextEditor);
+      nextEditor.chain().focus().run();
+      pickInlineImageFile((file) => {
+        void insertImageFromFile(file);
+      });
+    },
+    [imageUploadInProgress, insertImageFromFile]
+  );
+
+  const slashCommands = useMemo(
+    () =>
+      createSlashCommands({
+        onImageInsert: openSlashImagePicker
+      }),
+    [openSlashImagePicker]
+  );
+
   const commitContent = useCallback(
     (nextContent: JSONContent, options?: { skipUiState?: boolean }) => {
       const normalizedContent = normalizeRichTextContentForStorage(nextContent);
@@ -723,22 +772,65 @@ export const JournalRichTextEditor = ({
     [syncTrackedAttachmentPaths]
   );
 
+  const scheduleContentCommit = useCallback(() => {
+    clearContentSaveTimeout();
+    contentSaveTimeoutRef.current = window.setTimeout(() => {
+      contentSaveTimeoutRef.current = null;
+      commitContent(latestEditorContentRef.current);
+    }, CONTENT_SAVE_DEBOUNCE_MS);
+  }, [clearContentSaveTimeout, commitContent]);
+
+  const scheduleDraftSave = useCallback(() => {
+    const storageKey = draftStorageKeyRef.current;
+    if (!storageKey) {
+      return;
+    }
+
+    clearDraftSaveTimeout();
+    draftSaveTimeoutRef.current = window.setTimeout(() => {
+      draftSaveTimeoutRef.current = null;
+
+      saveStoredDraft(
+        storageKey,
+        normalizeRichTextContentForStorage(latestEditorContentRef.current),
+        new Date().toISOString()
+      );
+    }, DRAFT_SAVE_DEBOUNCE_MS);
+  }, [clearDraftSaveTimeout]);
+
+  const scheduleWordCountUpdate = useCallback(
+    (nextEditor: Editor) => {
+      clearWordCountTimeout();
+      wordCountTimeoutRef.current = window.setTimeout(() => {
+        wordCountTimeoutRef.current = null;
+        setWordCount(countWords(nextEditor.getText()));
+      }, WORD_COUNT_UPDATE_DEBOUNCE_MS);
+    },
+    [clearWordCountTimeout]
+  );
+
   const flushEditorContent = useCallback(
     (options?: { persistDraft?: boolean; skipUiState?: boolean }) => {
-      const nextContent = editorRef.current?.getJSON() ?? latestEditorContentRef.current;
+      clearContentSaveTimeout();
+      clearDraftSaveTimeout();
+      clearWordCountTimeout();
+
+      const currentEditor = editorRef.current;
+      const nextContent = currentEditor?.getJSON() ?? latestEditorContentRef.current;
       latestEditorContentRef.current = nextContent;
 
-      if (!options?.skipUiState) {
-        setPendingContent(nextContent);
+      if (!options?.skipUiState && currentEditor) {
+        setWordCount(countWords(currentEditor.getText()));
       }
 
-      if (options?.persistDraft !== false && draftStorageKey) {
-        saveStoredDraft(draftStorageKey, normalizeRichTextContentForStorage(nextContent), new Date().toISOString());
+      const storageKey = draftStorageKeyRef.current;
+      if (options?.persistDraft !== false && storageKey) {
+        saveStoredDraft(storageKey, normalizeRichTextContentForStorage(nextContent), new Date().toISOString());
       }
 
       commitContent(nextContent, { skipUiState: options?.skipUiState });
     },
-    [commitContent, draftStorageKey]
+    [clearContentSaveTimeout, clearDraftSaveTimeout, clearWordCountTimeout, commitContent]
   );
 
   const saveNow = useCallback(() => {
@@ -863,7 +955,7 @@ export const JournalRichTextEditor = ({
         const availableCommands = filteredCommandsRef.current;
         if (availableCommands.length === 0) {
           if (event.key === "Escape") {
-            setSlashQuery("");
+            setSlashQuery(null);
             return true;
           }
           return false;
@@ -893,7 +985,7 @@ export const JournalRichTextEditor = ({
           event.preventDefault();
           const selectedCommand = availableCommands[activeSlashIndexRef.current] ?? availableCommands[0];
           selectedCommand?.command(currentEditor);
-          setSlashQuery("");
+          setSlashQuery(null);
           setActiveSlashIndex(0);
           activeSlashIndexRef.current = 0;
           setSaveState("saving");
@@ -902,7 +994,7 @@ export const JournalRichTextEditor = ({
 
         if (event.key === "Escape") {
           event.preventDefault();
-          setSlashQuery("");
+          setSlashQuery(null);
           setActiveSlashIndex(0);
           activeSlashIndexRef.current = 0;
           return true;
@@ -917,12 +1009,26 @@ export const JournalRichTextEditor = ({
 
         const files = Array.from(event.clipboardData?.files ?? []);
         const imageFile = files.find((file) => ACCEPTED_INLINE_IMAGE_TYPES.has(file.type));
-        if (!imageFile) {
+        if (imageFile) {
+          event.preventDefault();
+          void insertImageFromFile(imageFile);
+          return true;
+        }
+
+        const plainText = event.clipboardData?.getData("text/plain") ?? "";
+        const html = event.clipboardData?.getData("text/html") ?? "";
+        if (!shouldNormalizePastedText(plainText, html)) {
+          return false;
+        }
+
+        const currentEditor = editorRef.current;
+        if (!currentEditor) {
           return false;
         }
 
         event.preventDefault();
-        void insertImageFromFile(imageFile);
+        currentEditor.chain().focus().insertContent(createCleanPastedContent(plainText)).run();
+        setSaveState("saving");
         return true;
       },
       handleDrop: (view, event) => {
@@ -954,15 +1060,10 @@ export const JournalRichTextEditor = ({
     onUpdate: ({ editor: nextEditor }) => {
       const nextContent = nextEditor.getJSON();
       latestEditorContentRef.current = nextContent;
-      const nextSerialized = serializeNormalizedContent(nextContent);
-      if (nextSerialized === lastCommittedContentRef.current) {
-        syncTrackedAttachmentPaths(nextContent, { deleteRemoved: true });
-        setSaveState("saved");
-      } else {
-        setPendingContent(nextContent);
-        setSaveState("saving");
-      }
-      setWordCount(countWords(nextEditor.getText()));
+      setSaveState((current) => (current === "saving" ? current : "saving"));
+      scheduleContentCommit();
+      scheduleDraftSave();
+      scheduleWordCountUpdate(nextEditor);
       updateSlashState(nextEditor);
     },
     onBlur: () => {
@@ -973,31 +1074,8 @@ export const JournalRichTextEditor = ({
     }
   });
 
-  useDebouncedSave(
-    pendingContent,
-    CONTENT_SAVE_DEBOUNCE_MS,
-    (nextContent) => {
-      commitContent(nextContent);
-    },
-    saveState === "saving"
-  );
-
-  useDebouncedSave(
-    pendingContent,
-    DRAFT_SAVE_DEBOUNCE_MS,
-    (nextContent) => {
-      if (!draftStorageKey) {
-        return;
-      }
-
-      saveStoredDraft(draftStorageKey, normalizeRichTextContentForStorage(nextContent), new Date().toISOString());
-    },
-    Boolean(draftStorageKey),
-    { skipInitialSave: true }
-  );
-
   const filteredSlashCommands = useMemo(() => {
-    const normalized = slashQuery.trim().toLowerCase();
+    const normalized = (slashQuery ?? "").trim().toLowerCase();
     return slashCommands.filter((item) => {
       if (!normalized) {
         return true;
@@ -1060,13 +1138,14 @@ export const JournalRichTextEditor = ({
 
     return () => {
       flushOnLifecycleEvent();
+      clearWordCountTimeout();
       window.removeEventListener(FLUSH_DEBOUNCED_SAVES_EVENT, flushOnLifecycleEvent);
       window.removeEventListener("beforeunload", flushOnLifecycleEvent);
       window.removeEventListener("pagehide", flushOnLifecycleEvent);
       window.removeEventListener("blur", flushOnLifecycleEvent);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [flushEditorContent, readOnly]);
+  }, [clearWordCountTimeout, flushEditorContent, readOnly]);
 
   useEffect(() => {
     const storedDraft = loadStoredDraft(draftStorageKey);
@@ -1088,9 +1167,11 @@ export const JournalRichTextEditor = ({
 
     if (!editor) {
       latestEditorContentRef.current = nextContent;
-      setPendingContent(nextContent);
       lastCommittedContentRef.current = nextSerialized;
       trackedAttachmentPathsRef.current = nextAttachmentPaths;
+      clearContentSaveTimeout();
+      clearDraftSaveTimeout();
+      clearWordCountTimeout();
       return;
     }
 
@@ -1121,12 +1202,22 @@ export const JournalRichTextEditor = ({
 
     editor.commands.setContent(nextContent, { emitUpdate: false });
     latestEditorContentRef.current = nextContent;
-    setPendingContent(nextContent);
     lastCommittedContentRef.current = nextSerialized;
     trackedAttachmentPathsRef.current = nextAttachmentPaths;
+    clearContentSaveTimeout();
+    clearDraftSaveTimeout();
+    clearWordCountTimeout();
     setWordCount(countWords(editor.getText()));
     setSaveState("saved");
-  }, [content, draftStorageKey, editor, sourceUpdatedAt]);
+  }, [
+    clearContentSaveTimeout,
+    clearDraftSaveTimeout,
+    clearWordCountTimeout,
+    content,
+    draftStorageKey,
+    editor,
+    sourceUpdatedAt
+  ]);
 
   const formattedSavedTime = useMemo(
     () =>
@@ -1182,7 +1273,7 @@ export const JournalRichTextEditor = ({
             onImageOpen ? " journal-rich-editor-image-openable" : ""
           }`}
         />
-        {!readOnly && slashQuery !== null && slashQuery !== undefined && getCurrentSlashQuery(editor) !== null ? (
+        {!readOnly && slashQuery !== null ? (
           <JournalSlashMenu
             items={filteredSlashCommands}
             query={slashQuery}
@@ -1194,7 +1285,7 @@ export const JournalRichTextEditor = ({
             }}
             onSelect={(item) => {
               item.command(editor);
-              setSlashQuery("");
+              setSlashQuery(null);
               setActiveSlashIndex(0);
               activeSlashIndexRef.current = 0;
               setSaveState("saving");

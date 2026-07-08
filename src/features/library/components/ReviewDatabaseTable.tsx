@@ -91,6 +91,7 @@ export const ReviewDatabaseTable = ({
             <th>Risk</th>
             <th>Psych</th>
             <th>Plans</th>
+            <th>Exec</th>
             <th>Red</th>
             <th>Green</th>
           </tr>
@@ -128,6 +129,7 @@ export const ReviewDatabaseTable = ({
                   <td>{renderScorePill(page.properties?.[REVIEW_PROPERTY_KEYS.risk])}</td>
                   <td>{renderScorePill(page.properties?.[REVIEW_PROPERTY_KEYS.psychology])}</td>
                   <td>{renderScorePill(page.properties?.[REVIEW_PROPERTY_KEYS.tradingPlans])}</td>
+                  <td>{renderScorePill(page.properties?.[REVIEW_PROPERTY_KEYS.execution])}</td>
                   <td>{renderStringValue(page.properties?.[REVIEW_PROPERTY_KEYS.redDays])}</td>
                   <td>{renderStringValue(page.properties?.[REVIEW_PROPERTY_KEYS.greenDays])}</td>
                 </tr>
@@ -135,7 +137,7 @@ export const ReviewDatabaseTable = ({
             })
           ) : (
             <tr>
-              <td colSpan={17}>No entries yet. Create your first {periodLabel.toLowerCase()}ly review.</td>
+              <td colSpan={18}>No entries yet. Create your first {periodLabel.toLowerCase()}ly review.</td>
             </tr>
           )}
         </tbody>

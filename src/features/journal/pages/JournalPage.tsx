@@ -24,6 +24,16 @@ import {
   type InlineImageInsertResult
 } from "../../../lib/workspace/workspaceAttachmentClient";
 import { getTickerIcon as getTickerIconSrc, getTickerSector } from "../../../lib/tickers/tickerIcons";
+import {
+  ensureWeeklyImprovementGoalsPage,
+  findWeeklyImprovementGoalsPageForDate,
+  formatWeeklyImprovementGoalsRange,
+  getWeeklyImprovementGoalsPageRange,
+  getWeeklyImprovementGoalsWeekRange,
+  LIBRARY_PAGES_UPDATED_EVENT,
+  loadLibraryPages,
+  saveLibraryPages
+} from "../../../lib/library/libraryStore";
 import { useEditableSelectOptions } from "../../../lib/select/useEditableSelectOptions";
 import { tradeTagOptionsByField as defaultTradeTagOptionsByField } from "../../../lib/trades/tradeTagCatalog";
 import { getJournalWeekStartDate } from "../lib/journalPageActions";
@@ -34,6 +44,7 @@ import type {
   JournalScreenshotTradeLink
 } from "../../../types/journal";
 import type { Settings } from "../../../types/trade";
+import type { LibraryPageRecord } from "../../../types/library";
 import type { EditableTradeRow, EditableTradeTagField } from "../../../types/tradeTags";
 import { HeadlinesBar } from "../../headlines/components/HeadlinesBar";
 import { JournalTradeNotesPanel } from "../components/JournalTradeNotesPanel";
@@ -671,11 +682,29 @@ export const JournalPage = ({
   const [tempDate, setTempDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [expandedMonths, setExpandedMonths] = useState<Set<string>>(() => new Set());
   const [isWeeklyEarningsDragActive, setIsWeeklyEarningsDragActive] = useState(false);
+  const [libraryPages, setLibraryPages] = useState<LibraryPageRecord[]>(() => loadLibraryPages());
   const lastExternalSyncRef = useRef("");
   const expandedMonthsInitializedRef = useRef(false);
   const draftTradeDateInputRef = useRef<HTMLInputElement | null>(null);
   const screenshotInputRef = useRef<HTMLInputElement | null>(null);
   const weeklyEarningsInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const initialPages = loadLibraryPages();
+    const ensured = ensureWeeklyImprovementGoalsPage(initialPages);
+    setLibraryPages(ensured.pages);
+    if (ensured.created) {
+      void saveLibraryPages(ensured.pages);
+    }
+
+    const handleLibraryPagesUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ pages?: LibraryPageRecord[] }>).detail;
+      setLibraryPages(Array.isArray(detail?.pages) ? detail.pages : loadLibraryPages());
+    };
+
+    window.addEventListener(LIBRARY_PAGES_UPDATED_EVENT, handleLibraryPagesUpdated);
+    return () => window.removeEventListener(LIBRARY_PAGES_UPDATED_EVENT, handleLibraryPagesUpdated);
+  }, []);
 
   const createJournalInlineImageInsertHandler = (pageId: string, fieldKey: string) => async (file: File) =>
     saveWorkspaceInlineImage({
@@ -888,6 +917,24 @@ export const JournalPage = ({
   const selectedWeekRangeLabel = useMemo(
     () => (selectedPage ? formatJournalWeekRange(selectedPage.tradeDate) : ""),
     [selectedPage]
+  );
+  const weeklyImprovementGoalsPage = useMemo(
+    () =>
+      selectedPage
+        ? findWeeklyImprovementGoalsPageForDate(libraryPages, selectedPage.tradeDate)
+        : null,
+    [libraryPages, selectedPage]
+  );
+  const weeklyImprovementGoalsRange = useMemo(() => {
+    if (weeklyImprovementGoalsPage) {
+      return getWeeklyImprovementGoalsPageRange(weeklyImprovementGoalsPage);
+    }
+
+    return selectedPage ? getWeeklyImprovementGoalsWeekRange(selectedPage.tradeDate) : null;
+  }, [selectedPage, weeklyImprovementGoalsPage]);
+  const weeklyImprovementGoalsHasContent = useMemo(
+    () => Boolean(weeklyImprovementGoalsPage && hasJournalDocContent(weeklyImprovementGoalsPage.content)),
+    [weeklyImprovementGoalsPage]
   );
   const weeklyEarningsHasContent = useMemo(
     () => Boolean(selectedPage && hasJournalDocContent(selectedPage.weeklyEarningsContent)),
@@ -2106,8 +2153,8 @@ export const JournalPage = ({
                 </div>
               </section>
 
-                <section className="journal-writing-split-grid">
-                  <section className="journal-writing-section">
+              <section className="journal-writing-split-grid journal-checklist-grid">
+                <section className="journal-writing-section journal-checklist-section journal-checklist-section-primary">
                   <div className="journal-writing-header">
                     <div className="journal-writing-header-title">
                       <WorkspaceIcon icon="journal-checklist" alt="Morning checklist icon" className="mini-action-icon" />
@@ -2206,50 +2253,22 @@ export const JournalPage = ({
                       </details>
                     </div>
                   </div>
-                    <JournalRichTextEditor
-                      key={`${selectedPage.id}-morning-checklist`}
-                      content={selectedPage.morningChecklistContent}
-                      onChange={(content) => onUpdateContent(selectedPage.id, "morningChecklistContent", content)}
-                      onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "morningChecklistContent")}
-                      draftStorageKey={`${selectedPage.id}:morningChecklistContent`}
-                      sourceUpdatedAt={selectedPage.updatedAt}
-                      placeholder="Type '/' for commands"
-                      appearance="notion"
-                      compact
-                      autosize
-                    />
-                  </section>
-
-                  <section className="journal-writing-section">
-                    <div className="journal-writing-header">
-                      <div className="journal-writing-header-title">
-                        <WorkspaceIcon icon="journal-notebook" alt="Morning journal icon" className="mini-action-icon" />
-                        <strong>Morning Journal</strong>
-                      </div>
-                    </div>
-                    <JournalRichTextEditor
-                      key={`${selectedPage.id}-morning`}
-                      content={selectedPage.morningContent}
-                      onChange={(content) => onUpdateContent(selectedPage.id, "morningContent", content)}
-                      onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "morningContent")}
-                      draftStorageKey={`${selectedPage.id}:morningContent`}
-                      sourceUpdatedAt={selectedPage.updatedAt}
-                      placeholder=""
-                      appearance="notion"
-                      compact
-                      autosize
-                    />
+                  <JournalRichTextEditor
+                    key={`${selectedPage.id}-morning-checklist`}
+                    content={selectedPage.morningChecklistContent}
+                    onChange={(content) => onUpdateContent(selectedPage.id, "morningChecklistContent", content)}
+                    onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "morningChecklistContent")}
+                    draftStorageKey={`${selectedPage.id}:morningChecklistContent`}
+                    sourceUpdatedAt={selectedPage.updatedAt}
+                    placeholder="Type '/' for commands"
+                    appearance="notion"
+                    compact
+                    autosize
+                  />
                 </section>
-              </section>
 
-              <HeadlinesBar
-                key={`headlines-${selectedPage.tradeDate}`}
-                className="journal-headlines-bar"
-                journalDate={selectedPage.tradeDate}
-              />
-
-                <section className="journal-writing-split-grid">
-                  <section className="journal-writing-section">
+                <div className="journal-checklist-side-stack">
+                  <section className="journal-writing-section journal-checklist-section journal-checklist-section-compact">
                   <div className="journal-writing-header">
                     <div className="journal-writing-header-title">
                       <WorkspaceIcon icon="journal-checklist" alt="Closing checklist icon" className="mini-action-icon" />
@@ -2348,40 +2367,103 @@ export const JournalPage = ({
                       </details>
                     </div>
                   </div>
-                    <JournalRichTextEditor
-                      key={`${selectedPage.id}-closing-checklist`}
-                      content={selectedPage.closingChecklistContent}
-                      onChange={(content) => onUpdateContent(selectedPage.id, "closingChecklistContent", content)}
-                      onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "closingChecklistContent")}
-                      draftStorageKey={`${selectedPage.id}:closingChecklistContent`}
-                      sourceUpdatedAt={selectedPage.updatedAt}
-                      placeholder="Type '/' for commands"
-                      appearance="notion"
-                      compact
-                      autosize
-                    />
+                  <JournalRichTextEditor
+                    key={`${selectedPage.id}-closing-checklist`}
+                    content={selectedPage.closingChecklistContent}
+                    onChange={(content) => onUpdateContent(selectedPage.id, "closingChecklistContent", content)}
+                    onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "closingChecklistContent")}
+                    draftStorageKey={`${selectedPage.id}:closingChecklistContent`}
+                    sourceUpdatedAt={selectedPage.updatedAt}
+                    placeholder="Type '/' for commands"
+                    appearance="notion"
+                    heightPreset="short"
+                    compact
+                    autosize
+                  />
                   </section>
 
-                  <section className="journal-writing-section">
+                  <section className="journal-writing-section journal-weekly-improvement-goals-card">
                     <div className="journal-writing-header">
-                      <div className="journal-writing-header-title">
-                        <WorkspaceIcon icon="journal-notebook" alt="Closing journal icon" className="mini-action-icon" />
-                        <strong>Closing Journal</strong>
+                      <div className="journal-writing-header-title journal-weekly-improvement-goals-title">
+                        <WorkspaceIcon icon="plan" alt="Weekly improvement goals icon" className="mini-action-icon" />
+                        <div>
+                          <strong>Weekly Improvement Goals</strong>
+                          <span>
+                            {weeklyImprovementGoalsRange
+                              ? formatWeeklyImprovementGoalsRange(
+                                  weeklyImprovementGoalsRange.start,
+                                  weeklyImprovementGoalsRange.end
+                                )
+                              : "No week selected"}
+                          </span>
+                        </div>
                       </div>
+                      <span className="journal-weekly-improvement-goals-source">Library managed</span>
                     </div>
-                    <JournalRichTextEditor
-                      key={`${selectedPage.id}-closing`}
-                      content={selectedPage.closingContent}
-                      onChange={(content) => onUpdateContent(selectedPage.id, "closingContent", content)}
-                      onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "closingContent")}
-                      draftStorageKey={`${selectedPage.id}:closingContent`}
-                      sourceUpdatedAt={selectedPage.updatedAt}
-                      placeholder="Type '/' for commands"
-                      appearance="notion"
-                      compact
-                      autosize
-                    />
-                </section>
+
+                    {weeklyImprovementGoalsPage && weeklyImprovementGoalsHasContent ? (
+                      <JournalRichTextEditor
+                        key={`${weeklyImprovementGoalsPage.id}-journal-card`}
+                        content={weeklyImprovementGoalsPage.content}
+                        onChange={() => undefined}
+                        readOnly
+                        appearance="notion"
+                        compact
+                        showBlockActions={false}
+                      />
+                    ) : (
+                      <div className="journal-weekly-improvement-goals-empty">
+                        No goals saved for this week. Add them in Library &gt; Weekly Improvement Goals.
+                      </div>
+                    )}
+                  </section>
+                </div>
+              </section>
+
+              <section className="journal-writing-section">
+                <div className="journal-writing-header">
+                  <div className="journal-writing-header-title">
+                    <WorkspaceIcon icon="journal-notebook" alt="Morning journal icon" className="mini-action-icon" />
+                    <strong>Morning Journal</strong>
+                  </div>
+                </div>
+                <JournalRichTextEditor
+                  key={`${selectedPage.id}-morning`}
+                  content={selectedPage.morningContent}
+                  onChange={(content) => onUpdateContent(selectedPage.id, "morningContent", content)}
+                  onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "morningContent")}
+                  draftStorageKey={`${selectedPage.id}:morningContent`}
+                  sourceUpdatedAt={selectedPage.updatedAt}
+                  placeholder=""
+                  appearance="notion"
+                  autosize
+                />
+              </section>
+
+              <HeadlinesBar
+                key={`headlines-${selectedPage.tradeDate}`}
+                className="journal-headlines-bar"
+                journalDate={selectedPage.tradeDate}
+              />
+
+              <section className="journal-writing-section">
+                <div className="journal-writing-header">
+                  <div className="journal-writing-header-title">
+                    <WorkspaceIcon icon="journal-notebook" alt="Closing journal icon" className="mini-action-icon" />
+                    <strong>Closing Journal</strong>
+                  </div>
+                </div>
+                <JournalRichTextEditor
+                  key={`${selectedPage.id}-closing`}
+                  content={selectedPage.closingContent}
+                  onChange={(content) => onUpdateContent(selectedPage.id, "closingContent", content)}
+                  onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "closingContent")}
+                  draftStorageKey={`${selectedPage.id}:closingContent`}
+                  sourceUpdatedAt={selectedPage.updatedAt}
+                  placeholder="Type '/' for commands"
+                  appearance="notion"
+                  autosize
+                />
               </section>
 
               <section className="journal-writing-split-grid">
@@ -2562,48 +2644,6 @@ export const JournalPage = ({
                       <em>Add Screenshot</em>
                     </div>
                   )}
-                </section>
-              </section>
-
-              <section className="journal-writing-split-grid">
-                <section className="journal-writing-section">
-                  <div className="journal-writing-header">
-                    <div className="journal-writing-header-title">
-                      <WorkspaceIcon icon="journal-notebook" alt="Trader reach outs icon" className="mini-action-icon" />
-                      <strong>Trader Reach Outs</strong>
-                    </div>
-                  </div>
-                  <JournalRichTextEditor
-                    key={`${selectedPage.id}-trader-reach-outs`}
-                    content={selectedPage.traderReachOutsContent}
-                    onChange={(content) => onUpdateContent(selectedPage.id, "traderReachOutsContent", content)}
-                    onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "traderReachOutsContent")}
-                    draftStorageKey={`${selectedPage.id}:traderReachOutsContent`}
-                    sourceUpdatedAt={selectedPage.updatedAt}
-                    placeholder="Type '/' for commands"
-                    appearance="notion"
-                    autosize
-                  />
-                </section>
-
-                <section className="journal-writing-section">
-                  <div className="journal-writing-header">
-                    <div className="journal-writing-header-title">
-                      <WorkspaceIcon icon="journal-notebook" alt="Day notes icon" className="mini-action-icon" />
-                      <strong>Day Notes</strong>
-                    </div>
-                  </div>
-                  <JournalRichTextEditor
-                    key={`${selectedPage.id}-day-notes`}
-                    content={selectedPage.notesContent}
-                    onChange={(content) => onUpdateContent(selectedPage.id, "notesContent", content)}
-                    onImageInsert={createJournalInlineImageInsertHandler(selectedPage.id, "notesContent")}
-                    draftStorageKey={`${selectedPage.id}:notesContent`}
-                    sourceUpdatedAt={selectedPage.updatedAt}
-                    placeholder="Type '/' for commands"
-                    appearance="notion"
-                    autosize
-                  />
                 </section>
               </section>
 

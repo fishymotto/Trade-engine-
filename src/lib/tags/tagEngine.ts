@@ -1,4 +1,5 @@
 import type { GameTag, GroupedTrade } from "../../types/trade";
+import { isSecondTargetMissed, SECOND_TARGET_MISSED_TAG } from "./secondTargetMissed";
 
 const roundToPriceBucket = (value: number): number => Math.round(value / 0.03) * 0.03;
 
@@ -84,6 +85,10 @@ export const applyTradeTags = (trades: GroupedTrade[]): GroupedTrade[] => {
 
     if (trade.returnPerShare < -0.06 || trade.netPnlUsd < -15) {
       mistakes.push("Too Much Risk");
+    }
+
+    if (isSecondTargetMissed(trade)) {
+      mistakes.push(SECOND_TARGET_MISSED_TAG);
     }
 
     if (trade.symbol === "CVE" && trade.openTime >= "09:30:00" && trade.openTime <= "09:34:59") {

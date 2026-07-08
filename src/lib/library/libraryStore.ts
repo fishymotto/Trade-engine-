@@ -13,6 +13,12 @@ import { writeLocalStorageItem } from "../storage/localStorage";
 
 const SEED_VERSION_KEY = "trade-engine-library-seed-version";
 const CURRENT_SEED_VERSION = "notion-book-club-v7";
+export const LIBRARY_PAGES_UPDATED_EVENT = "trade-engine-library-pages-updated";
+export const WEEKLY_IMPROVEMENT_GOALS_COLLECTION_ID = "weekly-improvement-goals" as const;
+export const WEEKLY_IMPROVEMENT_GOALS_PROPERTY_KEYS = {
+  weekStart: "Week Start",
+  weekEnd: "Week End"
+} as const;
 
 const persistLibrarySeedVersion = (): void => {
   writeLocalStorageItem(SEED_VERSION_KEY, CURRENT_SEED_VERSION, {
@@ -45,6 +51,12 @@ export const libraryCollections: LibraryCollectionDefinition[] = [
     name: "Quotes",
     description: "Short lines you want to remember, revisit, and reuse.",
     accent: "Quotes"
+  },
+  {
+    id: WEEKLY_IMPROVEMENT_GOALS_COLLECTION_ID,
+    name: "Weekly Improvement Goals",
+    description: "Set the improvement goals shown beneath the Closing Checklist for each trading week.",
+    accent: "Weekly Goals"
   },
   {
     id: "weekly-review",
@@ -920,6 +932,7 @@ const createReviewTemplateProperties = (): NonNullable<LibraryPageRecord["proper
   "Risk Management": "",
   Psychology: "",
   "Trading Plans": "",
+  Execution: "",
   "Red Days": "",
   "Green Days": "",
   __review_reflection_v1: defaultReviewReflectionState()
@@ -1288,11 +1301,164 @@ export const saveLibraryPages = async (pages: LibraryPageRecord[]): Promise<void
   await syncPromise;
 
   if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("trade-engine-library-pages-updated", { detail: { pages: sorted } }));
+    window.dispatchEvent(new CustomEvent(LIBRARY_PAGES_UPDATED_EVENT, { detail: { pages: sorted } }));
   }
 };
 
+const parseWeeklyGoalsAnchorDate = (value: string | Date): Date => {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? new Date() : new Date(value);
+  }
+
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? new Date(`${value}T00:00:00`)
+    : new Date(value);
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+};
+
+export const getWeeklyImprovementGoalsWeekRange = (
+  anchorDate: string | Date = new Date()
+): { start: string; end: string } => {
+  const startDate = parseWeeklyGoalsAnchorDate(anchorDate);
+  const day = startDate.getDay();
+  const mondayOffset = day === 0 ? -6 : 1 - day;
+  startDate.setDate(startDate.getDate() + mondayOffset);
+  startDate.setHours(0, 0, 0, 0);
+
+  const endDate = new Date(startDate);
+  endDate.setDate(endDate.getDate() + 4);
+
+  return {
+    start: getLocalDateOnlyIsoString(startDate),
+    end: getLocalDateOnlyIsoString(endDate)
+  };
+};
+
+export const getWeeklyImprovementGoalsPageRange = (
+  page: LibraryPageRecord
+): { start: string; end: string } | null => {
+  const start = page.properties?.[WEEKLY_IMPROVEMENT_GOALS_PROPERTY_KEYS.weekStart];
+  const end = page.properties?.[WEEKLY_IMPROVEMENT_GOALS_PROPERTY_KEYS.weekEnd];
+  if (
+    typeof start !== "string" ||
+    typeof end !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(start) ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(end)
+  ) {
+    return null;
+  }
+
+  return { start, end };
+};
+
+export const formatWeeklyImprovementGoalsRange = (start: string, end: string): string => {
+  const startDate = parseWeeklyGoalsAnchorDate(start);
+  const endDate = parseWeeklyGoalsAnchorDate(end);
+  const startLabel = startDate.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  });
+  const endLabel = endDate.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric"
+  });
+  return `${startLabel} - ${endLabel}`;
+};
+
+const createDefaultWeeklyImprovementGoalsContent = (): JSONContent =>
+  doc([
+    heading(3, "Respect morning risk"),
+    bulletList(["Once the morning allocation is used, stop pushing."]),
+    heading(3, "No second attempts"),
+    bulletList(["Once the setup fails, it is finished unless a completely new structure develops."]),
+    heading(3, "Use self-talk before entering"),
+    bulletList(["Level.", "Confirmation.", "Invalidation.", "Stop.", "Targets.", "Shot clock."]),
+    heading(3, "Get tighter to the level"),
+    bulletList([
+      "Improve the entry or pass on the trade.",
+      "Stop relying on FREX; use passive orders when it makes sense to get into position",
+      "Key speed"
+    ]),
+    heading(3, "Continue testing 75/25"),
+    bulletList([
+      "Track first-target and second-target hit rates.",
+      "Measure whether the final 25% adds value."
+    ])
+  ]);
+
+const cloneLibraryContent = (content: JSONContent): JSONContent =>
+  JSON.parse(JSON.stringify(content)) as JSONContent;
+
+export const createWeeklyImprovementGoalsPage = (
+  anchorDate: string | Date = new Date(),
+  carriedContent?: JSONContent
+): LibraryPageRecord => {
+  const range = getWeeklyImprovementGoalsWeekRange(anchorDate);
+  const base = createStarterPage(
+    WEEKLY_IMPROVEMENT_GOALS_COLLECTION_ID,
+    `Weekly Improvement Goals - ${formatWeeklyImprovementGoalsRange(range.start, range.end)}`,
+    ["weekly-improvement-goals"]
+  );
+
+  return {
+    ...base,
+    id: `${WEEKLY_IMPROVEMENT_GOALS_COLLECTION_ID}-${range.start}`,
+    properties: {
+      [WEEKLY_IMPROVEMENT_GOALS_PROPERTY_KEYS.weekStart]: range.start,
+      [WEEKLY_IMPROVEMENT_GOALS_PROPERTY_KEYS.weekEnd]: range.end
+    },
+    content: carriedContent
+      ? cloneLibraryContent(carriedContent)
+      : createDefaultWeeklyImprovementGoalsContent()
+  };
+};
+
+export const findWeeklyImprovementGoalsPageForDate = (
+  pages: LibraryPageRecord[],
+  anchorDate: string | Date
+): LibraryPageRecord | null => {
+  const targetRange = getWeeklyImprovementGoalsWeekRange(anchorDate);
+  return (
+    pages
+      .filter((page) => page.collectionId === WEEKLY_IMPROVEMENT_GOALS_COLLECTION_ID)
+      .filter((page) => getWeeklyImprovementGoalsPageRange(page)?.start === targetRange.start)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null
+  );
+};
+
+export const ensureWeeklyImprovementGoalsPage = (
+  pages: LibraryPageRecord[],
+  anchorDate: string | Date = new Date()
+): { pages: LibraryPageRecord[]; page: LibraryPageRecord; created: boolean } => {
+  const existing = findWeeklyImprovementGoalsPageForDate(pages, anchorDate);
+  if (existing) {
+    return { pages, page: existing, created: false };
+  }
+
+  const targetRange = getWeeklyImprovementGoalsWeekRange(anchorDate);
+  const previousPage = pages
+    .filter((page) => page.collectionId === WEEKLY_IMPROVEMENT_GOALS_COLLECTION_ID)
+    .map((page) => ({ page, range: getWeeklyImprovementGoalsPageRange(page) }))
+    .filter(
+      (entry): entry is { page: LibraryPageRecord; range: { start: string; end: string } } =>
+        Boolean(entry.range && entry.range.start < targetRange.start)
+    )
+    .sort((left, right) => right.range.start.localeCompare(left.range.start))[0]?.page;
+  const page = createWeeklyImprovementGoalsPage(anchorDate, previousPage?.content);
+
+  return {
+    pages: [page, ...pages],
+    page,
+    created: true
+  };
+};
+
 export const createLibraryPage = (collectionId: LibraryCollectionId): LibraryPageRecord => {
+  if (collectionId === WEEKLY_IMPROVEMENT_GOALS_COLLECTION_ID) {
+    return createWeeklyImprovementGoalsPage();
+  }
+
   if (collectionId === "strong-views") {
     return createLibraryStrongViewRow();
   }
@@ -1366,6 +1532,7 @@ export const createLibraryPage = (collectionId: LibraryCollectionId): LibraryPag
         "Risk Management": "",
         Psychology: "",
         "Trading Plans": "",
+        Execution: "",
         "Red Days": "",
         "Green Days": "",
         __review_reflection_v1: defaultReviewReflectionState()

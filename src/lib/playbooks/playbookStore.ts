@@ -1,7 +1,12 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { JSONContent } from "@tiptap/core";
 import { createEmptyJournalDoc, hasJournalDocContent } from "../journal/journalContent";
-import type { PlaybookExampleRating, PlaybookRecord, PlaybookStatus } from "../../types/playbook";
+import type {
+  PlaybookExampleRating,
+  PlaybookExampleTradeSnapshot,
+  PlaybookRecord,
+  PlaybookStatus
+} from "../../types/playbook";
 import { canUseMachineLegacyData, syncStores } from "../sync/syncStore";
 
 const DEFAULT_PLAYBOOK_ID = "wide-spread-open-drive";
@@ -88,6 +93,57 @@ const isPlaybookRecord = (value: unknown): value is PlaybookRecord =>
 
 const isExampleRating = (value: unknown): value is PlaybookExampleRating =>
   value === "A+" || value === "A" || value === "B+";
+
+const toSafeText = (value: unknown): string => (typeof value === "string" ? value : "");
+const toSafeNumber = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+const toSafeArray = <T,>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
+
+const normalizeSnapshotSetups = (value: unknown): string[] =>
+  toSafeArray<string>(value)
+    .map((entry) => toSafeText(entry).trim())
+    .filter((entry) => entry.length > 0);
+
+const normalizePlaybookExampleTradeSnapshot = (value: unknown): PlaybookExampleTradeSnapshot | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const snapshot: PlaybookExampleTradeSnapshot = {
+    name: toSafeText(record.name),
+    tradeDate: toSafeText(record.tradeDate),
+    symbol: toSafeText(record.symbol),
+    side: toSafeText(record.side),
+    status: toSafeText(record.status),
+    game: toSafeText(record.game),
+    setup: toSafeText(record.setup),
+    setups: normalizeSnapshotSetups(record.setups),
+    openTime: toSafeText(record.openTime),
+    closeTime: toSafeText(record.closeTime),
+    holdTime: toSafeText(record.holdTime),
+    holdSeconds: toSafeNumber(record.holdSeconds),
+    size: toSafeNumber(record.size),
+    entryPrice: toSafeNumber(record.entryPrice),
+    exitPrice: toSafeNumber(record.exitPrice),
+    netPnlUsd: toSafeNumber(record.netPnlUsd),
+    returnPerShare: toSafeNumber(record.returnPerShare),
+    feesUsd: toSafeNumber(record.feesUsd),
+    executionCount: toSafeNumber(record.executionCount),
+    addCount: toSafeNumber(record.addCount),
+    averagedDownCount: toSafeNumber(record.averagedDownCount),
+    addedToWinnerCount: toSafeNumber(record.addedToWinnerCount)
+  };
+
+  if (!snapshot.name && !snapshot.symbol && !snapshot.tradeDate) {
+    return null;
+  }
+
+  if (!snapshot.setup && snapshot.setups.length > 0) {
+    snapshot.setup = snapshot.setups[0];
+  }
+
+  return snapshot;
+};
 
 const isPlaybookStatus = (value: unknown): value is PlaybookStatus =>
   typeof value === "string" && PLAYBOOK_STATUS_VALUES.includes(value as PlaybookStatus);
@@ -1028,6 +1084,7 @@ const normalizePlaybooksValue = (value: unknown): PlaybookRecord[] => {
                 tradeId: typeof entry.tradeId === "string" ? entry.tradeId : "",
                 tradeDate: typeof entry.tradeDate === "string" ? entry.tradeDate : "",
                 rating: isExampleRating(rating) ? rating : "A+",
+                tradeSnapshot: normalizePlaybookExampleTradeSnapshot(entry.tradeSnapshot),
                 notes: hasJournalDocContent(notes) ? (notes as JSONContent) : createEmptyJournalDoc(),
                 screenshotPaths: Array.isArray(entry.screenshotPaths)
                   ? entry.screenshotPaths.filter((value): value is string => typeof value === "string")

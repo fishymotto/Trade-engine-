@@ -25,6 +25,14 @@ export interface TradeTagOverrideRecord {
   game?: GameTag | null;
   outTag?: string | null;
   execution?: string | null;
+  journalTradeNoteMistakeSource?: {
+    noteId: string;
+    noteMistakesUpdatedAt: string;
+  } | null;
+  journalTradeNotePlaybookSource?: {
+    noteId: string;
+    notePlaybookUpdatedAt: string;
+  } | null;
   updatedAt: string;
 }
 

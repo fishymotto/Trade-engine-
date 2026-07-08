@@ -5,6 +5,7 @@ export type LibraryCollectionId =
   | "book-club"
   | "strong-views"
   | "quotes"
+  | "weekly-improvement-goals"
   | "weekly-review"
   | "monthly-review"
   | "replay"

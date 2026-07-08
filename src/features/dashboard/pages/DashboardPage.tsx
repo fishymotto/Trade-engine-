@@ -7,12 +7,20 @@ import { SymbolPills } from "../../../components/SymbolPills";
 import { WorkspaceIcon } from "../../../components/WorkspaceIcon";
 import mppExcludedBadgeIcon from "../../../assets/ui-icons/mpp-excluded.png";
 import mppIncludedBadgeIcon from "../../../assets/ui-icons/mpp-included.png";
+import mppRiskBumpOneIcon from "../../../assets/ui-icons/mpp-risk-bump-1.png";
+import mppRiskBumpTwoIcon from "../../../assets/ui-icons/mpp-risk-bump-2.png";
+import mppRiskBumpThreeIcon from "../../../assets/ui-icons/mpp-risk-bump-3.png";
 import {
   MPP_FORMULA_TOOLTIP,
   calculateMPPWindow,
   getMPPExcludedDays,
   getMPPIncludedDays
 } from "../../../lib/analytics/mppAnalytics";
+import {
+  MPP_RISK_BUMP_TOOLTIP,
+  getMppRiskBump,
+  getMppRiskBumpLevel
+} from "../../../lib/analytics/mppRiskBump";
 import {
   type CalendarDaySummary,
   getCalendarSummary,
@@ -236,6 +244,23 @@ const DashboardWidgetCard = ({
 
 const formatSignedMoney = (value: number): string => `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`;
 const formatSignedNumber = (value: number): string => `${value >= 0 ? "+" : "-"}${Math.abs(value).toFixed(2)}`;
+const formatMoney = (value: number): string => `$${Math.max(0, value).toFixed(2)}`;
+
+const getRiskBumpBadgeIcon = (bumpLevel: number): string => {
+  if (bumpLevel === 1) {
+    return mppRiskBumpOneIcon;
+  }
+
+  if (bumpLevel === 2) {
+    return mppRiskBumpTwoIcon;
+  }
+
+  if (bumpLevel === 3) {
+    return mppRiskBumpThreeIcon;
+  }
+
+  return "";
+};
 
 const getSignedValueClassName = (value: number): "positive-value" | "negative-value" =>
   value >= 0 ? "positive-value" : "negative-value";
@@ -562,7 +587,14 @@ export const DashboardPage = ({
       ? `Not enough days yet (${window.formulaBreakdown.eligibleDayCount}/${window.formulaBreakdown.windowSize} days) | ${removedDaysLabel}`
       : removedDaysLabel;
   };
-  const stockMppCardDetail = getMppCardDetail(stockMppWindow, stockMppSourceDays.length);
+  const stockRiskBump = useMemo(
+    () => getMppRiskBump(stockMppWindow.currentMPP),
+    [stockMppWindow.currentMPP]
+  );
+  const stockMppCardDetail = `${getMppCardDetail(
+    stockMppWindow,
+    stockMppSourceDays.length
+  )} | Shutdown ${formatMoney(stockRiskBump.netLoss)} | LFT ${formatMoney(stockRiskBump.lft)}`;
   const currencyMppCardDetail = getMppCardDetail(currencyMppWindow, currencyMppSourceDays.length);
 
   const availableMonthKeys = useMemo(() => getVisibleMonthNavigation(filteredTrades), [filteredTrades]);
@@ -819,7 +851,7 @@ export const DashboardPage = ({
           value={stockMppWindow.currentMPP.toLocaleString()}
           detail={stockMppCardDetail}
           tone={stockMppWindow.currentMPP > 0 ? "positive" : stockMppWindow.currentMPP < 0 ? "negative" : "neutral"}
-          tooltip={MPP_FORMULA_TOOLTIP}
+          tooltip={`${MPP_FORMULA_TOOLTIP} ${MPP_RISK_BUMP_TOOLTIP}`}
         />
         <DashboardWidgetCard
           title={currencyMppWindow.isPartialWindow ? "Currency MPP partial" : "Currency MPP"}
@@ -957,6 +989,8 @@ export const DashboardPage = ({
               const isIncludedInMPP = mppIncludedDaySet.has(day.tradeDate);
               const isExcludedFromMPP = mppExcludedDaySet.has(day.tradeDate);
               const dayMPP = mppByTradeDate.get(day.tradeDate);
+              const riskBumpLevel = typeof dayMPP === "number" ? getMppRiskBumpLevel(dayMPP) : 0;
+              const riskBumpBadgeIcon = getRiskBumpBadgeIcon(riskBumpLevel);
 
               return (
                 <button
@@ -993,6 +1027,18 @@ export const DashboardPage = ({
                               className="session-month-cell-badge-icon"
                               src={mppIncludedBadgeIcon}
                               alt="MPP included day"
+                            />
+                          </span>
+                        ) : null}
+                        {riskBumpBadgeIcon ? (
+                          <span
+                            className="session-month-cell-badge session-month-cell-badge-risk-bump"
+                            title={`${MPP_RISK_BUMP_TOOLTIP} Bump ${riskBumpLevel}.`}
+                          >
+                            <img
+                              className="session-month-cell-badge-icon session-month-cell-risk-bump-icon"
+                              src={riskBumpBadgeIcon}
+                              alt={`Risk bump ${riskBumpLevel}`}
                             />
                           </span>
                         ) : null}

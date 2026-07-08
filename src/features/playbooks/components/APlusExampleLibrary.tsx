@@ -17,14 +17,21 @@ import {
   collectWorkspaceAttachmentPaths,
   saveWorkspaceInlineImage
 } from "../../../lib/workspace/workspaceAttachmentClient";
-import type { PlaybookExampleRating, PlaybookRecord } from "../../../types/playbook";
+import type {
+  PlaybookExampleRating,
+  PlaybookExampleTradeSnapshot,
+  PlaybookRecord
+} from "../../../types/playbook";
+import type { JournalPageRecord, JournalScreenshotTradeLink, JournalTradeNoteRecord } from "../../../types/journal";
 import type { GroupedTrade } from "../../../types/trade";
 
 type ExampleRecord = PlaybookRecord["aPlusExamples"][number];
+type APlusExampleSort = "date-desc" | "date-asc" | "rating-desc" | "pnl-desc" | "pnl-asc";
 
 const ratingOptions: PlaybookExampleRating[] = ["A+", "A", "B+"];
 const eligibleGameTags = new Set(["A Game", "B+ Game"]);
 const MAX_DISMISSED_TRADE_IDS = 400;
+const TRADE_LINK_SEPARATOR = "::";
 
 const getSyncedExampleRating = (trade: GroupedTrade): PlaybookExampleRating | null => {
   if (trade.game === "A Game") {
@@ -74,8 +81,120 @@ const getHoldLabel = (trade: GroupedTrade): string => {
 };
 const toSafeText = (value: unknown): string => (typeof value === "string" ? value : "");
 const toSafeArray = <T,>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
+const toSafeNumber = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
 const isExampleRating = (value: unknown): value is PlaybookExampleRating =>
   value === "A+" || value === "A" || value === "B+";
+
+const getExampleRatingRank = (rating: PlaybookExampleRating): number => {
+  switch (rating) {
+    case "A+":
+      return 3;
+    case "A":
+      return 2;
+    case "B+":
+      return 1;
+  }
+};
+
+const normalizeSnapshotSetups = (value: unknown): string[] =>
+  toSafeArray<string>(value)
+    .map((entry) => toSafeText(entry).trim())
+    .filter((entry) => entry.length > 0);
+
+const createTradeSnapshot = (trade: GroupedTrade): PlaybookExampleTradeSnapshot => {
+  const openingExecutions = toSafeArray<unknown>(trade.openingExecutions);
+  const closingExecutions = toSafeArray<unknown>(trade.closingExecutions);
+  const addSignals = toSafeArray<{ averagedDown?: boolean; addedToWinner?: boolean }>(trade.addSignals);
+  const setups = normalizeSnapshotSetups(trade.setups);
+
+  return {
+    name: toSafeText(trade.name),
+    tradeDate: toSafeText(trade.tradeDate),
+    symbol: toSafeText(trade.symbol),
+    side: toSafeText(trade.side),
+    status: toSafeText(trade.status),
+    game: toSafeText(trade.game),
+    setup: setups[0] ?? "",
+    setups,
+    openTime: toSafeText(trade.openTime),
+    closeTime: toSafeText(trade.closeTime),
+    holdTime: toSafeText(trade.holdTime),
+    holdSeconds: toSafeNumber(trade.holdSeconds),
+    size: toSafeNumber(trade.size),
+    entryPrice: toSafeNumber(trade.entryPrice),
+    exitPrice: toSafeNumber(trade.exitPrice),
+    netPnlUsd: toSafeNumber(trade.netPnlUsd),
+    returnPerShare: toSafeNumber(trade.returnPerShare),
+    feesUsd: toSafeNumber(trade.feesUsd),
+    executionCount: openingExecutions.length + closingExecutions.length,
+    addCount: addSignals.length,
+    averagedDownCount: addSignals.filter((signal) => Boolean(signal?.averagedDown)).length,
+    addedToWinnerCount: addSignals.filter((signal) => Boolean(signal?.addedToWinner)).length
+  };
+};
+
+const normalizeTradeSnapshot = (value: unknown): PlaybookExampleTradeSnapshot | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const snapshot: PlaybookExampleTradeSnapshot = {
+    name: toSafeText(record.name),
+    tradeDate: toSafeText(record.tradeDate),
+    symbol: toSafeText(record.symbol),
+    side: toSafeText(record.side),
+    status: toSafeText(record.status),
+    game: toSafeText(record.game),
+    setup: toSafeText(record.setup),
+    setups: normalizeSnapshotSetups(record.setups),
+    openTime: toSafeText(record.openTime),
+    closeTime: toSafeText(record.closeTime),
+    holdTime: toSafeText(record.holdTime),
+    holdSeconds: toSafeNumber(record.holdSeconds),
+    size: toSafeNumber(record.size),
+    entryPrice: toSafeNumber(record.entryPrice),
+    exitPrice: toSafeNumber(record.exitPrice),
+    netPnlUsd: toSafeNumber(record.netPnlUsd),
+    returnPerShare: toSafeNumber(record.returnPerShare),
+    feesUsd: toSafeNumber(record.feesUsd),
+    executionCount: toSafeNumber(record.executionCount),
+    addCount: toSafeNumber(record.addCount),
+    averagedDownCount: toSafeNumber(record.averagedDownCount),
+    addedToWinnerCount: toSafeNumber(record.addedToWinnerCount)
+  };
+
+  if (!snapshot.name && !snapshot.symbol && !snapshot.tradeDate) {
+    return null;
+  }
+
+  if (!snapshot.setup && snapshot.setups.length > 0) {
+    snapshot.setup = snapshot.setups[0];
+  }
+
+  return snapshot;
+};
+
+const areTradeSnapshotsEqual = (
+  left: PlaybookExampleTradeSnapshot | null | undefined,
+  right: PlaybookExampleTradeSnapshot | null | undefined
+): boolean => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+
+const getSnapshotSetupLabel = (
+  snapshot: PlaybookExampleTradeSnapshot | null | undefined,
+  fallback: string
+): string =>
+  snapshot?.setup ||
+  snapshot?.setups.find((candidate) => candidate.trim().length > 0) ||
+  fallback;
+
+const getSnapshotHoldLabel = (snapshot: PlaybookExampleTradeSnapshot): string => {
+  const trimmedHoldTime = snapshot.holdTime.trim();
+  if (trimmedHoldTime.length > 0) {
+    return trimmedHoldTime;
+  }
+  return `${Math.max(0, Math.round(snapshot.holdSeconds / 60))}m`;
+};
 
 const normalizeExampleRecord = (entry: unknown): ExampleRecord | null => {
   if (!entry || typeof entry !== "object") {
@@ -89,6 +208,7 @@ const normalizeExampleRecord = (entry: unknown): ExampleRecord | null => {
     tradeId: toSafeText(record.tradeId),
     tradeDate: toSafeText(record.tradeDate),
     rating: isExampleRating(record.rating) ? record.rating : "A+",
+    tradeSnapshot: normalizeTradeSnapshot(record.tradeSnapshot),
     notes: hasJournalDocContent(record.notes as Parameters<typeof hasJournalDocContent>[0])
       ? (record.notes as ExampleRecord["notes"])
       : createEmptyJournalDoc(),
@@ -202,6 +322,91 @@ const pruneDismissedTradeIds = (value: string[]): string[] => {
   return unique.slice(unique.length - MAX_DISMISSED_TRADE_IDS);
 };
 
+const serializeTradeLink = (tradeId: string, tradeDate: string): string =>
+  tradeId && tradeDate ? `${tradeId}${TRADE_LINK_SEPARATOR}${tradeDate}` : "";
+
+const dedupeTradeLinks = (links: JournalScreenshotTradeLink[]): JournalScreenshotTradeLink[] => {
+  const unique = new Map<string, JournalScreenshotTradeLink>();
+  for (const link of links) {
+    const tradeId = toSafeText(link.tradeId).trim();
+    const tradeDate = toSafeText(link.tradeDate).trim();
+    if (!tradeId || !tradeDate) {
+      continue;
+    }
+
+    unique.set(serializeTradeLink(tradeId, tradeDate), { tradeId, tradeDate });
+  }
+
+  return Array.from(unique.values());
+};
+
+const collectTradeNoteLinks = (note: JournalTradeNoteRecord): JournalScreenshotTradeLink[] =>
+  dedupeTradeLinks([
+    ...(Array.isArray(note.linkedTrades) ? note.linkedTrades : []),
+    ...(note.linkedTradeId?.trim() && note.linkedTradeDate?.trim()
+      ? [
+          {
+            tradeId: note.linkedTradeId.trim(),
+            tradeDate: note.linkedTradeDate.trim()
+          }
+        ]
+      : [])
+  ]);
+
+const extractJournalDocText = (content: unknown): string => {
+  const parts: string[] = [];
+  const visit = (node: unknown) => {
+    if (!node || typeof node !== "object") {
+      return;
+    }
+
+    const record = node as { text?: unknown; content?: unknown };
+    if (typeof record.text === "string" && record.text.trim().length > 0) {
+      parts.push(record.text.trim());
+    }
+
+    if (Array.isArray(record.content)) {
+      for (const child of record.content) {
+        visit(child);
+      }
+    }
+  };
+
+  visit(content);
+  return parts.join(" ").replace(/\s+/g, " ").trim();
+};
+
+const truncateText = (value: string, maxLength: number): string => {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+
+  return `${trimmed.slice(0, maxLength).trim()}...`;
+};
+
+const formatListValue = (values: string[], fallback = "-"): string => {
+  const cleaned = values.map((value) => value.trim()).filter((value) => value.length > 0);
+  return cleaned.length > 0 ? cleaned.join(", ") : fallback;
+};
+
+const pickPreferredTradeNote = (
+  current: { note: JournalTradeNoteRecord; page: JournalPageRecord } | undefined,
+  next: { note: JournalTradeNoteRecord; page: JournalPageRecord }
+): { note: JournalTradeNoteRecord; page: JournalPageRecord } => {
+  if (!current) {
+    return next;
+  }
+
+  const currentHasContent = hasJournalDocContent(current.note.content);
+  const nextHasContent = hasJournalDocContent(next.note.content);
+  if (currentHasContent !== nextHasContent) {
+    return nextHasContent ? next : current;
+  }
+
+  return toSafeText(next.note.updatedAt).localeCompare(toSafeText(current.note.updatedAt)) > 0 ? next : current;
+};
+
 const readFileAsDataUrl = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -220,11 +425,15 @@ const readFileAsDataUrl = (file: File): Promise<string> =>
 interface APlusExampleLibraryProps {
   playbook: PlaybookRecord;
   matchedTrades: GroupedTrade[];
+  allTrades?: GroupedTrade[];
+  journalPages?: JournalPageRecord[];
+  tickerFilter?: string;
   taggedCharts: {
     screenshotUrl: string;
     linkedTrades: GroupedTrade[];
   }[];
   onSelectTrade: (tradeId: string, tradeDate: string) => void;
+  onOpenJournalDate?: (tradeDate: string) => void;
   onExpandImage: (src: string) => void;
   setPlaybooks: React.Dispatch<React.SetStateAction<PlaybookRecord[]>>;
 }
@@ -232,12 +441,18 @@ interface APlusExampleLibraryProps {
 export const APlusExampleLibrary = ({
   playbook,
   matchedTrades,
+  allTrades,
+  journalPages = [],
+  tickerFilter = "all",
   taggedCharts,
   onSelectTrade,
+  onOpenJournalDate,
   onExpandImage,
   setPlaybooks
 }: APlusExampleLibraryProps) => {
   const dismissedTradeIdsStorageKey = `playbook-aplus-dismissed:${playbook.id}`;
+  const normalizedTickerFilter = toSafeText(tickerFilter).trim().toUpperCase();
+  const isTickerFiltered = normalizedTickerFilter.length > 0 && normalizedTickerFilter !== "ALL";
   const aPlusExamples = useMemo(() => {
     const candidates = toSafeArray<unknown>(playbook.aPlusExamples);
     return candidates
@@ -250,10 +465,12 @@ export const APlusExampleLibrary = ({
   );
   const [dismissedTradeIds, setDismissedTradeIds] = useState<string[]>([]);
   const [exampleSearchQuery, setExampleSearchQuery] = useState("");
-  const [exampleDateSort, setExampleDateSort] = useState<"date-desc" | "date-asc">("date-desc");
+  const [exampleSort, setExampleSort] = useState<APlusExampleSort>("date-desc");
   const [relinkFeedbackByExampleId, setRelinkFeedbackByExampleId] = useState<Record<string, string>>({});
+  const [expandedExampleIds, setExpandedExampleIds] = useState<string[]>([]);
   const screenshotInputRef = useRef<HTMLInputElement | null>(null);
   const dismissedTradeIdSet = useMemo(() => new Set(dismissedTradeIds), [dismissedTradeIds]);
+  const expandedExampleIdSet = useMemo(() => new Set(expandedExampleIds), [expandedExampleIds]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -286,7 +503,35 @@ export const APlusExampleLibrary = ({
     }
   }, [dismissedTradeIds, dismissedTradeIdsStorageKey]);
 
-  const tradeById = useMemo(() => new Map(matchedTrades.map((trade) => [trade.id, trade])), [matchedTrades]);
+  const tradeLookupTrades = allTrades ?? matchedTrades;
+  const tradeById = useMemo(() => {
+    const lookup = new Map<string, GroupedTrade>();
+    for (const trade of tradeLookupTrades) {
+      lookup.set(trade.id, trade);
+    }
+    for (const trade of matchedTrades) {
+      lookup.set(trade.id, trade);
+    }
+    return lookup;
+  }, [matchedTrades, tradeLookupTrades]);
+
+  const tradeNoteLookup = useMemo(() => {
+    const byLink = new Map<string, { note: JournalTradeNoteRecord; page: JournalPageRecord }>();
+    const byTradeId = new Map<string, { note: JournalTradeNoteRecord; page: JournalPageRecord }>();
+    for (const page of journalPages) {
+      const tradeNotes = Array.isArray(page.tradeNotes) ? page.tradeNotes : [];
+      for (const note of tradeNotes) {
+        for (const link of collectTradeNoteLinks(note)) {
+          const key = serializeTradeLink(link.tradeId, link.tradeDate);
+          const preferred = pickPreferredTradeNote(byLink.get(key), { note, page });
+          byLink.set(key, preferred);
+          byTradeId.set(link.tradeId, pickPreferredTradeNote(byTradeId.get(link.tradeId), preferred));
+        }
+      }
+    }
+
+    return { byLink, byTradeId };
+  }, [journalPages]);
 
   const autoExampleScreenshotsByTrade = useMemo(() => {
     const grouped = new Map<string, { trade: GroupedTrade; screenshotPaths: string[] }>();
@@ -344,42 +589,124 @@ export const APlusExampleLibrary = ({
   const visibleExamples = useMemo(() => {
     const normalizedQuery = exampleSearchQuery.trim().toLowerCase();
     const filtered = aPlusExamples.filter((entry) => {
+      const trade = tradeById.get(entry.tradeId);
+      const snapshot = trade ? createTradeSnapshot(trade) : entry.tradeSnapshot;
+      const linkedNote =
+        tradeNoteLookup.byLink.get(serializeTradeLink(entry.tradeId, trade?.tradeDate || entry.tradeDate)) ??
+        tradeNoteLookup.byTradeId.get(entry.tradeId);
+      const entryTicker = toSafeText(trade?.symbol || snapshot?.symbol || linkedNote?.note.ticker).trim().toUpperCase();
+
+      if (isTickerFiltered && entryTicker !== normalizedTickerFilter) {
+        return false;
+      }
+
       if (!normalizedQuery) {
         return true;
       }
-      const trade = tradeById.get(entry.tradeId);
+
       const searchTokens = [
         trade?.name ?? "",
         trade?.symbol ?? "",
         trade?.tradeDate ?? "",
+        snapshot?.name ?? "",
+        snapshot?.symbol ?? "",
+        snapshot?.tradeDate ?? "",
+        snapshot?.setup ?? "",
         entry.tradeDate,
         entry.rating,
         trade?.status ?? "",
         trade?.side ?? "",
         trade?.game ?? "",
-        ...(trade?.setups ?? [])
+        snapshot?.status ?? "",
+        snapshot?.side ?? "",
+        snapshot?.game ?? "",
+        ...(trade?.setups ?? []),
+        ...(snapshot?.setups ?? [])
       ];
       return searchTokens.join(" ").toLowerCase().includes(normalizedQuery);
     });
 
-    return filtered.sort((left, right) => {
-      const leftTrade = tradeById.get(left.tradeId);
-      const rightTrade = tradeById.get(right.tradeId);
-      const leftDate = leftTrade?.tradeDate || left.tradeDate || "";
-      const rightDate = rightTrade?.tradeDate || right.tradeDate || "";
-      const dateComparison = compareDateStrings(leftDate, rightDate);
+    const getEntrySnapshot = (entry: ExampleRecord): PlaybookExampleTradeSnapshot | null => {
+      const trade = tradeById.get(entry.tradeId);
+      return trade ? createTradeSnapshot(trade) : entry.tradeSnapshot ?? null;
+    };
+    const getEntryDate = (entry: ExampleRecord): string => getEntrySnapshot(entry)?.tradeDate || entry.tradeDate || "";
+    const getEntryPnl = (entry: ExampleRecord): number | null => getEntrySnapshot(entry)?.netPnlUsd ?? null;
+
+    const compareNewestFirst = (leftEntry: ExampleRecord, rightEntry: ExampleRecord): number => {
+      const dateComparison = compareDateStrings(getEntryDate(leftEntry), getEntryDate(rightEntry));
       if (dateComparison !== 0) {
-        return exampleDateSort === "date-asc" ? dateComparison : -dateComparison;
+        return -dateComparison;
       }
 
-      const updatedAtComparison = compareDateStrings(left.updatedAt, right.updatedAt);
+      const updatedAtComparison = compareDateStrings(leftEntry.updatedAt, rightEntry.updatedAt);
       if (updatedAtComparison !== 0) {
-        return exampleDateSort === "date-asc" ? updatedAtComparison : -updatedAtComparison;
+        return -updatedAtComparison;
       }
 
-      return left.id.localeCompare(right.id);
+      return leftEntry.id.localeCompare(rightEntry.id);
+    };
+
+    const compareOldestFirst = (leftEntry: ExampleRecord, rightEntry: ExampleRecord): number => {
+      const dateComparison = compareDateStrings(getEntryDate(leftEntry), getEntryDate(rightEntry));
+      if (dateComparison !== 0) {
+        return dateComparison;
+      }
+
+      const updatedAtComparison = compareDateStrings(leftEntry.updatedAt, rightEntry.updatedAt);
+      if (updatedAtComparison !== 0) {
+        return updatedAtComparison;
+      }
+
+      return leftEntry.id.localeCompare(rightEntry.id);
+    };
+
+    const comparePnl = (leftEntry: ExampleRecord, rightEntry: ExampleRecord, direction: "asc" | "desc"): number => {
+      const leftPnl = getEntryPnl(leftEntry);
+      const rightPnl = getEntryPnl(rightEntry);
+      const leftMissing = leftPnl === null;
+      const rightMissing = rightPnl === null;
+
+      if (leftMissing || rightMissing) {
+        if (leftMissing && rightMissing) {
+          return 0;
+        }
+        return leftMissing ? 1 : -1;
+      }
+
+      return direction === "asc" ? leftPnl - rightPnl : rightPnl - leftPnl;
+    };
+
+    return filtered.sort((left, right) => {
+      switch (exampleSort) {
+        case "date-asc":
+          return compareOldestFirst(left, right);
+        case "rating-desc": {
+          const ratingComparison = getExampleRatingRank(right.rating) - getExampleRatingRank(left.rating);
+          return ratingComparison || compareNewestFirst(left, right);
+        }
+        case "pnl-desc": {
+          const pnlComparison = comparePnl(left, right, "desc");
+          return pnlComparison || compareNewestFirst(left, right);
+        }
+        case "pnl-asc": {
+          const pnlComparison = comparePnl(left, right, "asc");
+          return pnlComparison || compareNewestFirst(left, right);
+        }
+        case "date-desc":
+          return compareNewestFirst(left, right);
+      }
+      return compareNewestFirst(left, right);
     });
-  }, [aPlusExamples, exampleDateSort, exampleSearchQuery, tradeById]);
+  }, [
+    aPlusExamples,
+    exampleSearchQuery,
+    exampleSort,
+    isTickerFiltered,
+    normalizedTickerFilter,
+    tradeById,
+    tradeNoteLookup
+  ]);
 
   const createExampleInlineImageInsertHandler = (exampleId: string) => async (file: File) =>
     saveWorkspaceInlineImage({
@@ -437,15 +764,18 @@ export const APlusExampleLibrary = ({
           }
 
           const syncedRating = getSyncedExampleRating(trade) ?? existing.rating;
+          const tradeSnapshot = createTradeSnapshot(trade);
           const shouldUpdateExisting =
             mergedScreenshotPaths.length !== (existing.screenshotPaths ?? []).length ||
             existing.tradeDate !== trade.tradeDate ||
-            existing.rating !== syncedRating;
+            existing.rating !== syncedRating ||
+            !areTradeSnapshotsEqual(existing.tradeSnapshot, tradeSnapshot);
           if (shouldUpdateExisting) {
             nextExamples[targetIndex] = {
               ...existing,
               tradeDate: trade.tradeDate,
               rating: syncedRating,
+              tradeSnapshot,
               screenshotPaths: mergedScreenshotPaths,
               updatedAt: now
             };
@@ -481,6 +811,7 @@ export const APlusExampleLibrary = ({
             tradeId,
             tradeDate: trade.tradeDate,
             rating: syncedRating,
+            tradeSnapshot: createTradeSnapshot(trade),
             screenshotPaths: mergedScreenshotPaths,
             updatedAt: now
           };
@@ -496,6 +827,7 @@ export const APlusExampleLibrary = ({
             tradeId,
             tradeDate: trade.tradeDate,
             rating: inferredRating,
+            tradeSnapshot: createTradeSnapshot(trade),
             notes: createEmptyJournalDoc(),
             screenshotPaths: [...candidate.screenshotPaths],
             recordingPath: "",
@@ -543,14 +875,21 @@ export const APlusExampleLibrary = ({
         }
 
         const syncedRating = getSyncedExampleRating(trade);
-        if (!syncedRating || entry.rating === syncedRating) {
+        const tradeSnapshot = createTradeSnapshot(trade);
+        const currentSnapshot = normalizeTradeSnapshot(entry.tradeSnapshot);
+        const shouldUpdateRating = Boolean(syncedRating && entry.rating !== syncedRating);
+        const shouldUpdateDate = entry.tradeDate !== trade.tradeDate;
+        const shouldUpdateSnapshot = !areTradeSnapshotsEqual(currentSnapshot, tradeSnapshot);
+        if (!shouldUpdateRating && !shouldUpdateDate && !shouldUpdateSnapshot) {
           return entry;
         }
 
         hasChanges = true;
         return {
           ...entry,
-          rating: syncedRating,
+          tradeDate: trade.tradeDate,
+          rating: syncedRating ?? entry.rating,
+          tradeSnapshot,
           updatedAt: now
         };
       });
@@ -569,7 +908,7 @@ export const APlusExampleLibrary = ({
           : candidate
       );
     });
-  }, [aPlusExamples.length, playbook.id, setPlaybooks, tradeById]);
+  }, [aPlusExamples, playbook.id, setPlaybooks, tradeById]);
 
   const getEntryFromState = (playbooks: PlaybookRecord[], exampleId: string): ExampleRecord | undefined => {
     const entries = playbooks.find((candidate) => candidate.id === playbook.id)?.aPlusExamples;
@@ -594,6 +933,14 @@ export const APlusExampleLibrary = ({
     setDismissedTradeIds((current) => current.filter((value) => value !== trimmed));
   };
 
+  const toggleExampleExpanded = (exampleId: string) => {
+    setExpandedExampleIds((current) =>
+      current.includes(exampleId)
+        ? current.filter((candidate) => candidate !== exampleId)
+        : [...current, exampleId]
+    );
+  };
+
   const addExampleFromTrade = (trade: GroupedTrade) => {
     clearDismissedTradeId(trade.id);
     const now = new Date().toISOString();
@@ -602,6 +949,7 @@ export const APlusExampleLibrary = ({
       tradeId: trade.id,
       tradeDate: trade.tradeDate,
       rating: getSyncedExampleRating(trade) ?? "A+",
+      tradeSnapshot: createTradeSnapshot(trade),
       notes: createEmptyJournalDoc(),
       screenshotPaths: [],
       recordingPath: "",
@@ -704,10 +1052,17 @@ export const APlusExampleLibrary = ({
     }
 
     setPlaybooks((current) => removePlaybookAPlusExample(current, playbook.id, exampleId));
+    setExpandedExampleIds((current) => current.filter((candidate) => candidate !== exampleId));
   };
 
   const relinkExampleByDate = (entry: ExampleRecord) => {
-    const exactDateMatches = matchedTrades.filter((candidate) => candidate.tradeDate === entry.tradeDate);
+    const exactDateMatches = Array.from(
+      new Map(
+        tradeLookupTrades
+          .filter((candidate) => candidate.tradeDate === entry.tradeDate)
+          .map((candidate) => [candidate.id, candidate])
+      ).values()
+    );
     if (exactDateMatches.length === 0) {
       setRelinkFeedbackByExampleId((current) => ({
         ...current,
@@ -741,7 +1096,8 @@ export const APlusExampleLibrary = ({
       updatePlaybookAPlusExample(current, playbook.id, entry.id, {
         tradeId: candidate.id,
         tradeDate: candidate.tradeDate,
-        rating: getSyncedExampleRating(candidate) ?? entry.rating
+        rating: getSyncedExampleRating(candidate) ?? entry.rating,
+        tradeSnapshot: createTradeSnapshot(candidate)
       })
     );
     setRelinkFeedbackByExampleId((current) => ({
@@ -801,15 +1157,18 @@ export const APlusExampleLibrary = ({
                 aria-label="Search A plus examples"
               />
               <label className="playbook-aplus-sort-field">
-                <span>Sort Date</span>
+                <span>Sort By</span>
                 <select
                   className="journal-header-select"
-                  value={exampleDateSort}
-                  onChange={(event) => setExampleDateSort(event.target.value as "date-desc" | "date-asc")}
-                  aria-label="Sort examples by date"
+                  value={exampleSort}
+                  onChange={(event) => setExampleSort(event.target.value as APlusExampleSort)}
+                  aria-label="Sort examples"
                 >
                   <option value="date-desc">Newest first</option>
                   <option value="date-asc">Oldest first</option>
+                  <option value="rating-desc">Highest rank</option>
+                  <option value="pnl-desc">Highest P/L</option>
+                  <option value="pnl-asc">Lowest P/L</option>
                 </select>
               </label>
               {exampleSearchQuery.trim().length > 0 ? (
@@ -845,45 +1204,267 @@ export const APlusExampleLibrary = ({
                   ? entry.recordingPath
                   : resolvePlaybookAttachmentSrc(entry.recordingPath)
                 : "";
-              const openingExecutions = trade ? toSafeArray<unknown>(trade.openingExecutions) : [];
-              const closingExecutions = trade ? toSafeArray<unknown>(trade.closingExecutions) : [];
-              const addSignals = trade ? toSafeArray<{ averagedDown?: boolean; addedToWinner?: boolean }>(trade.addSignals) : [];
-              const executionCount = trade
-                ? openingExecutions.length + closingExecutions.length
+              const displaySnapshot = trade ? createTradeSnapshot(trade) : entry.tradeSnapshot;
+              const setupLabel = getSnapshotSetupLabel(displaySnapshot, playbook.name);
+              const headerDate = trade?.tradeDate || displaySnapshot?.tradeDate || entry.tradeDate || "-";
+              const entryTitle = trade?.name || displaySnapshot?.name || "Saved Example";
+              const entrySubtitle = trade
+                ? `${trade.symbol} - ${trade.tradeDate}`
+                : displaySnapshot
+                  ? `${displaySnapshot.symbol || "Trade"} - ${headerDate} - saved snapshot`
+                  : `Trade date ${entry.tradeDate || "-"} - link missing`;
+              const entryStateLabel = trade
+                ? `${displaySnapshot?.side || trade.side} ${displaySnapshot?.status || trade.status}`.trim()
+                : displaySnapshot
+                  ? `${displaySnapshot.side} ${displaySnapshot.status}`.trim() || "Saved snapshot"
+                  : "Link missing";
+              const statsSourceLabel = trade
+                ? `${displaySnapshot?.status || trade.status} - ${displaySnapshot?.side || trade.side} - ${
+                    displaySnapshot?.game || trade.game || "No game tag"
+                  }`
+                : displaySnapshot
+                  ? `${displaySnapshot.status || "Saved"} - ${displaySnapshot.side || "Trade"} - ${
+                      displaySnapshot.game || "No game tag"
+                    }`
+                  : "Linked trade unavailable";
+              const priceEdgePerShare = displaySnapshot
+                ? displaySnapshot.side === "Long"
+                  ? displaySnapshot.exitPrice - displaySnapshot.entryPrice
+                  : displaySnapshot.entryPrice - displaySnapshot.exitPrice
                 : 0;
-              const addCount = trade ? addSignals.length : 0;
-              const averagedDownCount = trade
-                ? addSignals.filter((signal) => Boolean(signal?.averagedDown)).length
-                : 0;
-              const addedToWinnerCount = trade
-                ? addSignals.filter((signal) => Boolean(signal?.addedToWinner)).length
-                : 0;
-              const setupLabel =
-                toSafeArray<string>(trade?.setups).find((candidate) => toSafeText(candidate).trim().length > 0)?.trim() ??
-                playbook.name;
-              const headerDate = trade?.tradeDate || entry.tradeDate || "-";
-              const priceEdgePerShare = trade
-                ? trade.side === "Long"
-                  ? trade.exitPrice - trade.entryPrice
-                  : trade.entryPrice - trade.exitPrice
-                : 0;
+              const tradeNoteKey = serializeTradeLink(entry.tradeId, trade?.tradeDate || entry.tradeDate || "");
+              const snapshotTradeNoteKey = serializeTradeLink(entry.tradeId, displaySnapshot?.tradeDate || "");
+              const journalTradeNoteMatch =
+                tradeNoteLookup.byLink.get(tradeNoteKey) ??
+                tradeNoteLookup.byLink.get(snapshotTradeNoteKey) ??
+                tradeNoteLookup.byTradeId.get(entry.tradeId);
+              const journalTradeNote = journalTradeNoteMatch?.note ?? null;
+              const journalTradeNotePage = journalTradeNoteMatch?.page ?? null;
+              const journalTradeNoteText = journalTradeNote ? extractJournalDocText(journalTradeNote.content) : "";
+              const localNoteText = hasJournalDocContent(entry.notes) ? extractJournalDocText(entry.notes) : "";
+              const journalNotePreview = journalTradeNoteText ? truncateText(journalTradeNoteText, 180) : "";
+              const localNotePreview = localNoteText ? truncateText(localNoteText, 180) : "";
+              const notePreview = journalNotePreview || localNotePreview || "No trade note yet.";
+              const hasNotePreview = Boolean(journalNotePreview || localNotePreview);
+              const notePreviewSourceLabel = journalNotePreview
+                ? "Tagged journal note"
+                : localNotePreview
+                  ? "Saved A+ note"
+                  : "Journal note";
+              const isExpanded = expandedExampleIdSet.has(entry.id);
+              const linkStatusLabel = trade ? "Linked" : displaySnapshot ? "Snapshot" : "Needs relink";
+              const linkStatusClass = trade
+                ? "playbook-aplus-link-status-linked"
+                : displaySnapshot
+                  ? "playbook-aplus-link-status-snapshot"
+                  : "playbook-aplus-link-status-missing";
+              const journalNoteStatusLabel = journalTradeNote ? "Journal note" : "No journal note";
+              const firstScreenshotSrc = screenshotSrcs[0] ?? "";
+              const screenshotCountLabel =
+                screenshotSrcs.length > 1 ? `${screenshotSrcs.length} charts` : screenshotSrcs.length === 1 ? "1 chart" : "No chart";
+              const tradeMistakeTags = journalTradeNote?.mistakes.length
+                ? journalTradeNote.mistakes
+                : toSafeArray<string>(trade?.mistakes);
+              const catalystTags = toSafeArray<string>(trade?.catalyst);
+              const executionTags = toSafeArray<string>(trade?.execution);
+              const outTags = toSafeArray<string>(trade?.outTag);
+              const gatewayTags = toSafeArray<string>(trade?.gateways);
+              const studyScoreTiles = displaySnapshot
+                ? [
+                    { label: "Rating", value: entry.rating },
+                    {
+                      label: "Net PnL",
+                      value: formatSignedMoney(displaySnapshot.netPnlUsd),
+                      className: getSignedValueClassName(displaySnapshot.netPnlUsd)
+                    },
+                    {
+                      label: "R/Share",
+                      value: formatSignedPerShare(displaySnapshot.returnPerShare),
+                      className: getSignedValueClassName(displaySnapshot.returnPerShare)
+                    },
+                    {
+                      label: "Price Edge",
+                      value: formatSignedPerShare(priceEdgePerShare),
+                      className: getSignedValueClassName(priceEdgePerShare)
+                    },
+                    { label: "Hold", value: getSnapshotHoldLabel(displaySnapshot) }
+                  ]
+                : [
+                    { label: "Rating", value: entry.rating },
+                    { label: "Date", value: headerDate },
+                    { label: "State", value: entryStateLabel }
+                  ];
+              const tradeBlueprintRows = [
+                { label: "Symbol", value: displaySnapshot?.symbol || journalTradeNote?.ticker || "-" },
+                { label: "Setup", value: setupLabel || "-" },
+                { label: "Game", value: displaySnapshot?.game || trade?.game || "-" },
+                { label: "Side / Result", value: `${displaySnapshot?.side || trade?.side || "-"} / ${displaySnapshot?.status || trade?.status || "-"}` },
+                { label: "Date", value: headerDate },
+                { label: "Source", value: trade ? "Linked trade" : displaySnapshot ? "Saved snapshot" : "Missing link" }
+              ];
+              const executionReadRows = displaySnapshot
+                ? [
+                    {
+                      label: "Entry / Exit",
+                      value: `${formatPrice(displaySnapshot.entryPrice)} / ${formatPrice(displaySnapshot.exitPrice)}`
+                    },
+                    {
+                      label: "Open / Close",
+                      value: `${displaySnapshot.openTime || "-"} / ${displaySnapshot.closeTime || "-"}`
+                    },
+                    { label: "Size", value: formatSize(displaySnapshot.size) },
+                    { label: "Executions", value: String(displaySnapshot.executionCount) },
+                    {
+                      label: "Adds",
+                      value: `${displaySnapshot.addCount} total (${displaySnapshot.averagedDownCount} avg down / ${displaySnapshot.addedToWinnerCount} winner)`
+                    },
+                    { label: "Fees", value: formatCurrency(displaySnapshot.feesUsd) }
+                  ]
+                : [
+                    { label: "Entry / Exit", value: "-" },
+                    { label: "Open / Close", value: "-" },
+                    { label: "Size", value: "-" },
+                    { label: "Executions", value: "-" }
+                  ];
+              const studyTagGroups = [
+                { label: "Mistakes", values: tradeMistakeTags },
+                { label: "Catalyst", values: catalystTags },
+                { label: "Execution", values: executionTags },
+                { label: "Out", values: outTags },
+                { label: "Gateway", values: gatewayTags }
+              ].filter((group) => group.values.some((value) => value.trim().length > 0));
 
               return (
-                <section key={entry.id} className="playbook-aplus-entry">
+                <section
+                  key={entry.id}
+                  className={`playbook-aplus-entry${isExpanded ? " playbook-aplus-entry-expanded" : ""}`}
+                >
+                  <div className="playbook-aplus-summary-card">
+                    <button
+                      type="button"
+                      className={`playbook-aplus-summary-media${
+                        firstScreenshotSrc ? "" : " playbook-aplus-summary-media-empty"
+                      }`}
+                      onClick={() => (firstScreenshotSrc ? onExpandImage(firstScreenshotSrc) : toggleExampleExpanded(entry.id))}
+                    >
+                      {firstScreenshotSrc ? (
+                        <>
+                          <img src={firstScreenshotSrc} alt={`${entryTitle} screenshot`} />
+                          <span className="playbook-aplus-summary-media-badge">{screenshotCountLabel}</span>
+                        </>
+                      ) : (
+                        <span className="playbook-aplus-summary-media-placeholder">
+                          <strong>No chart yet</strong>
+                          <small>Screenshot pending</small>
+                        </span>
+                      )}
+                    </button>
+                    <div className="playbook-aplus-summary-main">
+                      <div className="playbook-aplus-summary-top">
+                        <div className="playbook-aplus-entry-title">
+                          <strong>{entryTitle}</strong>
+                          <span className="playbook-aplus-entry-subtitle">{entrySubtitle}</span>
+                        </div>
+                        <div className="playbook-aplus-summary-pills">
+                          <span className={`playbook-aplus-link-status ${linkStatusClass}`}>{linkStatusLabel}</span>
+                          <span className="playbook-aplus-link-status playbook-aplus-link-status-note">
+                            {journalNoteStatusLabel}
+                          </span>
+                          <span className="playbook-aplus-link-status playbook-aplus-link-status-rating">
+                            {entry.rating}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="playbook-aplus-entry-meta">
+                        <span className="playbook-meta-pill">Date {headerDate}</span>
+                        <span className="playbook-meta-pill">
+                          {setupLabel ? `Setup ${setupLabel}` : "Setup saved"}
+                        </span>
+                        <span className="playbook-meta-pill">{entryStateLabel}</span>
+                      </div>
+                      <div className="playbook-aplus-summary-stat-row">
+                        <span>
+                          <small>Net PnL</small>
+                          <strong className={displaySnapshot ? getSignedValueClassName(displaySnapshot.netPnlUsd) : ""}>
+                            {displaySnapshot ? formatSignedMoney(displaySnapshot.netPnlUsd) : "-"}
+                          </strong>
+                        </span>
+                        <span>
+                          <small>R/Share</small>
+                          <strong className={displaySnapshot ? getSignedValueClassName(displaySnapshot.returnPerShare) : ""}>
+                            {displaySnapshot ? formatSignedPerShare(displaySnapshot.returnPerShare) : "-"}
+                          </strong>
+                        </span>
+                        <span>
+                          <small>Hold</small>
+                          <strong>{displaySnapshot ? getSnapshotHoldLabel(displaySnapshot) : "-"}</strong>
+                        </span>
+                      </div>
+                      <div
+                        className={`playbook-aplus-summary-note-card${
+                          hasNotePreview ? "" : " playbook-aplus-summary-note-card-empty"
+                        }`}
+                      >
+                        <div className="playbook-aplus-summary-note-heading">
+                          <span>{notePreviewSourceLabel}</span>
+                          {journalTradeNotePage ? <small>{journalTradeNotePage.tradeDate}</small> : null}
+                        </div>
+                        <p className="playbook-aplus-summary-note">{notePreview}</p>
+                      </div>
+                      <div className="playbook-aplus-summary-footer">
+                        <span className="playbook-aplus-summary-status-line">{statsSourceLabel}</span>
+                        <div className="playbook-aplus-summary-actions">
+                          <button
+                            type="button"
+                            className="mini-action mini-action-soft"
+                            onClick={() => toggleExampleExpanded(entry.id)}
+                          >
+                            {isExpanded ? "Collapse" : "Study Card"}
+                          </button>
+                          {trade ? (
+                            <button
+                              type="button"
+                              className="mini-action mini-action-soft"
+                              onClick={() => onSelectTrade(trade.id, trade.tradeDate)}
+                            >
+                              Open Trade
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="mini-action mini-action-soft"
+                              onClick={() => relinkExampleByDate(entry)}
+                            >
+                              Relink
+                            </button>
+                          )}
+                          {journalTradeNotePage && onOpenJournalDate ? (
+                            <button
+                              type="button"
+                              className="mini-action mini-action-soft"
+                              onClick={() => onOpenJournalDate(journalTradeNotePage.tradeDate)}
+                            >
+                              Open Journal
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  {isExpanded ? (
+                    <>
                   <header className="playbook-aplus-entry-header">
                     <div className="playbook-aplus-entry-title">
-                      <strong>{trade ? trade.name : "Unlinked Example"}</strong>
+                      <strong>{entryTitle}</strong>
                       <span className="playbook-aplus-entry-subtitle">
-                        {trade ? `${trade.symbol} - ${trade.tradeDate}` : `Trade date ${entry.tradeDate} - link missing`}
+                        {entrySubtitle}
                       </span>
                       <div className="playbook-aplus-entry-meta">
                         <span className="playbook-meta-pill">Date {headerDate}</span>
                         <span className="playbook-meta-pill">
-                          {trade ? `Setup ${setupLabel}` : "Awaiting relink"}
+                          {setupLabel ? `Setup ${setupLabel}` : "Setup saved"}
                         </span>
-                        <span className="playbook-meta-pill">
-                          {trade ? `${trade.side} ${trade.status}` : "Link missing"}
-                        </span>
+                        <span className="playbook-meta-pill">{entryStateLabel}</span>
                       </div>
                     </div>
                     <div className="playbook-aplus-entry-actions">
@@ -935,6 +1516,168 @@ export const APlusExampleLibrary = ({
                       </div>
                     </div>
                   </header>
+
+                  <section className="playbook-aplus-study-card" aria-label="Study card">
+                    <div className="playbook-aplus-study-card-header">
+                      <div>
+                        <span>Study Card</span>
+                        <strong>{entryTitle}</strong>
+                        <small>{statsSourceLabel}</small>
+                      </div>
+                      <div className="playbook-aplus-study-card-pills">
+                        <span className={`playbook-aplus-link-status ${linkStatusClass}`}>{linkStatusLabel}</span>
+                        <span className="playbook-aplus-link-status playbook-aplus-link-status-note">
+                          {journalNoteStatusLabel}
+                        </span>
+                        <span className="playbook-aplus-link-status playbook-aplus-link-status-rating">
+                          {entry.rating}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="playbook-aplus-study-score-grid">
+                      {studyScoreTiles.map((tile) => (
+                        <div key={`${entry.id}-study-score-${tile.label}`}>
+                          <span>{tile.label}</span>
+                          <strong className={"className" in tile ? tile.className : undefined}>{tile.value}</strong>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="playbook-aplus-study-grid">
+                      <section className="playbook-aplus-study-section">
+                        <div className="playbook-aplus-study-section-header">
+                          <span>Trade Blueprint</span>
+                        </div>
+                        <dl className="playbook-aplus-study-detail-list">
+                          {tradeBlueprintRows.map((row) => (
+                            <div key={`${entry.id}-blueprint-${row.label}`}>
+                              <dt>{row.label}</dt>
+                              <dd>{row.value}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      </section>
+
+                      <section className="playbook-aplus-study-section">
+                        <div className="playbook-aplus-study-section-header">
+                          <span>Execution Read</span>
+                        </div>
+                        <dl className="playbook-aplus-study-detail-list">
+                          {executionReadRows.map((row) => (
+                            <div key={`${entry.id}-execution-${row.label}`}>
+                              <dt>{row.label}</dt>
+                              <dd>{row.value}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      </section>
+
+                      <section className="playbook-aplus-study-section">
+                        <div className="playbook-aplus-study-section-header">
+                          <span>Tags</span>
+                        </div>
+                        {studyTagGroups.length > 0 ? (
+                          <div className="playbook-aplus-study-tag-groups">
+                            {studyTagGroups.map((group) => (
+                              <div key={`${entry.id}-study-tags-${group.label}`}>
+                                <span>{group.label}</span>
+                                <strong>{formatListValue(group.values)}</strong>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="playbook-aplus-study-empty">No tags recorded.</p>
+                        )}
+                      </section>
+
+                      <section className="playbook-aplus-study-section playbook-aplus-study-section-wide playbook-aplus-study-note-section">
+                        <div className="playbook-aplus-study-section-header">
+                          <span>{journalTradeNote ? "Tagged Journal Note" : "Tagged Journal Note Missing"}</span>
+                          <small>
+                            {journalTradeNotePage
+                              ? `${journalTradeNotePage.tradeDate} journal note`
+                              : "No linked journal note found"}
+                          </small>
+                        </div>
+                        {journalTradeNote ? (
+                          <>
+                            <div className="playbook-aplus-journal-note-meta">
+                              <span>{journalTradeNote.ticker || displaySnapshot?.symbol || "Trade"}</span>
+                              {journalTradeNote.playbook ? <span>{journalTradeNote.playbook}</span> : null}
+                              {journalTradeNote.mistakes.map((mistake) => (
+                                <span key={`${entry.id}-study-mistake-${mistake}`}>{mistake}</span>
+                              ))}
+                            </div>
+                            <JournalRichTextEditor
+                              content={journalTradeNote.content}
+                              onChange={() => undefined}
+                              readOnly
+                              compact
+                              autosize
+                              appearance="notion"
+                              onImageOpen={onExpandImage}
+                            />
+                            {onOpenJournalDate && journalTradeNotePage ? (
+                              <div className="playbook-aplus-journal-note-actions">
+                                <button
+                                  type="button"
+                                  className="mini-action mini-action-soft"
+                                  onClick={() => onOpenJournalDate(journalTradeNotePage.tradeDate)}
+                                >
+                                  Edit In Journal
+                                </button>
+                              </div>
+                            ) : null}
+                            {hasJournalDocContent(entry.notes) ? (
+                              <details className="playbook-aplus-local-note-details">
+                                <summary>Saved A+ note fallback</summary>
+                                <JournalRichTextEditor
+                                  content={entry.notes}
+                                  onChange={(content) =>
+                                    setPlaybooks((current) =>
+                                      updatePlaybookAPlusExample(current, playbook.id, entry.id, { notes: content })
+                                    )
+                                  }
+                                  onImageInsert={createExampleInlineImageInsertHandler(entry.id)}
+                                  placeholder="Fallback A+ note"
+                                  appearance="notion"
+                                />
+                              </details>
+                            ) : null}
+                          </>
+                        ) : (
+                          <>
+                            <p className="playbook-aplus-study-empty">
+                              No tagged journal note is linked to this example yet.
+                            </p>
+                            <JournalRichTextEditor
+                              content={entry.notes}
+                              onChange={(content) =>
+                                setPlaybooks((current) =>
+                                  updatePlaybookAPlusExample(current, playbook.id, entry.id, { notes: content })
+                                )
+                              }
+                              onImageInsert={createExampleInlineImageInsertHandler(entry.id)}
+                              placeholder="No linked Journal trade note yet. Add the trade note in Journal, or keep a fallback note here."
+                              appearance="notion"
+                            />
+                            {onOpenJournalDate && (trade?.tradeDate || entry.tradeDate) ? (
+                              <div className="playbook-aplus-journal-note-actions">
+                                <button
+                                  type="button"
+                                  className="mini-action mini-action-soft"
+                                  onClick={() => onOpenJournalDate(trade?.tradeDate || entry.tradeDate)}
+                                >
+                                  Open Journal Day
+                                </button>
+                              </div>
+                            ) : null}
+                          </>
+                        )}
+                      </section>
+                    </div>
+                  </section>
 
                   <div className="playbook-aplus-attachment-row">
                     <button
@@ -1016,21 +1759,21 @@ export const APlusExampleLibrary = ({
                     </section>
 
                     <section
-                      className={`playbook-aplus-trade-stats${trade ? "" : " playbook-aplus-trade-stats-missing"}`}
+                      className={`playbook-aplus-trade-stats${
+                        displaySnapshot ? (trade ? "" : " playbook-aplus-trade-stats-snapshot") : " playbook-aplus-trade-stats-missing"
+                      }`}
                       aria-label="Trade stats snapshot"
                     >
-                      {trade ? (
+                      {displaySnapshot ? (
                         <>
                           <div className="playbook-aplus-trade-stats-header">
-                            <strong>Trade Stats</strong>
-                            <span>
-                              {trade.status} - {trade.side} - {trade.game || "No game tag"}
-                            </span>
+                            <strong>{trade ? "Trade Stats" : "Saved Trade Snapshot"}</strong>
+                            <span>{statsSourceLabel}</span>
                           </div>
                           <div className="playbook-aplus-meta-grid">
                             <div className="playbook-aplus-meta-tile">
                               <span>Symbol</span>
-                              <strong>{trade.symbol || "-"}</strong>
+                              <strong>{displaySnapshot.symbol || "-"}</strong>
                             </div>
                             <div className="playbook-aplus-meta-tile">
                               <span>Setup</span>
@@ -1038,20 +1781,20 @@ export const APlusExampleLibrary = ({
                             </div>
                             <div className="playbook-aplus-meta-tile">
                               <span>Win / Loss</span>
-                              <strong>{trade.status}</strong>
+                              <strong>{displaySnapshot.status || "-"}</strong>
                             </div>
                           </div>
                           <div className="playbook-aplus-stat-grid">
                             <div className="playbook-aplus-stat-tile">
                               <span>Net PnL</span>
-                              <strong className={getSignedValueClassName(trade.netPnlUsd)}>
-                                {formatSignedMoney(trade.netPnlUsd)}
+                              <strong className={getSignedValueClassName(displaySnapshot.netPnlUsd)}>
+                                {formatSignedMoney(displaySnapshot.netPnlUsd)}
                               </strong>
                             </div>
                             <div className="playbook-aplus-stat-tile">
                               <span>Return / Share</span>
-                              <strong className={getSignedValueClassName(trade.returnPerShare)}>
-                                {formatSignedPerShare(trade.returnPerShare)}
+                              <strong className={getSignedValueClassName(displaySnapshot.returnPerShare)}>
+                                {formatSignedPerShare(displaySnapshot.returnPerShare)}
                               </strong>
                             </div>
                             <div className="playbook-aplus-stat-tile">
@@ -1062,35 +1805,44 @@ export const APlusExampleLibrary = ({
                             </div>
                             <div className="playbook-aplus-stat-tile">
                               <span>Size</span>
-                              <strong>{formatSize(trade.size)}</strong>
+                              <strong>{formatSize(displaySnapshot.size)}</strong>
                             </div>
                             <div className="playbook-aplus-stat-tile">
                               <span>Entry</span>
-                              <strong>{formatPrice(trade.entryPrice)}</strong>
+                              <strong>{formatPrice(displaySnapshot.entryPrice)}</strong>
                             </div>
                             <div className="playbook-aplus-stat-tile">
                               <span>Exit</span>
-                              <strong>{formatPrice(trade.exitPrice)}</strong>
+                              <strong>{formatPrice(displaySnapshot.exitPrice)}</strong>
                             </div>
                             <div className="playbook-aplus-stat-tile">
                               <span>Hold Time</span>
-                              <strong>{trade.holdTime || "-"}</strong>
+                              <strong>{getSnapshotHoldLabel(displaySnapshot)}</strong>
                             </div>
                             <div className="playbook-aplus-stat-tile">
                               <span>Executions</span>
-                              <strong>{executionCount}</strong>
+                              <strong>{displaySnapshot.executionCount}</strong>
                             </div>
                             <div className="playbook-aplus-stat-tile">
                               <span>Adds</span>
                               <strong>
-                                {addCount} total ({averagedDownCount} avg down / {addedToWinnerCount} winner)
+                                {displaySnapshot.addCount} total ({displaySnapshot.averagedDownCount} avg down /{" "}
+                                {displaySnapshot.addedToWinnerCount} winner)
                               </strong>
                             </div>
                             <div className="playbook-aplus-stat-tile">
                               <span>Fees</span>
-                              <strong>{formatCurrency(trade.feesUsd)}</strong>
+                              <strong>{formatCurrency(displaySnapshot.feesUsd)}</strong>
                             </div>
                           </div>
+                          {!trade ? (
+                            <p className="playbook-aplus-missing-copy">
+                              The original trade is not loaded right now, so this card is showing its saved snapshot.
+                            </p>
+                          ) : null}
+                          {relinkFeedbackByExampleId[entry.id] ? (
+                            <p className="playbook-aplus-relink-feedback">{relinkFeedbackByExampleId[entry.id]}</p>
+                          ) : null}
                         </>
                       ) : (
                         <>
@@ -1113,7 +1865,7 @@ export const APlusExampleLibrary = ({
                             </div>
                           </div>
                           <p className="playbook-aplus-missing-copy">
-                            This example is still saved, but its original trade record is no longer in the library.
+                            This example still has its notes and media, but no matching trade is loaded.
                           </p>
                           {relinkFeedbackByExampleId[entry.id] ? (
                             <p className="playbook-aplus-relink-feedback">{relinkFeedbackByExampleId[entry.id]}</p>
@@ -1123,18 +1875,8 @@ export const APlusExampleLibrary = ({
                     </section>
                   </div>
 
-                  <div className="playbook-aplus-notes">
-                    <JournalRichTextEditor
-                      content={entry.notes}
-                      onChange={(content) =>
-                        setPlaybooks((current) =>
-                          updatePlaybookAPlusExample(current, playbook.id, entry.id, { notes: content })
-                        )
-                      }
-                      onImageInsert={createExampleInlineImageInsertHandler(entry.id)}
-                      placeholder="Add why this is an A+ example, execution notes, and what to repeat."
-                    />
-                  </div>
+                    </>
+                  ) : null}
                 </section>
               );
             })

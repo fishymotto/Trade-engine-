@@ -15,6 +15,7 @@ export type ReviewChecklistState = Record<ReviewChecklistGroupKey, boolean[]>;
 export interface ReviewRiskCheckMetrics {
   riskSplitFollowed: string;
   corePlaybookTrades: string;
+  corePlaybooks: string[];
   wakeUpPlanFollowed: string;
 }
 

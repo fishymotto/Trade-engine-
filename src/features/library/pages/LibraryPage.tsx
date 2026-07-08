@@ -18,13 +18,19 @@ import {
   createLibraryPage,
   createLibraryStrongViewRow,
   createLibraryQuoteRow,
+  ensureWeeklyImprovementGoalsPage,
+  formatWeeklyImprovementGoalsRange,
+  getWeeklyImprovementGoalsPageRange,
+  getWeeklyImprovementGoalsWeekRange,
   libraryCollections,
   loadLibraryPages,
   recoverLibraryPagesFromDesktopBackup,
-  saveLibraryPages
+  saveLibraryPages,
+  WEEKLY_IMPROVEMENT_GOALS_COLLECTION_ID
 } from "../../../lib/library/libraryStore";
 import type { LibraryCollectionId, LibraryPageRecord } from "../../../types/library";
 import type { JournalPageRecord, JournalScreenshotTagRecord, JournalScreenshotTradeLink } from "../../../types/journal";
+import type { LibraryNavigationState, LibrarySection, PlaybooksNavigationState } from "../../../types/app";
 import type { Settings } from "../../../types/trade";
 import type { GroupedTrade } from "../../../types/trade";
 import { ReviewDatabaseTable } from "../components/ReviewDatabaseTable";
@@ -47,7 +53,6 @@ import {
   computeOverallScore,
   computeReviewMetrics,
   getCurrencyDailyShutdownRiskFromSettings,
-  getDailyShutdownRiskFromSettings,
   getReviewPeriodForCollection,
   getPreviousReviewRange,
   getReviewRangesFromTrades,
@@ -85,6 +90,18 @@ const formatUpdatedAt = (value: string): string => {
     day: "numeric",
     year: "numeric"
   });
+};
+
+const compareWeeklyImprovementGoalsPages = (left: LibraryPageRecord, right: LibraryPageRecord): number => {
+  const leftStart = getWeeklyImprovementGoalsPageRange(left)?.start ?? "";
+  const rightStart = getWeeklyImprovementGoalsPageRange(right)?.start ?? "";
+  const weekCompare = rightStart.localeCompare(leftStart);
+
+  if (weekCompare !== 0) {
+    return weekCompare;
+  }
+
+  return right.updatedAt.localeCompare(left.updatedAt);
 };
 
 const getDateOnlyIsoString = (value: string): string => {
@@ -496,6 +513,54 @@ const normalizeIsoTradeDate = (value: string): string => {
   return parsed.toISOString().slice(0, 10);
 };
 
+const parseReviewLocalDate = (value: string): Date | null => {
+  const normalized = normalizeIsoTradeDate(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return null;
+  }
+
+  const parsed = new Date(`${normalized}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const countWeekdaysInReviewRange = (range: { start: string; end: string }): number => {
+  const startDate = parseReviewLocalDate(range.start);
+  const endDate = parseReviewLocalDate(range.end);
+  if (!startDate || !endDate) {
+    return 0;
+  }
+
+  let count = 0;
+  const cursor = new Date(startDate);
+  while (cursor <= endDate) {
+    const day = cursor.getDay();
+    if (day !== 0 && day !== 6) {
+      count += 1;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return count;
+};
+
+const parseWakeUpPlanMetric = (value: unknown): number | null => {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 const formatSignedUsd = (value: number): string => {
   const amount = Number.isFinite(value) ? value : 0;
   const formatted = Math.abs(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -524,6 +589,11 @@ type ReviewCompareCardData = {
   previousLabel: string;
   deltaLabel: string;
   deltaTone: ReviewComparisonTone;
+};
+
+type WakeUpPlanAggregate = {
+  value: number;
+  denominator: number;
 };
 
 type TaggedReviewChart = {
@@ -995,6 +1065,10 @@ interface LibraryPageProps {
   onSelectTrade: (tradeId: string, tradeDate: string) => void;
   onOpenJournalDate?: (tradeDate: string) => void;
   onViewReportsForPlaybook?: (playbookName: string) => void;
+  navigationState?: LibraryNavigationState;
+  onNavigationStateChange?: (state: LibraryNavigationState) => void;
+  playbooksNavigationState?: PlaybooksNavigationState;
+  onPlaybooksNavigationStateChange?: (state: PlaybooksNavigationState) => void;
   onViewReportsForReviewPeriod?: (range: {
     period: ReviewPeriod;
     start: string;
@@ -1002,7 +1076,7 @@ interface LibraryPageProps {
     comparisonStart: string;
     comparisonEnd: string;
   }) => void;
-  initialSection?: "collections" | "playbooks" | "chart-library";
+  initialSection?: LibrarySection;
 }
 
 export const LibraryPage = ({
@@ -1012,10 +1086,16 @@ export const LibraryPage = ({
   onSelectTrade,
   onOpenJournalDate,
   onViewReportsForPlaybook,
+  navigationState,
+  onNavigationStateChange,
+  playbooksNavigationState,
+  onPlaybooksNavigationStateChange,
   onViewReportsForReviewPeriod,
   initialSection = "collections"
 }: LibraryPageProps) => {
-  const [activeSection, setActiveSection] = useState<"collections" | "playbooks" | "chart-library">(initialSection);
+  const [activeSection, setActiveSection] = useState<LibrarySection>(
+    () => navigationState?.activeSection ?? initialSection
+  );
   const {
     options: strongViewTickerOptionsBase,
     addOption: addStrongViewTickerOption,
@@ -1079,7 +1159,6 @@ export const LibraryPage = ({
     () => reviewTemplates.monthlyTemplates[0]?.id ?? ""
   );
   const [showLegacyReviewNotes, setShowLegacyReviewNotes] = useState(false);
-  const dailyShutdownRiskUsd = getDailyShutdownRiskFromSettings(settings);
   const currencyDailyShutdownRiskUsd = getCurrencyDailyShutdownRiskFromSettings(settings);
   const hasRetriedDesktopRecoveryRef = useRef(false);
   const strongViewMorningChatInputRef = useRef<HTMLInputElement | null>(null);
@@ -1110,6 +1189,11 @@ export const LibraryPage = ({
     setPages(nextPages);
   };
 
+  const updateActiveSection = (nextSection: LibrarySection) => {
+    setActiveSection(nextSection);
+    onNavigationStateChange?.({ activeSection: nextSection });
+  };
+
   const deleteUnusedLibraryAttachments = (paths: string[], nextPages: LibraryPageRecord[]) => {
     const uniquePaths = Array.from(new Set(paths.map((path) => path.trim()).filter(Boolean)));
     for (const path of uniquePaths) {
@@ -1123,9 +1207,13 @@ export const LibraryPage = ({
   };
 
   useEffect(() => {
-    setActiveSection(initialSection);
+    setActiveSection(navigationState?.activeSection ?? initialSection);
     setCollectionView("list");
-  }, [initialSection]);
+  }, [initialSection, navigationState?.activeSection]);
+
+  useEffect(() => {
+    onNavigationStateChange?.({ activeSection });
+  }, [activeSection, onNavigationStateChange]);
 
   useEffect(() => {
     setPages((current) => {
@@ -1203,6 +1291,15 @@ export const LibraryPage = ({
   }, []);
 
   useEffect(() => {
+    const ensured = ensureWeeklyImprovementGoalsPage(pages);
+    if (!ensured.created) {
+      return;
+    }
+
+    persistPages(ensured.pages);
+  }, [pages]);
+
+  useEffect(() => {
     const handleHydrated = () => {
       const nextPages = loadLibraryPages();
       const nextTemplates = loadReviewTemplates();
@@ -1245,7 +1342,6 @@ export const LibraryPage = ({
           trades,
           rangeStart: range.start,
           rangeEnd: range.end,
-          dailyShutdownRiskUsd,
           currencyDailyShutdownRiskUsd,
           currencySymbolList: settings.currencySymbolList
         });
@@ -1265,7 +1361,7 @@ export const LibraryPage = ({
 
       return changed ? next : current;
     });
-  }, [currencyDailyShutdownRiskUsd, dailyShutdownRiskUsd, settings.currencySymbolList, trades]);
+  }, [currencyDailyShutdownRiskUsd, settings.currencySymbolList, trades]);
 
   useEffect(() => {
     if (trades.length === 0) {
@@ -1338,16 +1434,22 @@ export const LibraryPage = ({
     [selectedCollectionId]
   );
 
-  const collectionPages = useMemo(
-    () => pages.filter((page) => page.collectionId === selectedCollectionId),
-    [pages, selectedCollectionId]
-  );
+  const collectionPages = useMemo(() => {
+    const filteredPages = pages.filter((page) => page.collectionId === selectedCollectionId);
+
+    if (selectedCollectionId !== WEEKLY_IMPROVEMENT_GOALS_COLLECTION_ID) {
+      return filteredPages;
+    }
+
+    return [...filteredPages].sort(compareWeeklyImprovementGoalsPages);
+  }, [pages, selectedCollectionId]);
 
   const isNotesCollection = selectedCollectionId === "idea-inbox";
   const isBookClub = selectedCollectionId === "book-club";
   const isStrongViews = selectedCollectionId === "strong-views";
   const isQuotes = selectedCollectionId === "quotes";
   const isTickerGroups = selectedCollectionId === "ticker-groups";
+  const isWeeklyImprovementGoals = selectedCollectionId === WEEKLY_IMPROVEMENT_GOALS_COLLECTION_ID;
   const selectedReviewPeriod = getReviewPeriodForCollection(selectedCollectionId);
   const isReviewCollection = selectedReviewPeriod !== null;
 
@@ -1675,6 +1777,10 @@ export const LibraryPage = ({
     () => pages.find((page) => page.id === selectedPageId) ?? null,
     [pages, selectedPageId]
   );
+  const selectedWeeklyImprovementGoalsRange = useMemo(
+    () => (selectedPage ? getWeeklyImprovementGoalsPageRange(selectedPage) : null),
+    [selectedPage]
+  );
   const selectedReviewMppCardData = useMemo(() => {
     if (!selectedPage) {
       return null;
@@ -1710,7 +1816,6 @@ export const LibraryPage = ({
       trades,
       rangeStart: range.start,
       rangeEnd: range.end,
-      dailyShutdownRiskUsd,
       currencyDailyShutdownRiskUsd,
       currencySymbolList: settings.currencySymbolList
     });
@@ -1718,7 +1823,6 @@ export const LibraryPage = ({
       trades,
       rangeStart: previousRange.start,
       rangeEnd: previousRange.end,
-      dailyShutdownRiskUsd,
       currencyDailyShutdownRiskUsd,
       currencySymbolList: settings.currencySymbolList
     });
@@ -1727,7 +1831,10 @@ export const LibraryPage = ({
       previousPeriodLabel: selectedReviewPeriod === "monthly" ? "Last month" : "Last week",
       trades: buildReviewCountCardData(currentMetrics.tradeCount, previousMetrics.tradeCount, "increase"),
       shares: buildReviewCountCardData(currentMetrics.shares, previousMetrics.shares, "increase"),
-      winRate: buildReviewPercentCardData(currentMetrics.winRate, previousMetrics.winRate),
+      winRate: {
+        ...buildReviewPercentCardData(currentMetrics.winRate, previousMetrics.winRate),
+        currentDetailLabel: `${currentMetrics.winCount}/${currentMetrics.tradeCount} wins`
+      },
       net: buildReviewMoneyCardData(currentMetrics.net, previousMetrics.net),
       gross: buildReviewMoneyCardData(currentMetrics.gross, previousMetrics.gross),
       redDays: buildReviewCountCardData(currentMetrics.redDays, previousMetrics.redDays, "decrease"),
@@ -1735,13 +1842,54 @@ export const LibraryPage = ({
     };
   }, [
     currencyDailyShutdownRiskUsd,
-    dailyShutdownRiskUsd,
     isReviewCollection,
     selectedPage,
     selectedReviewPeriod,
     settings.currencySymbolList,
     trades
   ]);
+  const selectedMonthlyWakeUpPlanAggregate = useMemo<WakeUpPlanAggregate | null>(() => {
+    if (!selectedPage || selectedReviewPeriod !== "monthly") {
+      return null;
+    }
+
+    const monthRange = getReviewRange(selectedPage.properties);
+    if (!monthRange) {
+      return null;
+    }
+
+    let total = 0;
+    let hasWeeklyValue = false;
+
+    for (const page of pages) {
+      if (page.collectionId !== "weekly-review") {
+        continue;
+      }
+
+      const weekRange = getReviewRange(page.properties);
+      if (!weekRange || weekRange.end < monthRange.start || weekRange.start > monthRange.end) {
+        continue;
+      }
+
+      const weeklyReflection = coerceReviewReflectionState(page.properties?.[REVIEW_REFLECTION_KEY]);
+      const weeklyWakeUpCount = parseWakeUpPlanMetric(weeklyReflection.riskCheckMetrics.wakeUpPlanFollowed);
+      if (weeklyWakeUpCount === null) {
+        continue;
+      }
+
+      total += weeklyWakeUpCount;
+      hasWeeklyValue = true;
+    }
+
+    if (!hasWeeklyValue) {
+      return null;
+    }
+
+    return {
+      value: total,
+      denominator: countWeekdaysInReviewRange(monthRange)
+    };
+  }, [pages, selectedPage, selectedReviewPeriod]);
 
   const selectedReviewReportRange = useMemo(() => {
     if (!selectedPage || !isReviewCollection || !selectedReviewPeriod) {
@@ -2625,6 +2773,16 @@ export const LibraryPage = ({
   };
 
   const handleCreatePage = () => {
+    if (selectedCollectionId === WEEKLY_IMPROVEMENT_GOALS_COLLECTION_ID) {
+      const ensured = ensureWeeklyImprovementGoalsPage(pagesRef.current);
+      if (ensured.created) {
+        persistPages(ensured.pages);
+      }
+      setSelectedPageId(ensured.page.id);
+      setCollectionView("page");
+      return;
+    }
+
     const newPage = createLibraryPage(selectedCollectionId);
     const seededPage =
       selectedCollectionId === "idea-inbox"
@@ -2635,6 +2793,24 @@ export const LibraryPage = ({
       setNotesTab(DEFAULT_NOTES_TAB);
     }
     setSelectedPageId(seededPage.id);
+    setCollectionView("page");
+  };
+
+  const handleSetNewWeeklyImprovementGoalsWeek = () => {
+    const latestRange = pagesRef.current
+      .filter((page) => page.collectionId === WEEKLY_IMPROVEMENT_GOALS_COLLECTION_ID)
+      .map((page) => getWeeklyImprovementGoalsPageRange(page))
+      .filter((range): range is { start: string; end: string } => Boolean(range))
+      .sort((left, right) => right.start.localeCompare(left.start))[0] ??
+      getWeeklyImprovementGoalsWeekRange();
+    const nextWeek = new Date(`${latestRange.start}T00:00:00`);
+    nextWeek.setDate(nextWeek.getDate() + 7);
+
+    const ensured = ensureWeeklyImprovementGoalsPage(pagesRef.current, nextWeek);
+    if (ensured.created) {
+      persistPages(ensured.pages);
+    }
+    setSelectedPageId(ensured.page.id);
     setCollectionView("page");
   };
 
@@ -2839,7 +3015,7 @@ export const LibraryPage = ({
                       : ""
                   }`}
                   onClick={() => {
-                    setActiveSection("collections");
+                    updateActiveSection("collections");
                     setSelectedCollectionId(collection.id);
                     setSelectedPageId("");
                     setCollectionView("list");
@@ -2885,7 +3061,7 @@ export const LibraryPage = ({
                 activeSection === "playbooks" ? " library-collection-button-active" : ""
               }`}
               onClick={() => {
-                setActiveSection("playbooks");
+                updateActiveSection("playbooks");
                 setSelectedPageId("");
                 setCollectionView("list");
                 setNotesTab(DEFAULT_NOTES_TAB);
@@ -2926,7 +3102,7 @@ export const LibraryPage = ({
                 activeSection === "chart-library" ? " library-collection-button-active" : ""
               }`}
               onClick={() => {
-                setActiveSection("chart-library");
+                updateActiveSection("chart-library");
                 setSelectedPageId("");
                 setCollectionView("list");
                 setNotesTab(DEFAULT_NOTES_TAB);
@@ -2981,6 +3157,8 @@ export const LibraryPage = ({
                 embedded
                 trades={trades}
                 journalPages={journalPages}
+                navigationState={playbooksNavigationState}
+                onNavigationStateChange={onPlaybooksNavigationStateChange}
                 onSelectTrade={onSelectTrade}
                 onOpenJournalDate={onOpenJournalDate}
                 onViewReportsForPlaybook={onViewReportsForPlaybook}
@@ -2996,25 +3174,38 @@ export const LibraryPage = ({
                   <h2>{selectedCollection.name}</h2>
                   <p>{selectedCollection.description}</p>
                 </div>
-                <button
-                  className="button button-primary"
-                  type="button"
-                  onClick={isQuotes ? handleCreateQuoteRow : isStrongViews ? handleCreateStrongViewRow : handleCreatePage}
-                >
-                  {isReviewCollection
-                    ? selectedReviewPeriod === "weekly"
-                      ? "New Weekly Review"
-                      : "New Monthly Review"
-                    : isTickerGroups
-                      ? "New Group"
-                      : isStrongViews
-                        ? "New Strong View"
-                      : isQuotes
-                        ? "New Quote"
-                      : isNotesCollection
-                        ? "New Note"
-                        : "New Page"}
-                </button>
+                <div className="library-database-header-actions">
+                  {isWeeklyImprovementGoals ? (
+                    <button
+                      className="button button-secondary"
+                      type="button"
+                      onClick={handleSetNewWeeklyImprovementGoalsWeek}
+                    >
+                      Set New Week
+                    </button>
+                  ) : null}
+                  <button
+                    className="button button-primary"
+                    type="button"
+                    onClick={isQuotes ? handleCreateQuoteRow : isStrongViews ? handleCreateStrongViewRow : handleCreatePage}
+                  >
+                    {isReviewCollection
+                      ? selectedReviewPeriod === "weekly"
+                        ? "New Weekly Review"
+                        : "New Monthly Review"
+                      : isWeeklyImprovementGoals
+                        ? "Open Current Week"
+                      : isTickerGroups
+                        ? "New Group"
+                        : isStrongViews
+                          ? "New Strong View"
+                        : isQuotes
+                          ? "New Quote"
+                        : isNotesCollection
+                          ? "New Note"
+                          : "New Page"}
+                  </button>
+                </div>
               </div>
 
               {isNotesCollection ? (
@@ -3686,14 +3877,21 @@ export const LibraryPage = ({
             <div className="library-table-wrap" aria-label={`${selectedCollection.name} database view`}>
               <table className="library-table">
                 <thead>
-                  <tr>
-                    <th>Page</th>
-                    <th>Status</th>
-                    <th>Author</th>
-                    <th>Rating</th>
-                    <th>Tags</th>
-                    <th>Updated</th>
-                  </tr>
+                  {isWeeklyImprovementGoals ? (
+                    <tr>
+                      <th>Week</th>
+                      <th>Updated</th>
+                    </tr>
+                  ) : (
+                    <tr>
+                      <th>Page</th>
+                      <th>Status</th>
+                      <th>Author</th>
+                      <th>Rating</th>
+                      <th>Tags</th>
+                      <th>Updated</th>
+                    </tr>
+                  )}
                 </thead>
                 <tbody>
                   {databasePages.length > 0 ? (
@@ -3712,16 +3910,24 @@ export const LibraryPage = ({
                             {page.title}
                           </button>
                         </td>
-                        <td>{renderPropertyValue(page, "Reading Status", page.status)}</td>
-                        <td>{renderPropertyValue(page, "Author")}</td>
-                        <td>{renderPropertyValue(page, "Rating")}</td>
-                        <td>{page.tags.slice(0, 3).join(", ") || "-"}</td>
-                        <td>{formatUpdatedAt(page.updatedAt)}</td>
+                        {isWeeklyImprovementGoals ? (
+                          <td>{formatUpdatedAt(page.updatedAt)}</td>
+                        ) : (
+                          <>
+                            <td>{renderPropertyValue(page, "Reading Status", page.status)}</td>
+                            <td>{renderPropertyValue(page, "Author")}</td>
+                            <td>{renderPropertyValue(page, "Rating")}</td>
+                            <td>{page.tags.slice(0, 3).join(", ") || "-"}</td>
+                            <td>{formatUpdatedAt(page.updatedAt)}</td>
+                          </>
+                        )}
                       </tr>
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={6}>No pages yet. Create the first page in this collection.</td>
+                      <td colSpan={isWeeklyImprovementGoals ? 2 : 6}>
+                        No pages yet. Create the first page in this collection.
+                      </td>
                     </tr>
                   )}
                 </tbody>
@@ -3737,7 +3943,7 @@ export const LibraryPage = ({
               className={`library-detail-card${
                 (isBookClub && isBookRow(selectedPage)) || (isStrongViews && isStrongViewRow(selectedPage))
                   ? " library-open-page-card"
-                  : isReviewCollection || isTickerGroups
+                  : isReviewCollection || isTickerGroups || isWeeklyImprovementGoals
                     ? " library-open-page-card"
                     : ""
               }${isReviewCollection ? " library-review-page-card" : ""}`}
@@ -3832,7 +4038,7 @@ export const LibraryPage = ({
                         onImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "ticker-group-description")}
                         placeholder="Optional short description"
                         compact
-                        showBlockActions={false}
+                        blockActionsVisibility="focus"
                         draftStorageKey={getLibraryDraftStorageKey(selectedPage.id, "ticker-group-description")}
                         sourceUpdatedAt={selectedPage.updatedAt}
                       />
@@ -3873,7 +4079,7 @@ export const LibraryPage = ({
                 </>
               ) : isReviewCollection && selectedReviewPeriod ? (
                 <>
-                  <div className="library-open-page-properties">
+                  <div className="library-open-page-properties library-review-metric-grid">
                     <label className="library-open-page-property">
                       <span>{selectedReviewPeriod === "weekly" ? "Week Start" : "Month Start"}</span>
                       <input
@@ -3890,17 +4096,9 @@ export const LibraryPage = ({
                         onChange={(event) => updatePageProperty(selectedPage, REVIEW_PROPERTY_KEYS.rangeEnd, event.target.value)}
                       />
                     </label>
-                    <label className="library-open-page-property">
-                      <span>Stock Daily Risk</span>
-                      <input type="text" readOnly value={`$${dailyShutdownRiskUsd.toFixed(2)}`} />
-                    </label>
-                    <label className="library-open-page-property">
-                      <span>Currency Daily Risk</span>
-                      <input type="text" readOnly value={`$${currencyDailyShutdownRiskUsd.toFixed(2)}`} />
-                    </label>
-                    <label className="library-open-page-property">
+                    <label className="library-open-page-property library-open-page-property-compare">
                       <span>Closed Orders</span>
-                      <input type="text" readOnly value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.closedOrders, "-")} />
+                      <strong>{renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.closedOrders, "-")}</strong>
                     </label>
                     <label className="library-open-page-property library-open-page-property-compare">
                       <span>Trades</span>
@@ -3942,6 +4140,9 @@ export const LibraryPage = ({
                         {selectedReviewComparisonData?.winRate.currentLabel ??
                           renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.winRate, "-")}
                       </strong>
+                      {selectedReviewComparisonData?.winRate.currentDetailLabel ? (
+                        <small>{selectedReviewComparisonData.winRate.currentDetailLabel}</small>
+                      ) : null}
                       {selectedReviewComparisonData ? (
                         <small>
                           {selectedReviewComparisonData.previousPeriodLabel} {selectedReviewComparisonData.winRate.previousLabel}
@@ -4043,7 +4244,7 @@ export const LibraryPage = ({
                       ) : null}
                     </label>
 
-                    <label className="library-open-page-property">
+                    <label className="library-open-page-property library-review-score-card">
                       <span>Risk Management (1-5)</span>
                       <select
                         value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.risk, "")}
@@ -4056,7 +4257,7 @@ export const LibraryPage = ({
                         ))}
                       </select>
                     </label>
-                    <label className="library-open-page-property">
+                    <label className="library-open-page-property library-review-score-card">
                       <span>Psychology (1-5)</span>
                       <select
                         value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.psychology, "")}
@@ -4069,7 +4270,7 @@ export const LibraryPage = ({
                         ))}
                       </select>
                     </label>
-                    <label className="library-open-page-property">
+                    <label className="library-open-page-property library-review-score-card">
                       <span>Trading Plans (1-5)</span>
                       <select
                         value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.tradingPlans, "")}
@@ -4082,7 +4283,20 @@ export const LibraryPage = ({
                         ))}
                       </select>
                     </label>
-                    <label className="library-open-page-property">
+                    <label className="library-open-page-property library-review-score-card">
+                      <span>Execution (1-5)</span>
+                      <select
+                        value={renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.execution, "")}
+                        onChange={(event) => updatePageProperty(selectedPage, REVIEW_PROPERTY_KEYS.execution, event.target.value)}
+                      >
+                        {scoreOptions.map((score) => (
+                          <option key={score || "empty"} value={score}>
+                            {score || "\u2014"}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="library-open-page-property library-review-score-card">
                       <span>Overall (1-5)</span>
                       {(() => {
                         const raw = renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.overall, "");
@@ -4169,6 +4383,7 @@ export const LibraryPage = ({
                   <ReviewReflectionPanel
                     period={selectedReviewPeriod ?? "weekly"}
                     pageId={selectedPage.id}
+                    reviewRange={getReviewRange(selectedPage.properties)}
                     timeLabels={
                       selectedReviewPeriod === "monthly"
                         ? ["Week 1", "Week 2", "Week 3", "Week 4", "Week 5"]
@@ -4177,6 +4392,9 @@ export const LibraryPage = ({
                     improvementGoalsLabel={
                       selectedReviewPeriod === "monthly" ? "Next Month Improvement Goals" : "Next Week Improvement Goals"
                     }
+                    wakeUpPlanAggregate={
+                      selectedReviewPeriod === "monthly" ? selectedMonthlyWakeUpPlanAggregate : null
+                    }
                     templates={
                       selectedReviewPeriod === "monthly" ? reviewTemplates.monthlyTemplates : reviewTemplates.weeklyTemplates
                     }
@@ -4184,6 +4402,8 @@ export const LibraryPage = ({
                       selectedReviewPeriod === "monthly" ? selectedMonthlyReviewTemplateId : selectedWeeklyReviewTemplateId
                     }
                     reflection={coerceReviewReflectionState(selectedPage.properties?.[REVIEW_REFLECTION_KEY])}
+                    trades={trades}
+                    settings={settings}
                     defaultBookOptions={reviewReadingBookDefaults}
                     defaultAuthorOptions={reviewReadingAuthorDefaults}
                     bookAuthorByTitle={reviewReadingBookAuthorByTitle}
@@ -4388,7 +4608,7 @@ export const LibraryPage = ({
                   </div>
 
                   <div className="library-strong-view-level-grid">
-                    <label className="library-open-page-note">
+                    <div className="library-open-page-note">
                       <span>Open / Close</span>
                       <JournalRichTextEditor
                         key={`${selectedPage.id}-strong-view-open-close`}
@@ -4397,12 +4617,12 @@ export const LibraryPage = ({
                         onImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "strong-view-open-close")}
                         placeholder="Open/close behavior to watch."
                         compact
-                        showBlockActions={false}
+                        blockActionsVisibility="focus"
                         draftStorageKey={getLibraryDraftStorageKey(selectedPage.id, "strong-view-open-close")}
                         sourceUpdatedAt={selectedPage.updatedAt}
                       />
-                    </label>
-                    <label className="library-open-page-note">
+                    </div>
+                    <div className="library-open-page-note">
                       <span>Support</span>
                       <JournalRichTextEditor
                         key={`${selectedPage.id}-strong-view-support`}
@@ -4411,12 +4631,12 @@ export const LibraryPage = ({
                         onImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "strong-view-support")}
                         placeholder="Support levels and context."
                         compact
-                        showBlockActions={false}
+                        blockActionsVisibility="focus"
                         draftStorageKey={getLibraryDraftStorageKey(selectedPage.id, "strong-view-support")}
                         sourceUpdatedAt={selectedPage.updatedAt}
                       />
-                    </label>
-                    <label className="library-open-page-note">
+                    </div>
+                    <div className="library-open-page-note">
                       <span>Resistance</span>
                       <JournalRichTextEditor
                         key={`${selectedPage.id}-strong-view-resistance`}
@@ -4425,15 +4645,15 @@ export const LibraryPage = ({
                         onImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "strong-view-resistance")}
                         placeholder="Resistance levels and context."
                         compact
-                        showBlockActions={false}
+                        blockActionsVisibility="focus"
                         draftStorageKey={getLibraryDraftStorageKey(selectedPage.id, "strong-view-resistance")}
                         sourceUpdatedAt={selectedPage.updatedAt}
                       />
-                    </label>
+                    </div>
                   </div>
 
                   <div className="library-strong-view-story-grid">
-                    <label className="library-open-page-note">
+                    <div className="library-open-page-note">
                       <span>Notes</span>
                       <JournalRichTextEditor
                         key={`${selectedPage.id}-strong-view-notes`}
@@ -4442,12 +4662,12 @@ export const LibraryPage = ({
                         onImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "strong-view-notes")}
                         placeholder="Additional context and observations."
                         compact
-                        showBlockActions={false}
+                        blockActionsVisibility="focus"
                         draftStorageKey={getLibraryDraftStorageKey(selectedPage.id, "strong-view-notes")}
                         sourceUpdatedAt={selectedPage.updatedAt}
                       />
-                    </label>
-                    <label className="library-open-page-note">
+                    </div>
+                    <div className="library-open-page-note">
                       <span>Catalyst</span>
                       <JournalRichTextEditor
                         key={`${selectedPage.id}-strong-view-catalyst`}
@@ -4456,15 +4676,15 @@ export const LibraryPage = ({
                         onImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "strong-view-catalyst")}
                         placeholder="Upcoming catalysts and event risk."
                         compact
-                        showBlockActions={false}
+                        blockActionsVisibility="focus"
                         draftStorageKey={getLibraryDraftStorageKey(selectedPage.id, "strong-view-catalyst")}
                         sourceUpdatedAt={selectedPage.updatedAt}
                       />
-                    </label>
+                    </div>
                   </div>
 
                   <div className="library-strong-view-story-grid">
-                    <label className="library-open-page-note">
+                    <div className="library-open-page-note">
                       <span>Game Plan</span>
                       <JournalRichTextEditor
                         key={`${selectedPage.id}-strong-view-game-plan`}
@@ -4473,11 +4693,11 @@ export const LibraryPage = ({
                         onImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "strong-view-game-plan")}
                         placeholder="Execution plan and invalidation."
                         compact
-                        showBlockActions={false}
+                        blockActionsVisibility="focus"
                         draftStorageKey={getLibraryDraftStorageKey(selectedPage.id, "strong-view-game-plan")}
                         sourceUpdatedAt={selectedPage.updatedAt}
                       />
-                    </label>
+                    </div>
                     <section className="library-strong-view-attachment library-strong-view-attachment-inline">
                       <div className="library-strong-view-attachment-header">
                         <span>Morning Chat</span>
@@ -4532,6 +4752,34 @@ export const LibraryPage = ({
                     </section>
                   </div>
                 </>
+              ) : isWeeklyImprovementGoals ? (
+                <section className="library-weekly-improvement-goals-editor">
+                  <div className="library-weekly-improvement-goals-note">
+                    <span>Shown in Journal</span>
+                    <strong>
+                      {selectedWeeklyImprovementGoalsRange
+                        ? formatWeeklyImprovementGoalsRange(
+                            selectedWeeklyImprovementGoalsRange.start,
+                            selectedWeeklyImprovementGoalsRange.end
+                          )
+                        : "Weekly goals"}
+                    </strong>
+                    <small>
+                      Edit the goals here. The card beneath Closing Checklist is read-only and updates from this page.
+                    </small>
+                  </div>
+                  <JournalRichTextEditor
+                    key={`${selectedPage.id}-weekly-improvement-goals`}
+                    content={selectedPage.content}
+                    onChange={(content) => updatePage(selectedPage.id, { content })}
+                    onImageInsert={createLibraryInlineImageInsertHandler(selectedPage.id, "weekly-improvement-goals")}
+                    placeholder="Add this week's improvement goals."
+                    appearance="notion"
+                    autosize
+                    draftStorageKey={getLibraryDraftStorageKey(selectedPage.id, "weekly-improvement-goals")}
+                    sourceUpdatedAt={selectedPage.updatedAt}
+                  />
+                </section>
               ) : (
                 <>
                   <div className="library-property-grid">

@@ -6,12 +6,31 @@ interface AppLayoutProps {
   activeRoute: AppRoute;
   navItems: AppNavItem[];
   onNavigate: (route: AppRoute) => void;
+  onNavigateBack?: () => void;
+  canNavigateBack?: boolean;
   accountLabel?: string;
   onSignOut?: () => void;
   children: ReactNode;
 }
 
-export const AppLayout = ({ activeRoute, navItems, onNavigate, accountLabel, onSignOut, children }: AppLayoutProps) => {
+const BackNavIcon = () => (
+  <svg className="top-nav-back-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false">
+    <path d="M6 5v18" />
+    <path d="M21.5 6.5 13 14l8.5 7.5z" />
+    <path d="M13 6.5 4.5 14 13 21.5z" />
+  </svg>
+);
+
+export const AppLayout = ({
+  activeRoute,
+  navItems,
+  onNavigate,
+  onNavigateBack,
+  canNavigateBack = false,
+  accountLabel,
+  onSignOut,
+  children
+}: AppLayoutProps) => {
   const highlightedRoute: AppRoute = activeRoute === "playbooks" ? "library" : activeRoute;
 
   return (
@@ -22,6 +41,18 @@ export const AppLayout = ({ activeRoute, navItems, onNavigate, accountLabel, onS
           <span className="brand-subtitle">Offline trading workspace</span>
         </div>
         <nav className="top-nav-links" aria-label="Primary">
+          {onNavigateBack ? (
+            <button
+              type="button"
+              className="top-nav-back-button"
+              onClick={onNavigateBack}
+              disabled={!canNavigateBack}
+              aria-label="Back"
+              title="Back"
+            >
+              <BackNavIcon />
+            </button>
+          ) : null}
           {navItems.map((item) => (
             <button
               key={item.id}

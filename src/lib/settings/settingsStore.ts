@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { Settings } from "../../types/trade";
+import type { RiskSessionSetting, Settings } from "../../types/trade";
 import { canUseMachineLegacyData, syncStores } from "../sync/syncStore";
 import { readLocalStorageItem, writeLocalStorageItem } from "../storage/localStorage";
 import {
@@ -33,6 +33,16 @@ export const DEFAULT_BRL_TICKER_LIST = [
 
 export const DEFAULT_MPP_LOCK_IN_STEPS = [5, 10, 20, 30, 40, 50] as const;
 
+export const DEFAULT_RISK_SESSIONS: RiskSessionSetting[] = [
+  {
+    id: "morning-session",
+    name: "Morning Session",
+    startTime: "09:30",
+    endTime: "10:30",
+    riskAllocationUsd: 18
+  }
+];
+
 export const defaultSettings: Settings = {
   notionToken: "",
   notionDatabaseUrl: "",
@@ -48,6 +58,7 @@ export const defaultSettings: Settings = {
   currencySymbolList: DEFAULT_CURRENCY_SYMBOL_LIST,
   dailyShutdownRiskUsd: 0,
   currencyDailyShutdownRiskUsd: 0,
+  riskSessions: DEFAULT_RISK_SESSIONS.map((session) => ({ ...session })),
   mppLockInSteps: [...DEFAULT_MPP_LOCK_IN_STEPS],
   desktopBackupIntervalMinutes: 0,
   tradeTagVisibility: {
@@ -134,6 +145,61 @@ const normalizeMppLockInSteps = (value: unknown): number[] => {
   }
 
   return normalizedSteps;
+};
+
+const normalizeRiskSessionTime = (value: unknown, fallback: string): string => {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  const trimmed = value.trim();
+  const match = trimmed.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (!match) {
+    return fallback;
+  }
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    return fallback;
+  }
+
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+};
+
+const normalizeRiskSessions = (value: unknown): RiskSessionSetting[] => {
+  if (!Array.isArray(value)) {
+    return DEFAULT_RISK_SESSIONS.map((session) => ({ ...session }));
+  }
+
+  const sessions = value
+    .flatMap((entry, index) => {
+      if (!entry || typeof entry !== "object") {
+        return [];
+      }
+
+      const record = entry as Partial<RiskSessionSetting>;
+      const fallback = DEFAULT_RISK_SESSIONS[index] ?? DEFAULT_RISK_SESSIONS[0];
+      const id =
+        typeof record.id === "string" && record.id.trim()
+          ? record.id.trim()
+          : `risk-session-${index + 1}`;
+      const name = typeof record.name === "string" && record.name.trim() ? record.name.trim() : fallback.name;
+      const riskAllocationUsd = Math.max(0, Number(record.riskAllocationUsd) || fallback.riskAllocationUsd || 0);
+
+      return [
+        {
+          id,
+          name,
+          startTime: normalizeRiskSessionTime(record.startTime, fallback.startTime),
+          endTime: normalizeRiskSessionTime(record.endTime, fallback.endTime),
+          riskAllocationUsd
+        }
+      ];
+    })
+    .slice(0, 12);
+
+  return sessions.length > 0 ? sessions : DEFAULT_RISK_SESSIONS.map((session) => ({ ...session }));
 };
 
 const normalizeWorkspaceExportStartDate = (value: unknown): string => {
@@ -306,6 +372,7 @@ const normalizeSettings = (settings: Partial<Settings>): Settings => ({
   ),
   dailyShutdownRiskUsd: Number(settings.dailyShutdownRiskUsd) || 0,
   currencyDailyShutdownRiskUsd: Number(settings.currencyDailyShutdownRiskUsd) || 0,
+  riskSessions: normalizeRiskSessions(settings.riskSessions),
   mppLockInSteps: normalizeMppLockInSteps(settings.mppLockInSteps),
   desktopBackupIntervalMinutes: normalizeBackupIntervalMinutes(settings.desktopBackupIntervalMinutes),
   tradeTagVisibility: {

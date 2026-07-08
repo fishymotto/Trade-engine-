@@ -1,4 +1,5 @@
 import type { EditableTradeTagField, TradeTagOptionsRecord } from "../../types/tradeTags";
+import { SECOND_TARGET_MISSED_TAG } from "../tags/secondTargetMissed";
 
 export const playbookOptions = [
   "6/12 EMA Cross",
@@ -47,7 +48,6 @@ export const mistakeOptions = [
   "Chased Price",
   "Early",
   "Early Exit",
-  "Exit Hesitation",
   "Fifth Attempt",
   "Forced Trade",
   "Fourth Attempt",
@@ -55,7 +55,7 @@ export const mistakeOptions = [
   "Imbalance Flip",
   "Imbalance Flipped",
   "In Range",
-  "Late Entry",
+  "Late Exist",
   "Light Numbers",
   "Long Hold",
   "Miss Punch",
@@ -65,6 +65,7 @@ export const mistakeOptions = [
   "Pending Order",
   "Pulled Down Target",
   "Scaled Out",
+  SECOND_TARGET_MISSED_TAG,
   "Second Attempt",
   "Small Buy Imbalance",
   "Small Size",

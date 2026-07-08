@@ -53,6 +53,9 @@ export interface JournalTradeNoteRecord {
   linkedTradeDate: string;
   ticker: string;
   playbook: string;
+  playbookUpdatedAt?: string;
+  mistakes: string[];
+  mistakesUpdatedAt?: string;
   taggedDate: string;
   createdAt: string;
   updatedAt: string;

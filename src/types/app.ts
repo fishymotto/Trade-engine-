@@ -17,3 +17,21 @@ export interface AppNavItem {
   label: string;
   icon: WorkspaceIconKey;
 }
+
+export type PlaybookDetailPage = "playbook" | "tagged-charts" | "trades" | "a-plus";
+export type LibrarySection = "collections" | "playbooks" | "chart-library";
+
+export interface LibraryNavigationState {
+  activeSection: LibrarySection;
+}
+
+export interface PlaybooksNavigationState {
+  selectedPlaybookId: string | null;
+  activePlaybookPage: PlaybookDetailPage;
+}
+
+export interface AppRouteSnapshot {
+  route: AppRoute;
+  library: LibraryNavigationState;
+  playbooks: PlaybooksNavigationState;
+}

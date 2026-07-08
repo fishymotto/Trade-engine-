@@ -47,6 +47,51 @@ fn default_currency_symbol_list() -> String {
     "ETH".to_string()
 }
 
+fn default_morning_session_id() -> String {
+    "morning-session".to_string()
+}
+
+fn default_morning_session_name() -> String {
+    "Morning Session".to_string()
+}
+
+fn default_morning_session_start_time() -> String {
+    "09:30".to_string()
+}
+
+fn default_morning_session_end_time() -> String {
+    "10:30".to_string()
+}
+
+fn default_morning_session_risk_allocation_usd() -> f64 {
+    18.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RiskSessionSetting {
+    #[serde(default = "default_morning_session_id")]
+    id: String,
+    #[serde(default = "default_morning_session_name")]
+    name: String,
+    #[serde(default = "default_morning_session_start_time")]
+    start_time: String,
+    #[serde(default = "default_morning_session_end_time")]
+    end_time: String,
+    #[serde(default = "default_morning_session_risk_allocation_usd")]
+    risk_allocation_usd: f64,
+}
+
+fn default_risk_sessions() -> Vec<RiskSessionSetting> {
+    vec![RiskSessionSetting {
+        id: default_morning_session_id(),
+        name: default_morning_session_name(),
+        start_time: default_morning_session_start_time(),
+        end_time: default_morning_session_end_time(),
+        risk_allocation_usd: default_morning_session_risk_allocation_usd(),
+    }]
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -68,6 +113,8 @@ pub struct AppSettings {
     daily_shutdown_risk_usd: f64,
     #[serde(default)]
     currency_daily_shutdown_risk_usd: f64,
+    #[serde(default = "default_risk_sessions")]
+    risk_sessions: Vec<RiskSessionSetting>,
     #[serde(default = "default_mpp_lock_in_steps")]
     mpp_lock_in_steps: Vec<u32>,
     #[serde(default = "default_trade_tag_visibility")]
@@ -92,6 +139,7 @@ pub fn default_settings() -> AppSettings {
         currency_symbol_list: default_currency_symbol_list(),
         daily_shutdown_risk_usd: 0.0,
         currency_daily_shutdown_risk_usd: 0.0,
+        risk_sessions: default_risk_sessions(),
         mpp_lock_in_steps: default_mpp_lock_in_steps(),
         trade_tag_visibility: default_trade_tag_visibility(),
         desktop_backup_interval_minutes: default_backup_interval_minutes(),

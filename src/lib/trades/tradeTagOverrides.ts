@@ -1,4 +1,5 @@
 import type { GroupedTrade } from "../../types/trade";
+import { withSecondTargetMissedMistake } from "../tags/secondTargetMissed";
 import type {
   EditableTradeRow,
   EditableTradeTagField,
@@ -39,6 +40,7 @@ export const applyTradeTagOverrides = (
     if (!override) {
       return {
         ...trade,
+        mistakes: withSecondTargetMissedMistake(trade, trade.mistakes),
         catalyst: trade.catalyst ?? [],
         overrideKey,
         manualTags: {}
@@ -65,9 +67,9 @@ export const applyTradeTagOverrides = (
     }
 
     if (hasOwn(override, "mistakes")) {
-      nextTrade.mistakes = normalizeStringList(override.mistakes);
+      nextTrade.mistakes = withSecondTargetMissedMistake(trade, override.mistakes);
     } else if (hasOwn(override, "mistake")) {
-      nextTrade.mistakes = override.mistake ? [override.mistake] : [];
+      nextTrade.mistakes = withSecondTargetMissedMistake(trade, override.mistake);
     }
 
     if (hasOwn(override, "playbook")) {
@@ -124,9 +126,11 @@ export const upsertTradeTagOverride = (
         nextOverride.mistake = value;
         delete nextOverride.mistakes;
       }
+      delete nextOverride.journalTradeNoteMistakeSource;
       break;
     case "playbook":
       nextOverride.playbook = Array.isArray(value) ? value[0] ?? null : value;
+      delete nextOverride.journalTradeNotePlaybookSource;
       break;
     case "catalyst":
       nextOverride.catalyst = Array.isArray(value) ? value : value ? [value] : [];

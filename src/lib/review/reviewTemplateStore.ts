@@ -30,6 +30,7 @@ const emptyChecklist = (): ReviewChecklistState => ({
 const emptyRiskCheckMetrics = (): ReviewRiskCheckMetrics => ({
   riskSplitFollowed: "",
   corePlaybookTrades: "",
+  corePlaybooks: [],
   wakeUpPlanFollowed: ""
 });
 
@@ -70,9 +71,21 @@ const normalizeRiskCheckMetrics = (value: unknown): ReviewRiskCheckMetrics => {
   }
 
   const record = value as Partial<Record<keyof ReviewRiskCheckMetrics, unknown>>;
+  const corePlaybooks = Array.isArray(record.corePlaybooks)
+    ? Array.from(
+        new Set(
+          record.corePlaybooks
+            .filter((entry): entry is string => typeof entry === "string")
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+        )
+      )
+    : fallback.corePlaybooks;
+
   return {
     riskSplitFollowed: normalizeMetricValue(record.riskSplitFollowed),
     corePlaybookTrades: normalizeMetricValue(record.corePlaybookTrades),
+    corePlaybooks,
     wakeUpPlanFollowed: normalizeMetricValue(record.wakeUpPlanFollowed)
   };
 };

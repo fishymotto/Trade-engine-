@@ -31,6 +31,11 @@ type CellEditorState = {
   field: EditableTradeTagField;
 };
 
+type BatchEditorState = {
+  field: EditableTradeTagField;
+  selectedValues: string[];
+};
+
 export type PreviewSortKey =
   | "name"
   | "tradeDate"
@@ -229,8 +234,8 @@ export const PreviewTable = ({
 }: PreviewTableProps) => {
   const [cellEditor, setCellEditor] = useState<CellEditorState | null>(null);
   const [cellEditorSearchQuery, setCellEditorSearchQuery] = useState("");
-  const [isBatchPlaybookEditorOpen, setIsBatchPlaybookEditorOpen] = useState(false);
-  const [batchPlaybookSearchQuery, setBatchPlaybookSearchQuery] = useState("");
+  const [batchEditor, setBatchEditor] = useState<BatchEditorState | null>(null);
+  const [batchEditorSearchQuery, setBatchEditorSearchQuery] = useState("");
   const [sortConfig, setSortConfig] = useState<PreviewSortConfig>({ key: "tradeDate", direction: "desc" });
   const isTagFieldEnabled = (field: EditableTradeTagField) => tagOptionsByField[field].length > 0;
   const resolvedSelectedTradeIds = selectedTradeIds ?? [];
@@ -266,22 +271,39 @@ export const PreviewTable = ({
     [trades, resolvedSelectedTradeIds]
   );
 
-  const applyBatchPlaybook = (value: string | string[] | null) => {
+  const applyBatchTag = (field: EditableTradeTagField, value: string | string[] | null) => {
     if (selectedTradesForBatch.length === 0) {
       return;
     }
 
+    if (onBulkUpdateTradeTags) {
+      onBulkUpdateTradeTags(resolvedSelectedTradeIds, field, value);
+      return;
+    }
+
     for (const trade of selectedTradesForBatch) {
-      updateTradeTag(trade, "playbook", value);
+      updateTradeTag(trade, field, value);
     }
   };
 
+  const openBatchEditor = (field: EditableTradeTagField) => {
+    setCellEditor(null);
+    setCellEditorSearchQuery("");
+    setBatchEditor({ field, selectedValues: [] });
+    setBatchEditorSearchQuery("");
+  };
+
+  const closeBatchEditor = () => {
+    setBatchEditor(null);
+    setBatchEditorSearchQuery("");
+  };
+
   useEffect(() => {
-    if (!isPlaybookBatchEnabled && isBatchPlaybookEditorOpen) {
-      setIsBatchPlaybookEditorOpen(false);
-      setBatchPlaybookSearchQuery("");
+    if (selectedCount === 0 && batchEditor) {
+      setBatchEditor(null);
+      setBatchEditorSearchQuery("");
     }
-  }, [isBatchPlaybookEditorOpen, isPlaybookBatchEnabled]);
+  }, [batchEditor, selectedCount]);
   const sortedTrades = useMemo(() => {
     const activeColumn = previewColumns.find((column) => column.key === sortConfig.key);
 
@@ -333,9 +355,9 @@ export const PreviewTable = ({
   }
 
   if (pinLeadingColumns) {
-    tableShellStyle["--preview-sticky-name-left"] = showSelection ? "44px" : "0px";
-    tableShellStyle["--preview-sticky-symbol-left"] = showSelection ? "214px" : "170px";
-    tableShellStyle["--preview-sticky-side-left"] = showSelection ? "322px" : "278px";
+    tableShellStyle["--preview-sticky-name-left"] = showSelection ? "38px" : "0px";
+    tableShellStyle["--preview-sticky-symbol-left"] = showSelection ? "162px" : "124px";
+    tableShellStyle["--preview-sticky-side-left"] = showSelection ? "238px" : "200px";
   }
 
   const toggleSort = (key: PreviewSortKey) => {
@@ -355,6 +377,11 @@ export const PreviewTable = ({
       }
 
       return renderEditableCell(trade, column.key, (tradeId, field) => {
+        if (showSelection && resolvedSelectedTradeIds.includes(tradeId)) {
+          openBatchEditor(field);
+          return;
+        }
+
         setCellEditor({ tradeId, field });
         setCellEditorSearchQuery("");
       });
@@ -424,21 +451,57 @@ export const PreviewTable = ({
                 />
               </th>
             ) : null}
-            {visibleColumns.map((column) => (
-              <th
-                key={column.key}
-                className={`${getColumnClassName(column.key)}${
-                  pinLeadingColumns ? ` ${getPinnedColumnClassName(column.key)}` : ""
-                }`.trim()}
-              >
-                <button type="button" className="sortable-header-button" onClick={() => toggleSort(column.key)}>
-                  <span>{column.label}</span>
-                  <span className={`sort-indicator ${sortConfig.key === column.key ? "sort-indicator-active" : ""}`}>
-                    {sortConfig.key === column.key ? sortConfig.direction : "sort"}
-                  </span>
-                </button>
-              </th>
-            ))}
+            {visibleColumns.map((column) => {
+              const tagField = isTagColumnKey(column.key) ? column.key : null;
+              const isBatchTagHeader =
+                enableTagEditing && showSelection && selectedCount > 0 && tagField !== null;
+              const isActiveSort = sortConfig.key === column.key;
+              const sortDirectionLabel = sortConfig.direction === "asc" ? "ascending" : "descending";
+
+              return (
+                <th
+                  key={column.key}
+                  className={`${getColumnClassName(column.key)}${
+                    pinLeadingColumns ? ` ${getPinnedColumnClassName(column.key)}` : ""
+                  }`.trim()}
+                >
+                  <button
+                    type="button"
+                    className={`sortable-header-button${isBatchTagHeader ? " batch-tag-header-button" : ""}${
+                      isActiveSort && !isBatchTagHeader ? " sortable-header-button-active" : ""
+                    }`}
+                    aria-label={
+                      isBatchTagHeader
+                        ? `Batch update ${column.label} for ${selectedCount} selected trades`
+                        : isActiveSort
+                          ? `Sort by ${column.label}. Currently ${sortDirectionLabel}.`
+                          : `Sort by ${column.label}`
+                    }
+                    title={isBatchTagHeader ? `Batch update ${column.label}` : `Sort by ${column.label}`}
+                    onClick={() => {
+                      if (isBatchTagHeader && tagField) {
+                        openBatchEditor(tagField);
+                        return;
+                      }
+
+                      toggleSort(column.key);
+                    }}
+                  >
+                    <span>{column.label}</span>
+                    {isBatchTagHeader || isActiveSort ? (
+                      <span
+                        className={`sort-indicator${
+                          isBatchTagHeader ? " batch-tag-indicator" : " sort-indicator-active"
+                        }`}
+                        aria-hidden="true"
+                      >
+                        {isBatchTagHeader ? "+" : sortConfig.direction === "asc" ? "↑" : "↓"}
+                      </span>
+                    ) : null}
+                  </button>
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>
@@ -541,42 +604,79 @@ export const PreviewTable = ({
           }}
         />
       ) : null}
-      {isBatchPlaybookEditorOpen && isPlaybookBatchEnabled ? (
+      {batchEditor && selectedCount > 0 ? (
         <TagDrawer
-          isOpen={isBatchPlaybookEditorOpen}
-          title={`Batch Update - ${tradeTagFieldLabels.playbook}`}
-          options={tagOptionsByField.playbook}
+          isOpen
+          selectionMode={isMultiSelectField(batchEditor.field) ? "multi" : "single"}
+          title={`Batch Update - ${tradeTagFieldLabels[batchEditor.field]} (${selectedCount} selected)`}
+          options={tagOptionsByField[batchEditor.field]}
           currentValue=""
+          currentValues={batchEditor.selectedValues}
           allowClear
-          clearLabel={`Clear ${tradeTagFieldLabels.playbook}`}
-          searchValue={batchPlaybookSearchQuery}
-          onSearchChange={setBatchPlaybookSearchQuery}
+          clearLabel={
+            batchEditor.field === "mistake"
+              ? "No mistakes"
+              : batchEditor.field === "catalyst"
+                ? "No catalyst"
+                : `Clear ${tradeTagFieldLabels[batchEditor.field]}`
+          }
+          searchValue={batchEditorSearchQuery}
+          onSearchChange={setBatchEditorSearchQuery}
           onSelect={(value) => {
-            applyBatchPlaybook(value);
-            setIsBatchPlaybookEditorOpen(false);
-            setBatchPlaybookSearchQuery("");
+            applyBatchTag(batchEditor.field, value);
+            if (isMultiSelectField(batchEditor.field) && Array.isArray(value)) {
+              setBatchEditor((current) => current ? { ...current, selectedValues: value } : current);
+              return;
+            }
+
+            closeBatchEditor();
           }}
           onCreateOption={(value) => {
-            createTradeTagOption("playbook", value);
-            applyBatchPlaybook(value);
-            setIsBatchPlaybookEditorOpen(false);
-            setBatchPlaybookSearchQuery("");
+            createTradeTagOption(batchEditor.field, value);
+            if (isMultiSelectField(batchEditor.field)) {
+              const nextValues = batchEditor.selectedValues.includes(value)
+                ? batchEditor.selectedValues
+                : [...batchEditor.selectedValues, value];
+              applyBatchTag(batchEditor.field, nextValues);
+              setBatchEditor((current) => current ? { ...current, selectedValues: nextValues } : current);
+              setBatchEditorSearchQuery("");
+              return;
+            }
+
+            applyBatchTag(batchEditor.field, value);
+            closeBatchEditor();
           }}
           onRenameOption={(currentValue, nextValue) => {
-            renameTradeTagOption("playbook", currentValue, nextValue);
+            renameTradeTagOption(batchEditor.field, currentValue, nextValue);
+            if (batchEditor.selectedValues.includes(currentValue)) {
+              setBatchEditor((current) =>
+                current
+                  ? {
+                      ...current,
+                      selectedValues: current.selectedValues.map((value) =>
+                        value === currentValue ? nextValue : value
+                      )
+                    }
+                  : current
+              );
+            }
           }}
           onDeleteOption={(value) => {
-            deleteTradeTagOption("playbook", value);
+            deleteTradeTagOption(batchEditor.field, value);
+            if (batchEditor.selectedValues.includes(value)) {
+              setBatchEditor((current) =>
+                current
+                  ? { ...current, selectedValues: current.selectedValues.filter((entry) => entry !== value) }
+                  : current
+              );
+            }
           }}
           canManageOption={(value) =>
-            !defaultTradeTagOptionsByField.playbook.some(
+            !defaultTradeTagOptionsByField[batchEditor.field].some(
               (option) => option.toLowerCase() === value.toLowerCase()
             )
           }
-          onClose={() => {
-            setIsBatchPlaybookEditorOpen(false);
-            setBatchPlaybookSearchQuery("");
-          }}
+          onClose={closeBatchEditor}
         />
       ) : null}
       {showSelection && selectedCount > 0 ? (
@@ -588,8 +688,7 @@ export const PreviewTable = ({
                 type="button"
                 className="mini-action"
                 onClick={() => {
-                  setBatchPlaybookSearchQuery("");
-                  setIsBatchPlaybookEditorOpen(true);
+                  openBatchEditor("playbook");
                 }}
               >
                 Batch Playbook
@@ -597,7 +696,7 @@ export const PreviewTable = ({
               <button
                 type="button"
                 className="mini-action mini-action-soft"
-                onClick={() => applyBatchPlaybook(null)}
+                onClick={() => applyBatchTag("playbook", null)}
               >
                 Clear Playbook
               </button>

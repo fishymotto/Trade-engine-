@@ -94,7 +94,7 @@ export const AnalyticsTable = <T,>({ columns, rows, emptyMessage }: AnalyticsTab
                 >
                   <span>{column.label}</span>
                   <span className={`sort-indicator ${sortConfig?.key === column.key ? "sort-indicator-active" : ""}`}>
-                    {sortConfig?.key === column.key ? sortConfig.direction : "sort"}
+                    {sortConfig?.key === column.key ? (sortConfig.direction === "asc" ? "↑" : "↓") : ""}
                   </span>
                 </button>
               </th>

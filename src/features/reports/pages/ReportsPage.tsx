@@ -84,6 +84,7 @@ interface PeriodComparisonMetric {
   key: string;
   label: string;
   currentValue: string;
+  currentDetail?: string;
   previousValue: string;
   deltaValue: string;
   tone: ComparisonTone;
@@ -241,7 +242,7 @@ const buildReportSliceMetrics = (sliceTrades: GroupedTrade[]): ReportSliceMetric
   const setupPerformanceRows = getPerformanceBySetup(sliceTrades);
   const setupRows = setupPerformanceRows.filter((row) => row.label !== "No Setup");
   const mistakePerformanceRows = getPerformanceByMistake(sliceTrades);
-  const mistakeRows = mistakePerformanceRows.slice(0, 8);
+  const mistakeRows = mistakePerformanceRows.filter((row) => row.label !== "No Mistakes");
   const gameRows = getPerformanceByGame(sliceTrades).slice(0, 8);
   const executionRows = getPerformanceByExecution(sliceTrades).slice(0, 8);
   const dailyNetPnlSeries = getNetPnlByDate(sliceTrades);
@@ -657,6 +658,10 @@ export const ReportsPage = ({
     costliestMistake,
     topSymbolLabel
   } = activeSliceMetrics;
+  const totalMistakeTradeCount = useMemo(
+    () => mistakeRows.reduce((total, row) => total + row.trades, 0),
+    [mistakeRows]
+  );
   const currentSliceWindowLabel = formatDateWindow(comparisonWindow.currentDatesAsc);
   const previousSliceWindowLabel = formatDateWindow(comparisonWindow.previousDatesAsc);
   const comparisonSliceName = isManualComparisonActive ? "Comparison" : "Previous";
@@ -730,6 +735,7 @@ export const ReportsPage = ({
         key: "winRate",
         label: "Win Rate",
         currentValue: `${currentSummary.winRate.toFixed(1)}%`,
+        currentDetail: `${currentSummary.winCount}/${currentSummary.totalTrades} wins`,
         previousValue: `${comparisonSummary.winRate.toFixed(1)}%`,
         deltaValue: `${winRateDelta >= 0 ? "+" : ""}${winRateDelta.toFixed(1)} pts`,
         tone: getDeltaTone(winRateDelta)
@@ -1046,6 +1052,7 @@ export const ReportsPage = ({
                 >
                   <span>{metric.label}</span>
                   <strong>{metric.currentValue}</strong>
+                  {metric.currentDetail ? <small>{metric.currentDetail}</small> : null}
                   <small>{comparisonCompactLabel} {metric.previousValue}</small>
                   <em className={`report-period-delta report-period-delta-${metric.tone}`}>{metric.deltaValue}</em>
                 </div>
@@ -1136,6 +1143,7 @@ export const ReportsPage = ({
             <div className="intraday-metric-card">
               <span>Win Rate</span>
               <strong>{reportSummary.winRate.toFixed(1)}%</strong>
+              <small>{reportSummary.winCount}/{reportSummary.totalTrades} wins</small>
               {hasPreviousSlice ? (
                 <>
                   <small>{comparisonReferenceLabel} {comparisonReferenceSummary.winRate.toFixed(1)}%</small>
@@ -1600,7 +1608,17 @@ export const ReportsPage = ({
                 render: (row) => (row.totalSharesTraded ?? 0).toLocaleString(),
                 align: "right"
               },
-              { key: "winRate", label: "Win Rate", render: (row) => `${row.winRate.toFixed(1)}%`, align: "right" },
+              {
+                key: "mistakeShare",
+                label: "Mistake Share",
+                render: (row) =>
+                  totalMistakeTradeCount > 0
+                    ? `${((row.trades / totalMistakeTradeCount) * 100).toFixed(1)}%`
+                    : "0.0%",
+                sortValue: (row) =>
+                  totalMistakeTradeCount > 0 ? (row.trades / totalMistakeTradeCount) * 100 : 0,
+                align: "right"
+              },
               {
                 key: "avgPnl",
                 label: "Avg Trade",

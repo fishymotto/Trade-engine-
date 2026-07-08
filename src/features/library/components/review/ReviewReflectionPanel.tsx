@@ -1,9 +1,12 @@
 import type { JSONContent } from "@tiptap/core";
 import { useEffect, useMemo, useState } from "react";
 import { WorkspaceIcon } from "../../../../components/WorkspaceIcon";
+import { loadPlaybooks } from "../../../../lib/playbooks/playbookStore";
 import { useEditableSelectOptions } from "../../../../lib/select/useEditableSelectOptions";
+import { getTradePlaybookOptions, tradeHasPlaybook } from "../../../../lib/trades/playbookFilters";
 import type { InlineImageInsertResult } from "../../../../lib/workspace/workspaceAttachmentClient";
 import type { NamedReviewTemplate, ReviewPeriod, ReviewReflectionState } from "../../../../types/libraryReview";
+import type { GroupedTrade, RiskSessionSetting, Settings } from "../../../../types/trade";
 import { JournalRichTextEditor } from "../../../journal/components/JournalRichTextEditor";
 
 const ADD_OPTION_VALUE = "__add_option__";
@@ -15,27 +18,6 @@ const checklistGroupLabels = {
   closingJournal: "Closing Journal"
 } as const;
 
-const riskCheckMetricRows = [
-  {
-    key: "riskSplitFollowed",
-    title: "Protect Risk Across the Full Day",
-    label: "Risk split followed:",
-    suffix: "/ 5 days"
-  },
-  {
-    key: "corePlaybookTrades",
-    title: "Build Tall Then Wide",
-    label: "Trades tagged to core playbooks:",
-    suffix: ""
-  },
-  {
-    key: "wakeUpPlanFollowed",
-    title: "Wake-Up Time",
-    label: "Wake-up plan followed:",
-    suffix: "/ 5 days"
-  }
-] as const;
-
 const cloneJson = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 const ensureTwoRows = (rows: ReviewReflectionState["reading"]) =>
@@ -43,14 +25,131 @@ const ensureTwoRows = (rows: ReviewReflectionState["reading"]) =>
 
 const normalizeLinkedOptionKey = (value: string): string => value.trim().replace(/\s+/g, " ").toLowerCase();
 
+const normalizeTradeDate = (value: string): string => {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value;
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString().slice(0, 10);
+};
+
+const parseIsoLocalDate = (value: string): Date | null => {
+  const normalized = normalizeTradeDate(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return null;
+  }
+
+  const parsed = new Date(`${normalized}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const formatIsoDate = (value: Date): string => {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const getWeekdayDatesInRange = (range: { start: string; end: string } | null): string[] => {
+  if (!range) {
+    return [];
+  }
+
+  const startDate = parseIsoLocalDate(range.start);
+  const endDate = parseIsoLocalDate(range.end);
+  if (!startDate || !endDate) {
+    return [];
+  }
+
+  const dates: string[] = [];
+  const cursor = new Date(startDate);
+  while (cursor <= endDate) {
+    const day = cursor.getDay();
+    if (day !== 0 && day !== 6) {
+      dates.push(formatIsoDate(cursor));
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return dates;
+};
+
+const parseTimeToMinutes = (value: string): number | null => {
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?/);
+  if (!match) {
+    return null;
+  }
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    return null;
+  }
+
+  return hours * 60 + minutes;
+};
+
+const isTimeWithinSession = (time: string, session: RiskSessionSetting): boolean => {
+  const tradeMinutes = parseTimeToMinutes(time);
+  const startMinutes = parseTimeToMinutes(session.startTime);
+  const endMinutes = parseTimeToMinutes(session.endTime);
+  if (tradeMinutes === null || startMinutes === null || endMinutes === null) {
+    return false;
+  }
+
+  if (startMinutes <= endMinutes) {
+    return tradeMinutes >= startMinutes && tradeMinutes <= endMinutes;
+  }
+
+  return tradeMinutes >= startMinutes || tradeMinutes <= endMinutes;
+};
+
+const formatUsd = (value: number): string => `$${Math.abs(value).toFixed(0)}`;
+
+const formatSessionName = (name: string): string => name.trim() || "Session";
+
+const getSessionScoreLabel = (name: string): string => {
+  const trimmed = formatSessionName(name).replace(/\s+session$/i, "").trim();
+  return `${trimmed || "Session"} Risk Followed:`;
+};
+
+const formatTimeLabel = (value: string): string => {
+  const minutes = parseTimeToMinutes(value);
+  if (minutes === null) {
+    return value;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  const minute = minutes % 60;
+  const period = hours >= 12 ? "PM" : "AM";
+  const displayHour = hours % 12 || 12;
+  return `${displayHour}:${String(minute).padStart(2, "0")} ${period}`;
+};
+
+const getReviewTrades = (trades: GroupedTrade[], range: { start: string; end: string } | null): GroupedTrade[] => {
+  if (!range) {
+    return [];
+  }
+
+  return trades.filter((trade) => {
+    const date = normalizeTradeDate(trade.tradeDate);
+    return Boolean(date) && date >= range.start && date <= range.end;
+  });
+};
+
 type ReviewReflectionPanelProps = {
   period: ReviewPeriod;
   pageId: string;
+  reviewRange: { start: string; end: string } | null;
   timeLabels: string[];
   improvementGoalsLabel: string;
+  wakeUpPlanAggregate?: { value: number; denominator: number } | null;
   templates: NamedReviewTemplate[];
   selectedTemplateId: string;
   reflection: ReviewReflectionState;
+  trades: GroupedTrade[];
+  settings: Settings;
   defaultBookOptions: string[];
   defaultAuthorOptions: string[];
   bookAuthorByTitle: Record<string, string>;
@@ -68,11 +167,15 @@ type ReviewReflectionPanelProps = {
 export const ReviewReflectionPanel = ({
   period,
   pageId,
+  reviewRange,
   timeLabels,
   improvementGoalsLabel,
+  wakeUpPlanAggregate = null,
   templates,
   selectedTemplateId,
   reflection,
+  trades,
+  settings,
   defaultBookOptions,
   defaultAuthorOptions,
   bookAuthorByTitle,
@@ -110,6 +213,77 @@ export const ReviewReflectionPanel = ({
   );
 
   const [pendingTemplateName, setPendingTemplateName] = useState("");
+  const reviewDates = useMemo(() => getWeekdayDatesInRange(reviewRange), [reviewRange]);
+  const reviewTrades = useMemo(() => getReviewTrades(trades, reviewRange), [trades, reviewRange]);
+  const savedPlaybookOptions = useMemo(
+    () => loadPlaybooks().map((playbook) => playbook.name).filter(Boolean),
+    []
+  );
+  const selectedCorePlaybooks = reflection.riskCheckMetrics.corePlaybooks ?? [];
+  const riskDayDenominator = reviewDates.length > 0 ? reviewDates.length : timeLabels.length;
+  const wakeUpPlanValue = wakeUpPlanAggregate
+    ? String(wakeUpPlanAggregate.value)
+    : reflection.riskCheckMetrics.wakeUpPlanFollowed;
+  const wakeUpPlanDenominator = wakeUpPlanAggregate?.denominator ?? riskDayDenominator;
+  const wakeUpPlanNumber = (() => {
+    if (wakeUpPlanAggregate) {
+      return wakeUpPlanAggregate.value;
+    }
+
+    const parsed = Number(reflection.riskCheckMetrics.wakeUpPlanFollowed.trim());
+    return Number.isFinite(parsed) ? parsed : null;
+  })();
+  const wakeUpPlanPercent =
+    wakeUpPlanNumber !== null && wakeUpPlanDenominator > 0
+      ? `${((wakeUpPlanNumber / wakeUpPlanDenominator) * 100).toFixed(1)}%`
+      : "-";
+  const riskSessionMetricRows = useMemo(
+    () =>
+      settings.riskSessions.map((session) => {
+        const followedDays = reviewDates.reduce((count, date) => {
+          const sessionNet = trades
+            .filter((trade) => normalizeTradeDate(trade.tradeDate) === date)
+            .filter((trade) => isTimeWithinSession(trade.openTime || trade.openingExecutions[0]?.time || "", session))
+            .reduce((sum, trade) => sum + (trade.netPnlUsd || 0), 0);
+          return sessionNet >= -Math.abs(session.riskAllocationUsd || 0) ? count + 1 : count;
+        }, 0);
+
+        return {
+          id: session.id,
+          title: `${formatSessionName(session.name)} Risk Allocation`,
+          label: getSessionScoreLabel(session.name),
+          value: String(reviewDates.length > 0 ? followedDays : 0),
+          suffix: `/ ${riskDayDenominator} days`,
+          detail: `${formatTimeLabel(session.startTime)} to ${formatTimeLabel(session.endTime)} - ${formatUsd(session.riskAllocationUsd)} limit`
+        };
+      }),
+    [reviewDates, riskDayDenominator, settings.riskSessions, trades]
+  );
+  const corePlaybookOptions = useMemo(
+    () =>
+      Array.from(new Set([...savedPlaybookOptions, ...getTradePlaybookOptions(trades), ...selectedCorePlaybooks]))
+        .filter(Boolean)
+        .sort((left, right) => left.localeCompare(right)),
+    [savedPlaybookOptions, selectedCorePlaybooks, trades]
+  );
+  const availableCorePlaybookOptions = corePlaybookOptions.filter(
+    (option) => !selectedCorePlaybooks.some((selected) => normalizeLinkedOptionKey(selected) === normalizeLinkedOptionKey(option))
+  );
+  const corePlaybookStats = useMemo(() => {
+    if (reviewTrades.length === 0 || selectedCorePlaybooks.length === 0) {
+      return { label: "-", detail: reviewTrades.length === 0 ? "No trades in range" : "Select core playbooks" };
+    }
+
+    const taggedTrades = reviewTrades.filter((trade) =>
+      selectedCorePlaybooks.some((playbook) => tradeHasPlaybook(trade, playbook))
+    ).length;
+    const percent = (taggedTrades / reviewTrades.length) * 100;
+    return {
+      label: `${percent.toFixed(1)}%`,
+      detail: `${taggedTrades}/${reviewTrades.length} trades`
+    };
+  }, [reviewTrades, selectedCorePlaybooks]);
+  const riskCheckMetricCount = riskSessionMetricRows.length + 2;
 
   const setTakeaway = (takeaway: JSONContent) =>
     onChangeReflection((current) => ({ ...current, takeaway }));
@@ -173,6 +347,40 @@ export const ReviewReflectionPanel = ({
       riskCheckMetrics: {
         ...current.riskCheckMetrics,
         [key]: value
+      }
+    }));
+  };
+
+  const addCorePlaybook = (playbook: string) => {
+    const normalized = playbook.trim();
+    if (!normalized) {
+      return;
+    }
+
+    onChangeReflection((current) => {
+      const currentPlaybooks = current.riskCheckMetrics.corePlaybooks ?? [];
+      if (currentPlaybooks.some((entry) => normalizeLinkedOptionKey(entry) === normalizeLinkedOptionKey(normalized))) {
+        return current;
+      }
+
+      return {
+        ...current,
+        riskCheckMetrics: {
+          ...current.riskCheckMetrics,
+          corePlaybooks: [...currentPlaybooks, normalized]
+        }
+      };
+    });
+  };
+
+  const removeCorePlaybook = (playbook: string) => {
+    onChangeReflection((current) => ({
+      ...current,
+      riskCheckMetrics: {
+        ...current.riskCheckMetrics,
+        corePlaybooks: (current.riskCheckMetrics.corePlaybooks ?? []).filter(
+          (entry) => normalizeLinkedOptionKey(entry) !== normalizeLinkedOptionKey(playbook)
+        )
       }
     }));
   };
@@ -404,28 +612,89 @@ export const ReviewReflectionPanel = ({
             <section key={groupKey} className="review-checklist-card" aria-label={checklistGroupLabels[groupKey]}>
               <div className="review-checklist-card-header">
                 <strong>{checklistGroupLabels[groupKey]}</strong>
-                <span>{groupKey === "riskCheck" ? "3 metrics" : `${timeLabels.length} checks`}</span>
+                <span>{groupKey === "riskCheck" ? `${riskCheckMetricCount} metrics` : `${timeLabels.length} checks`}</span>
               </div>
               {groupKey === "riskCheck" ? (
                 <div className="review-risk-metric-list">
-                  {riskCheckMetricRows.map((metric, index) => (
-                    <div key={metric.key} className="review-risk-metric-row">
+                  {riskSessionMetricRows.map((metric, index) => (
+                    <div key={metric.id} className="review-risk-metric-row">
                       <div className="review-risk-metric-title">
                         <span>{index + 1}.</span>
                         <strong>{metric.title}</strong>
                       </div>
-                      <label className="review-risk-metric-field">
+                      <div className="review-risk-metric-field review-risk-metric-field-readonly">
                         <span>{metric.label}</span>
-                        <input
-                          value={reflection.riskCheckMetrics[metric.key]}
-                          onChange={(event) => setRiskCheckMetric(metric.key, event.target.value)}
-                          inputMode="numeric"
-                          aria-label={metric.label.replace(":", "")}
-                        />
-                        {metric.suffix ? <em>{metric.suffix}</em> : null}
-                      </label>
+                        <strong className="review-risk-metric-value">{metric.value}</strong>
+                        <em>{metric.suffix}</em>
+                      </div>
+                      <small className="review-risk-metric-detail">{metric.detail}</small>
                     </div>
                   ))}
+                  <div className="review-risk-metric-row">
+                    <div className="review-risk-metric-title">
+                      <span>{riskSessionMetricRows.length + 1}.</span>
+                      <strong>Build Tall Then Wide</strong>
+                    </div>
+                    <div className="review-risk-core-playbooks">
+                      <div className="review-risk-core-playbook-list" aria-label="Core playbooks for this review">
+                        {selectedCorePlaybooks.length > 0 ? (
+                          selectedCorePlaybooks.map((playbook) => (
+                            <button
+                              key={playbook}
+                              type="button"
+                              className="review-risk-core-playbook-pill"
+                              onClick={() => removeCorePlaybook(playbook)}
+                              title={`Remove ${playbook}`}
+                            >
+                              {playbook}
+                            </button>
+                          ))
+                        ) : (
+                          <span className="review-risk-core-playbook-empty">No core playbooks selected</span>
+                        )}
+                      </div>
+                      <select
+                        value=""
+                        onChange={(event) => addCorePlaybook(event.target.value)}
+                        disabled={availableCorePlaybookOptions.length === 0}
+                        aria-label="Add core playbook"
+                      >
+                        <option value="">Add core playbook...</option>
+                        {availableCorePlaybookOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="review-risk-metric-field review-risk-metric-field-readonly">
+                      <span>Trades tagged to core playbooks:</span>
+                      <strong className="review-risk-metric-value">{corePlaybookStats.label}</strong>
+                    </div>
+                    <small className="review-risk-metric-detail">{corePlaybookStats.detail}</small>
+                  </div>
+                  <div className="review-risk-metric-row">
+                    <div className="review-risk-metric-title">
+                      <span>{riskSessionMetricRows.length + 2}.</span>
+                      <strong>Wake-Up Time</strong>
+                    </div>
+                    <label className="review-risk-metric-field review-risk-wakeup-field">
+                      <span>Wake-up plan followed:</span>
+                      <input
+                        value={wakeUpPlanValue}
+                        onChange={
+                          wakeUpPlanAggregate
+                            ? undefined
+                            : (event) => setRiskCheckMetric("wakeUpPlanFollowed", event.target.value)
+                        }
+                        readOnly={Boolean(wakeUpPlanAggregate)}
+                        inputMode="numeric"
+                        aria-label="Wake-up plan followed"
+                      />
+                      <em>/ {wakeUpPlanDenominator} days</em>
+                      <strong className="review-risk-wakeup-percent">{wakeUpPlanPercent}</strong>
+                    </label>
+                  </div>
                 </div>
               ) : (
                 <div className="review-checklist-items">

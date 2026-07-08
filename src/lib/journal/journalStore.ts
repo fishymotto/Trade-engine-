@@ -139,6 +139,7 @@ const createDefaultTradeNoteRecord = (tradeDate: string): JournalTradeNoteRecord
     linkedTradeDate: "",
     ticker: "",
     playbook: "",
+    mistakes: [],
     taggedDate: normalizeTradeDate(tradeDate),
     createdAt: timestamp,
     updatedAt: timestamp
@@ -215,6 +216,25 @@ const ensureContent = (
   return parsedBlocks.length > 0 ? journalBlocksToDoc(parsedBlocks) : createEmptyJournalDoc();
 };
 
+const normalizeStringList = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return Array.from(
+      new Set(
+        value
+          .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+          .filter(Boolean)
+      )
+    );
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : [];
+  }
+
+  return [];
+};
+
 const normalizeJournalTradeNotes = (
   value: unknown,
   tradeDate: string,
@@ -257,6 +277,16 @@ const normalizeJournalTradeNotes = (
         typeof entry.updatedAt === "string" && entry.updatedAt.trim().length > 0
           ? entry.updatedAt
           : pageUpdatedAt || createdAt;
+      const playbook = typeof entry.playbook === "string" ? entry.playbook : "";
+      const rawPlaybookUpdatedAt =
+        typeof entry.playbookUpdatedAt === "string" && entry.playbookUpdatedAt.trim().length > 0
+          ? entry.playbookUpdatedAt
+          : "";
+      const mistakes = normalizeStringList(entry.mistakes);
+      const rawMistakesUpdatedAt =
+        typeof entry.mistakesUpdatedAt === "string" && entry.mistakesUpdatedAt.trim().length > 0
+          ? entry.mistakesUpdatedAt
+          : "";
 
       return {
         id:
@@ -269,7 +299,18 @@ const normalizeJournalTradeNotes = (
         linkedTradeId: primaryLinkedTrade?.tradeId ?? "",
         linkedTradeDate: primaryLinkedTrade?.tradeDate ?? "",
         ticker: typeof entry.ticker === "string" ? entry.ticker : "",
-        playbook: typeof entry.playbook === "string" ? entry.playbook : "",
+        playbook,
+        ...(rawPlaybookUpdatedAt
+          ? { playbookUpdatedAt: rawPlaybookUpdatedAt }
+          : playbook.trim().length > 0
+            ? { playbookUpdatedAt: updatedAt }
+            : {}),
+        mistakes,
+        ...(rawMistakesUpdatedAt
+          ? { mistakesUpdatedAt: rawMistakesUpdatedAt }
+          : mistakes.length > 0
+            ? { mistakesUpdatedAt: updatedAt }
+            : {}),
         taggedDate:
           typeof entry.taggedDate === "string" && entry.taggedDate.trim().length > 0
             ? normalizeTradeDate(entry.taggedDate)
@@ -442,11 +483,33 @@ const normalizeJournalPagesValue = (value: unknown): JournalPageRecord[] => {
 const getJournalPagesScore = (pages: JournalPageRecord[]): number =>
   dedupeJournalPages(pages).reduce((total, page) => total + getJournalContentScore(page), 0);
 
+const hasNewerSameDateLocalJournalPage = (
+  localPages: JournalPageRecord[],
+  desktopPages: JournalPageRecord[]
+): boolean => {
+  const desktopPageByTradeDate = new Map(
+    dedupeJournalPages(desktopPages).map((page) => [page.tradeDate, page])
+  );
+
+  return dedupeJournalPages(localPages).some((localPage) => {
+    const desktopPage = desktopPageByTradeDate.get(localPage.tradeDate);
+    if (!desktopPage) {
+      return false;
+    }
+
+    return getTimestamp(localPage.updatedAt) > getTimestamp(desktopPage.updatedAt) + 1000;
+  });
+};
+
 const shouldUseDesktopJournalPagesForRecovery = (
   localPages: JournalPageRecord[],
   desktopPages: JournalPageRecord[]
 ): boolean => {
   if (desktopPages.length === 0) {
+    return false;
+  }
+
+  if (hasNewerSameDateLocalJournalPage(localPages, desktopPages)) {
     return false;
   }
 

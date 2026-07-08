@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "../../../components/Button";
 import { PageHero } from "../../../components/PageHero";
 import { DEFAULT_MPP_LOCK_IN_STEPS } from "../../../lib/settings/settingsStore";
 import { tradeTagFieldLabels, tradeTagFields } from "../../../lib/trades/tradeTagCatalog";
+import type {
+  TradeTagCleanupMerge,
+  TradeTagCleanupReport
+} from "../../../lib/trades/tradeTagCleanup";
 import type { WorkspaceAttachmentAuditResult } from "../../../lib/workspace/workspaceAttachmentClient";
-import type { Settings } from "../../../types/trade";
+import type { RiskSessionSetting, Settings } from "../../../types/trade";
 
 const backupIntervalOptions: Array<{ value: number; label: string }> = [
   { value: 0, label: "Every Save (Recommended)" },
@@ -22,6 +26,9 @@ interface SettingsPageProps {
   onLoadWorkspaceAttachmentSummary: () => Promise<WorkspaceAttachmentAuditResult | null>;
   onAuditWorkspaceAttachments: () => Promise<string>;
   onPruneWorkspaceAttachments: () => Promise<string>;
+  tagCleanupReport: TradeTagCleanupReport;
+  onMergeExactTagDuplicates: () => string;
+  onMergeSimilarTagPair: (merge: TradeTagCleanupMerge) => string;
 }
 
 export const SettingsPage = ({
@@ -30,7 +37,10 @@ export const SettingsPage = ({
   onTestConnection,
   onLoadWorkspaceAttachmentSummary,
   onAuditWorkspaceAttachments,
-  onPruneWorkspaceAttachments
+  onPruneWorkspaceAttachments,
+  tagCleanupReport,
+  onMergeExactTagDuplicates,
+  onMergeSimilarTagPair
 }: SettingsPageProps) => {
   const [message, setMessage] = useState("");
   const [mppLockInDrafts, setMppLockInDrafts] = useState<string[]>(() =>
@@ -38,11 +48,27 @@ export const SettingsPage = ({
   );
   const [attachmentSummary, setAttachmentSummary] = useState<WorkspaceAttachmentAuditResult | null>(null);
   const [attachmentSummaryLoading, setAttachmentSummaryLoading] = useState(false);
+  const [ignoredTagCleanupSuggestionIds, setIgnoredTagCleanupSuggestionIds] = useState<string[]>([]);
   const selectedBackupInterval = backupIntervalOptions.some(
     (option) => option.value === settings.desktopBackupIntervalMinutes
   )
     ? settings.desktopBackupIntervalMinutes
     : 0;
+  const visibleTagCleanupSuggestions = useMemo(
+    () =>
+      tagCleanupReport.suggestions.filter(
+        (suggestion) => !ignoredTagCleanupSuggestionIds.includes(suggestion.id)
+      ),
+    [ignoredTagCleanupSuggestionIds, tagCleanupReport.suggestions]
+  );
+  const exactTagDuplicateCount = useMemo(
+    () =>
+      tagCleanupReport.exactGroups.reduce(
+        (total, group) => total + Math.max(0, group.variants.length - 1),
+        0
+      ),
+    [tagCleanupReport.exactGroups]
+  );
 
   const formatAttachmentBytes = (value: number): string => {
     if (!Number.isFinite(value) || value <= 0) {
@@ -69,6 +95,31 @@ export const SettingsPage = ({
         [field]: enabled
       }
     });
+  const updateRiskSessions = (riskSessions: RiskSessionSetting[]) => update({ riskSessions });
+  const updateRiskSession = (sessionId: string, patch: Partial<RiskSessionSetting>) =>
+    updateRiskSessions(
+      settings.riskSessions.map((session) =>
+        session.id === sessionId ? { ...session, ...patch } : session
+      )
+    );
+  const addRiskSession = () =>
+    updateRiskSessions([
+      ...settings.riskSessions,
+      {
+        id: `risk-session-${Date.now().toString(36)}`,
+        name: "Close Session",
+        startTime: "14:30",
+        endTime: "16:00",
+        riskAllocationUsd: 12
+      }
+    ]);
+  const removeRiskSession = (sessionId: string) => {
+    if (settings.riskSessions.length <= 1) {
+      return;
+    }
+
+    updateRiskSessions(settings.riskSessions.filter((session) => session.id !== sessionId));
+  };
 
   const updateMppLockInStep = (index: number, rawValue: string) => {
     const parsed = Number(rawValue);
@@ -114,6 +165,14 @@ export const SettingsPage = ({
     await refreshAttachmentSummary();
   };
 
+  const handleMergeSimilarTagPair = (
+    suggestionId: string,
+    merge: TradeTagCleanupMerge
+  ) => {
+    setMessage(onMergeSimilarTagPair(merge));
+    setIgnoredTagCleanupSuggestionIds((current) => current.filter((id) => id !== suggestionId));
+  };
+
   useEffect(() => {
     setMppLockInDrafts(settings.mppLockInSteps.map((step) => step.toString()));
   }, [settings.mppLockInSteps]);
@@ -121,6 +180,12 @@ export const SettingsPage = ({
   useEffect(() => {
     void refreshAttachmentSummary();
   }, [refreshAttachmentSummary]);
+
+  useEffect(() => {
+    setIgnoredTagCleanupSuggestionIds((current) =>
+      current.filter((id) => tagCleanupReport.suggestions.some((suggestion) => suggestion.id === id))
+    );
+  }, [tagCleanupReport.suggestions]);
 
   return (
     <main className="page-shell settings-page">
@@ -205,19 +270,6 @@ export const SettingsPage = ({
           </label>
 
           <label>
-            <span>Stock Daily Shutdown Risk (USD)</span>
-            <input
-              type="number"
-              min="0"
-              step="1"
-              value={settings.dailyShutdownRiskUsd || ""}
-              onChange={(event) => update({ dailyShutdownRiskUsd: Number(event.target.value) || 0 })}
-              placeholder="Example: 30"
-            />
-            <small>Used to count stock breach days in Weekly/Monthly Review entries.</small>
-          </label>
-
-          <label>
             <span>Currency Daily Shutdown Risk (USD)</span>
             <input
               type="number"
@@ -229,6 +281,75 @@ export const SettingsPage = ({
             />
             <small>Used to count ETH/currency breach days separately from stock breach days.</small>
           </label>
+
+          <section className="settings-section">
+            <div className="settings-admin-header">
+              <div>
+                <h3>Risk Sessions</h3>
+                <p>These sessions drive the automatic Risk Check scores in weekly and monthly reviews.</p>
+              </div>
+              <Button variant="secondary" onClick={addRiskSession}>
+                Add Risk Session
+              </Button>
+            </div>
+            <div className="settings-risk-session-list">
+              {settings.riskSessions.map((session) => (
+                <div key={session.id} className="settings-risk-session-card">
+                  <label>
+                    <span>Session name</span>
+                    <input
+                      type="text"
+                      value={session.name}
+                      onChange={(event) => updateRiskSession(session.id, { name: event.target.value })}
+                      placeholder="Morning Session"
+                    />
+                  </label>
+                  <label>
+                    <span>Start time</span>
+                    <input
+                      type="time"
+                      value={session.startTime}
+                      onChange={(event) => updateRiskSession(session.id, { startTime: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    <span>End time</span>
+                    <input
+                      type="time"
+                      value={session.endTime}
+                      onChange={(event) => updateRiskSession(session.id, { endTime: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    <span>Risk allocation amount</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      inputMode="decimal"
+                      value={session.riskAllocationUsd || ""}
+                      onChange={(event) =>
+                        updateRiskSession(session.id, { riskAllocationUsd: Number(event.target.value) || 0 })
+                      }
+                      placeholder="18"
+                    />
+                  </label>
+                  <Button
+                    variant="danger"
+                    onClick={() => removeRiskSession(session.id)}
+                    disabled={settings.riskSessions.length <= 1}
+                    className="settings-risk-session-remove"
+                  >
+                    Remove
+                  </Button>
+                </div>
+              ))}
+            </div>
+            <small>
+              Risk Check treats trades opened inside a session as that session's trades and counts the day as followed
+              when session net P&L stays above the negative allocation.
+            </small>
+          </section>
 
           <section className="settings-section">
             <div>
@@ -307,6 +428,108 @@ export const SettingsPage = ({
                 </label>
               ))}
             </div>
+          </section>
+
+          <section className="settings-section tag-cleanup-section">
+            <div className="settings-admin-header">
+              <div>
+                <h3>Tag Cleanup</h3>
+                <p>Capitalization matches merge automatically. Review close matches before combining them.</p>
+              </div>
+              <Button
+                variant="secondary"
+                onClick={() => setMessage(onMergeExactTagDuplicates())}
+                disabled={exactTagDuplicateCount === 0}
+              >
+                Merge Case Matches
+              </Button>
+            </div>
+
+            <div className="tag-cleanup-status-grid">
+              <div>
+                <span>Case Matches</span>
+                <strong>{exactTagDuplicateCount}</strong>
+              </div>
+              <div>
+                <span>Close Matches</span>
+                <strong>{visibleTagCleanupSuggestions.length}</strong>
+              </div>
+            </div>
+
+            {tagCleanupReport.exactGroups.length > 0 ? (
+              <div className="tag-cleanup-list" aria-label="Capitalization duplicate tags">
+                {tagCleanupReport.exactGroups.slice(0, 6).map((group) => (
+                  <div key={group.id} className="tag-cleanup-row">
+                    <span>{tradeTagFieldLabels[group.field]}</span>
+                    <strong>{group.target}</strong>
+                    <small>
+                      {group.variants.filter((variant) => variant !== group.target).join(", ")}{" "}
+                      {"->"} {group.target}
+                    </small>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <small>No capitalization-only tag duplicates are waiting.</small>
+            )}
+
+            {visibleTagCleanupSuggestions.length > 0 ? (
+              <div className="tag-cleanup-list" aria-label="Close tag matches">
+                {visibleTagCleanupSuggestions.map((suggestion) => (
+                  <div key={suggestion.id} className="tag-cleanup-row tag-cleanup-suggestion-row">
+                    <span>{tradeTagFieldLabels[suggestion.field]}</span>
+                    <div className="tag-cleanup-candidate-grid">
+                      <div>
+                        <strong>{suggestion.left}</strong>
+                        <small>{suggestion.leftCount.toLocaleString()} use{suggestion.leftCount === 1 ? "" : "s"}</small>
+                      </div>
+                      <div>
+                        <strong>{suggestion.right}</strong>
+                        <small>{suggestion.rightCount.toLocaleString()} use{suggestion.rightCount === 1 ? "" : "s"}</small>
+                      </div>
+                    </div>
+                    <div className="tag-cleanup-actions">
+                      <Button
+                        variant="secondary"
+                        title={`Merge "${suggestion.right}" into "${suggestion.left}"`}
+                        onClick={() =>
+                          handleMergeSimilarTagPair(suggestion.id, {
+                            field: suggestion.field,
+                            source: suggestion.right,
+                            target: suggestion.left
+                          })
+                        }
+                      >
+                        Use Left
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        title={`Merge "${suggestion.left}" into "${suggestion.right}"`}
+                        onClick={() =>
+                          handleMergeSimilarTagPair(suggestion.id, {
+                            field: suggestion.field,
+                            source: suggestion.left,
+                            target: suggestion.right
+                          })
+                        }
+                      >
+                        Use Right
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        onClick={() =>
+                          setIgnoredTagCleanupSuggestionIds((current) => [...current, suggestion.id])
+                        }
+                      >
+                        Skip
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <small>No close-match tag pairs are waiting for review.</small>
+            )}
           </section>
 
           <section className="settings-section">

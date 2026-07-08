@@ -135,18 +135,6 @@ export const SettingsModal = ({
           <small>Comma, space, or new-line separated. These symbols use Currency MPP and Currency Shutdown Risk.</small>
         </label>
         <label>
-          <span>Stock Daily Shutdown Risk (USD)</span>
-          <input
-            type="number"
-            min="0"
-            step="1"
-            value={settings.dailyShutdownRiskUsd || ""}
-            onChange={(event) => update({ dailyShutdownRiskUsd: Number(event.target.value) || 0 })}
-            placeholder="Example: 30"
-          />
-          <small>Used to count stock breach days in Weekly/Monthly Review entries.</small>
-        </label>
-        <label>
           <span>Currency Daily Shutdown Risk (USD)</span>
           <input
             type="number"

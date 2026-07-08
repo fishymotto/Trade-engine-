@@ -2,6 +2,7 @@ import type { GroupedTrade, Settings } from "../../../types/trade";
 import type { LibraryCollectionId, LibraryPageRecord } from "../../../types/library";
 import { calculateMPPWindow } from "../../../lib/analytics/mppAnalytics";
 import { getMPPDayRecordsForTrades } from "../../../lib/analytics/assetMppAnalytics";
+import { getMppRiskBump } from "../../../lib/analytics/mppRiskBump";
 import { getTradeAssetClass } from "../../../lib/trades/assetClassification";
 
 export type ReviewPeriod = "weekly" | "monthly";
@@ -35,6 +36,7 @@ export const REVIEW_PROPERTY_KEYS = {
   risk: "Risk Management",
   psychology: "Psychology",
   tradingPlans: "Trading Plans",
+  execution: "Execution",
   redDays: "Red Days",
   greenDays: "Green Days"
 } as const;
@@ -136,12 +138,13 @@ export const computeOverallScore = (properties: LibraryPageRecord["properties"])
   const risk = parseScore(properties?.[REVIEW_PROPERTY_KEYS.risk]);
   const psych = parseScore(properties?.[REVIEW_PROPERTY_KEYS.psychology]);
   const plans = parseScore(properties?.[REVIEW_PROPERTY_KEYS.tradingPlans]);
+  const execution = parseScore(properties?.[REVIEW_PROPERTY_KEYS.execution]);
 
-  if (risk === null || psych === null || plans === null) {
+  if (risk === null || psych === null || plans === null || execution === null) {
     return "";
   }
 
-  const average = (risk + psych + plans) / 3;
+  const average = (risk + psych + plans + execution) / 4;
   return toFixedOrEmpty(average, 1);
 };
 
@@ -149,14 +152,12 @@ export const computeReviewMetrics = ({
   trades,
   rangeStart,
   rangeEnd,
-  dailyShutdownRiskUsd,
   currencyDailyShutdownRiskUsd,
   currencySymbolList
 }: {
   trades: GroupedTrade[];
   rangeStart: string;
   rangeEnd: string;
-  dailyShutdownRiskUsd: number;
   currencyDailyShutdownRiskUsd: number;
   currencySymbolList: string;
 }) => {
@@ -175,12 +176,17 @@ export const computeReviewMetrics = ({
   const winRate = tradeCount > 0 ? (winners / tradeCount) * 100 : 0;
   const net = inRange.reduce((sum, trade) => sum + (trade.netPnlUsd || 0), 0);
   const gross = inRange.reduce((sum, trade) => sum + (trade.grossPnlUsd || 0), 0);
+  const stockMppDays = getMPPDayRecordsForTrades(trades, {
+    assetClass: "stock",
+    currencySymbolList
+  });
+  const currencyMppDays = getMPPDayRecordsForTrades(trades, {
+    assetClass: "currency",
+    currencySymbolList
+  });
 
   const getMppSummary = (assetClass: "stock" | "currency") => {
-    const mppDays = getMPPDayRecordsForTrades(trades, {
-      assetClass,
-      currencySymbolList
-    });
+    const mppDays = assetClass === "stock" ? stockMppDays : currencyMppDays;
     const startMppSnapshot = calculateMPPWindow(mppDays, { anchorTradeDate: start });
     const endMppSnapshot = calculateMPPWindow(mppDays, { anchorTradeDate: end });
     const hasStartMpp = startMppSnapshot.formulaBreakdown.eligibleDayCount > 0;
@@ -213,10 +219,13 @@ export const computeReviewMetrics = ({
     combinedDayNetMap.set(date, (combinedDayNetMap.get(date) ?? 0) + value);
   }
 
-  const breachThreshold = Math.max(0, dailyShutdownRiskUsd || 0);
   const currencyBreachThreshold = Math.max(0, currencyDailyShutdownRiskUsd || 0);
   const stockBreachDays = Array.from(stockDayNetMap.entries())
-    .filter(([, value]) => breachThreshold > 0 && value <= -breachThreshold)
+    .filter(([date, value]) => {
+      const dayMpp = calculateMPPWindow(stockMppDays, { anchorTradeDate: date }).currentMPP;
+      const breachThreshold = getMppRiskBump(dayMpp).netLoss;
+      return breachThreshold > 0 && value <= -breachThreshold;
+    })
     .map(([date]) => date)
     .sort();
   const currencyBreachDays = Array.from(currencyDayNetMap.entries())
@@ -232,6 +241,7 @@ export const computeReviewMetrics = ({
     tickersTraded,
     tradeCount,
     shares,
+    winCount: winners,
     winRate,
     net,
     gross,

@@ -512,6 +512,7 @@ export const TradeDatabasePage = ({
             )
           }
           onUpdateTradeTag={onUpdateTradeTag}
+          onBulkUpdateTradeTags={onBulkUpdateTradeTags}
           onCreateTradeTagOption={onCreateTradeTagOption}
           onRenameTradeTagOption={onRenameTradeTagOption}
           onDeleteTradeTagOption={onDeleteTradeTagOption}

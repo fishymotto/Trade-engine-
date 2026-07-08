@@ -41,6 +41,7 @@ const createTradeNoteRecord = (tradeDate: string): JournalTradeNoteRecord => {
     linkedTradeDate: "",
     ticker: "",
     playbook: "",
+    mistakes: [],
     taggedDate: tradeDate,
     createdAt: timestamp,
     updatedAt: timestamp
@@ -85,6 +86,23 @@ const dedupeTradeLinks = (links: JournalScreenshotTradeLink[]): JournalScreensho
 
   return Array.from(unique.values());
 };
+
+const dedupeTagValues = (values: string[]): string[] => {
+  const unique = new Map<string, string>();
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    unique.set(trimmed.toLowerCase(), trimmed);
+  }
+
+  return Array.from(unique.values());
+};
+
+const normalizeTradeNoteMistakes = (note: JournalTradeNoteRecord): string[] =>
+  dedupeTagValues(Array.isArray(note.mistakes) ? note.mistakes : []);
 
 const collectTradeNoteLinks = (note: JournalTradeNoteRecord): JournalScreenshotTradeLink[] =>
   dedupeTradeLinks([
@@ -203,7 +221,8 @@ const buildTradeNoteWithLinks = (
   note: JournalTradeNoteRecord,
   nextLinks: JournalScreenshotTradeLink[],
   tradeLookup: Map<string, EditableTradeRow>,
-  fallbackTradeDate: string
+  fallbackTradeDate: string,
+  updatedAt: string
 ): JournalTradeNoteRecord => {
   const linkedTrades = dedupeTradeLinks(nextLinks);
   const primaryLinkedTrade = linkedTrades[0] ?? null;
@@ -213,10 +232,9 @@ const buildTradeNoteWithLinks = (
   const linkedSymbols = Array.from(new Set(resolvedTrades.map((trade) => trade.symbol.trim()).filter(Boolean)));
   const linkedPlaybooks = getTradePlaybooks(resolvedTrades, "");
   const currentPlaybook = note.playbook.trim();
-  const matchingPlaybook =
-    currentPlaybook.length > 0
-      ? linkedPlaybooks.find((playbook) => playbook.toLowerCase() === currentPlaybook.toLowerCase())
-      : undefined;
+  const nextPlaybook = currentPlaybook ? note.playbook : linkedPlaybooks[0] ?? note.playbook;
+  const playbookUpdatedAt =
+    note.playbookUpdatedAt || (currentPlaybook ? note.updatedAt : nextPlaybook.trim() ? updatedAt : "");
 
   return {
     ...note,
@@ -224,7 +242,8 @@ const buildTradeNoteWithLinks = (
     linkedTradeId: primaryLinkedTrade?.tradeId ?? "",
     linkedTradeDate: primaryLinkedTrade?.tradeDate ?? "",
     ticker: linkedSymbols.join(", ") || note.ticker,
-    playbook: matchingPlaybook ?? linkedPlaybooks[0] ?? note.playbook,
+    playbook: nextPlaybook,
+    ...(playbookUpdatedAt ? { playbookUpdatedAt } : {}),
     taggedDate: primaryLinkedTrade?.tradeDate ?? note.taggedDate ?? fallbackTradeDate
   };
 };
@@ -241,7 +260,9 @@ const JournalTradeNotesPanelComponent = ({
 }: JournalTradeNotesPanelProps) => {
   const [openTradePickerId, setOpenTradePickerId] = useState<string | null>(null);
   const [openPlaybookPickerId, setOpenPlaybookPickerId] = useState<string | null>(null);
+  const [openMistakePickerId, setOpenMistakePickerId] = useState<string | null>(null);
   const [playbookSearchQuery, setPlaybookSearchQuery] = useState("");
+  const [mistakeSearchQuery, setMistakeSearchQuery] = useState("");
 
   const tradeNotes = Array.isArray(page.tradeNotes) ? page.tradeNotes : [];
 
@@ -314,9 +335,24 @@ const JournalTradeNotesPanelComponent = ({
     return output.sort((left, right) => left.localeCompare(right));
   }, [linkedTrades, tagOptionsByField.playbook, tradeNotes]);
 
+  const mistakeOptions = useMemo(() => {
+    const merged = [
+      ...tagOptionsByField.mistake,
+      ...linkedTrades.flatMap((trade) => trade.mistakes),
+      ...tradeNotes.flatMap((note) => normalizeTradeNoteMistakes(note))
+    ];
+
+    return dedupeTagValues(merged).sort((left, right) => left.localeCompare(right));
+  }, [linkedTrades, tagOptionsByField.mistake, tradeNotes]);
+
   const activePlaybookNote = useMemo(
     () => tradeNotes.find((note) => note.id === openPlaybookPickerId) ?? null,
     [openPlaybookPickerId, tradeNotes]
+  );
+
+  const activeMistakeNote = useMemo(
+    () => tradeNotes.find((note) => note.id === openMistakePickerId) ?? null,
+    [openMistakePickerId, tradeNotes]
   );
 
   const updateTradeNotes = (nextTradeNotes: JournalTradeNoteRecord[]) => {
@@ -339,14 +375,14 @@ const JournalTradeNotesPanelComponent = ({
 
   const updateTradeNote = (
     noteId: string,
-    updater: (current: JournalTradeNoteRecord) => JournalTradeNoteRecord
+    updater: (current: JournalTradeNoteRecord, updatedAt: string) => JournalTradeNoteRecord
   ) => {
     const updatedAt = new Date().toISOString();
     updateTradeNotes(
       tradeNotes.map((note) =>
         note.id === noteId
           ? {
-              ...updater(note),
+              ...updater(note, updatedAt),
               updatedAt
             }
           : note
@@ -354,11 +390,22 @@ const JournalTradeNotesPanelComponent = ({
     );
   };
 
+  const updateTradeNoteMistakes = (noteId: string, values: string[]) => {
+    const nextMistakes = dedupeTagValues(values);
+    updateTradeNote(noteId, (current, updatedAt) => ({
+      ...current,
+      mistakes: nextMistakes,
+      mistakesUpdatedAt: updatedAt
+    }));
+  };
+
   const handleDeleteTradeNote = (note: JournalTradeNoteRecord) => {
     const isMeaningful =
       collectTradeNoteLinks(note).length > 0 ||
       note.ticker.trim().length > 0 ||
       note.playbook.trim().length > 0 ||
+      Boolean(note.playbookUpdatedAt?.trim()) ||
+      normalizeTradeNoteMistakes(note).length > 0 ||
       hasJournalDocContent(note.content);
     if (isMeaningful && !window.confirm(`Remove "${getTradeNoteLabel(note, [], 0)}"?`)) {
       return;
@@ -371,6 +418,10 @@ const JournalTradeNotesPanelComponent = ({
     if (openPlaybookPickerId === note.id) {
       setOpenPlaybookPickerId(null);
       setPlaybookSearchQuery("");
+    }
+    if (openMistakePickerId === note.id) {
+      setOpenMistakePickerId(null);
+      setMistakeSearchQuery("");
     }
   };
 
@@ -429,6 +480,7 @@ const JournalTradeNotesPanelComponent = ({
                   ? `${primaryLinkedTrade.symbol} - ${primaryLinkedTrade.name}`
                   : `${linkedTradeCount} trade${linkedTradeCount === 1 ? "" : "s"} linked`;
             const playbookPills = getTradePlaybooks(linkedTradeRecords, note.playbook);
+            const mistakePills = normalizeTradeNoteMistakes(note);
             const tickerValue = getTradeNoteTickerValue(linkedTradeRecords, note.ticker);
             const noteLabel = getTradeNoteLabel(note, linkedTradeRecords, index);
             const updatedLabel = new Date(note.updatedAt).toLocaleString();
@@ -458,6 +510,8 @@ const JournalTradeNotesPanelComponent = ({
                         onClick={(event) => {
                           event.preventDefault();
                           setOpenTradePickerId((current) => (current === note.id ? null : note.id));
+                          setOpenMistakePickerId(null);
+                          setMistakeSearchQuery("");
                         }}
                       >
                         <span>{tradePickerSummary}</span>
@@ -473,8 +527,8 @@ const JournalTradeNotesPanelComponent = ({
                               className="mini-action mini-action-soft"
                               disabled={selectedTradeValues.length === 0}
                               onClick={() =>
-                                updateTradeNote(note.id, (current) =>
-                                  buildTradeNoteWithLinks(current, [], linkedTradeByKey, page.tradeDate)
+                                updateTradeNote(note.id, (current, updatedAt) =>
+                                  buildTradeNoteWithLinks(current, [], linkedTradeByKey, page.tradeDate, updatedAt)
                                 )
                               }
                             >
@@ -508,8 +562,14 @@ const JournalTradeNotesPanelComponent = ({
                                           .map((currentValue) => parseTradeLink(currentValue))
                                           .filter((link): link is JournalScreenshotTradeLink => link !== null);
 
-                                        updateTradeNote(note.id, (current) =>
-                                          buildTradeNoteWithLinks(current, nextLinks, linkedTradeByKey, page.tradeDate)
+                                        updateTradeNote(note.id, (current, updatedAt) =>
+                                          buildTradeNoteWithLinks(
+                                            current,
+                                            nextLinks,
+                                            linkedTradeByKey,
+                                            page.tradeDate,
+                                            updatedAt
+                                          )
                                         );
                                       }}
                                     />
@@ -586,6 +646,8 @@ const JournalTradeNotesPanelComponent = ({
                         setOpenPlaybookPickerId(note.id);
                         setPlaybookSearchQuery("");
                         setOpenTradePickerId(null);
+                        setOpenMistakePickerId(null);
+                        setMistakeSearchQuery("");
                       }}
                     >
                       {playbookPills.length > 0 ? (
@@ -618,6 +680,38 @@ const JournalTradeNotesPanelComponent = ({
                       }
                     />
                   </label>
+
+                  <div className="journal-screenshot-tag-field">
+                    <span>Mistakes</span>
+                    <button
+                      type="button"
+                      className={`journal-screenshot-playbook-trigger journal-trade-note-mistake-trigger${
+                        mistakePills.length > 0 ? "" : " is-empty"
+                      }`}
+                      onClick={() => {
+                        setOpenMistakePickerId(note.id);
+                        setMistakeSearchQuery("");
+                        setOpenTradePickerId(null);
+                        setOpenPlaybookPickerId(null);
+                        setPlaybookSearchQuery("");
+                      }}
+                    >
+                      {mistakePills.length > 0 ? (
+                        <span className="journal-screenshot-playbook-pill-row">
+                          {mistakePills.map((mistake) => (
+                            <span
+                              key={`${note.id}-${mistake.toLowerCase()}`}
+                              className={`tag-option-pill tag-option-pill-${getToneIndex(mistake)}`}
+                            >
+                              {mistake}
+                            </span>
+                          ))}
+                        </span>
+                      ) : (
+                        <span>Select mistakes</span>
+                      )}
+                    </button>
+                  </div>
                 </div>
 
                 <div className="journal-trade-note-editor">
@@ -657,8 +751,8 @@ const JournalTradeNotesPanelComponent = ({
                       : missingLinkedTradeCount > 0
                         ? `${linkedTradeRecords.length} of ${linkedTradeCount} linked trades are available in this journal day.`
                         : linkedTradeCount === 1 && primaryLinkedTrade
-                          ? `Synced to ${primaryLinkedTrade.symbol} ${primaryLinkedTrade.name}. Review notes stay aligned with this trade.`
-                          : `Synced to ${linkedTradeCount} trades. Review notes stay aligned with each linked trade.`}
+                          ? `Synced to ${primaryLinkedTrade.symbol} ${primaryLinkedTrade.name}. Mistake tags and review notes stay aligned with this trade.`
+                          : `Synced to ${linkedTradeCount} trades. Mistake tags and review notes stay aligned with each linked trade.`}
                   </span>
                   <div className="journal-trade-note-actions">
                     {linkedTradeRecords.map((trade) => (
@@ -711,45 +805,49 @@ const JournalTradeNotesPanelComponent = ({
           onSearchChange={setPlaybookSearchQuery}
           onSelect={(value) => {
             const nextValue = typeof value === "string" ? value : "";
-            updateTradeNote(activePlaybookNote.id, (current) => ({
+            updateTradeNote(activePlaybookNote.id, (current, updatedAt) => ({
               ...current,
-              playbook: nextValue
+              playbook: nextValue,
+              playbookUpdatedAt: updatedAt
             }));
             setOpenPlaybookPickerId(null);
             setPlaybookSearchQuery("");
           }}
           onCreateOption={(value) => {
             onCreateTradeTagOption("playbook", value);
-            updateTradeNote(activePlaybookNote.id, (current) => ({
+            updateTradeNote(activePlaybookNote.id, (current, updatedAt) => ({
               ...current,
-              playbook: value
+              playbook: value,
+              playbookUpdatedAt: updatedAt
             }));
             setOpenPlaybookPickerId(null);
             setPlaybookSearchQuery("");
           }}
           onRenameOption={(currentValue, nextValue) => {
             onRenameTradeTagOption("playbook", currentValue, nextValue);
-            updateTradeNote(activePlaybookNote.id, (current) => {
+            updateTradeNote(activePlaybookNote.id, (current, updatedAt) => {
               if (current.playbook.trim().toLowerCase() !== currentValue.trim().toLowerCase()) {
                 return current;
               }
 
               return {
                 ...current,
-                playbook: nextValue
+                playbook: nextValue,
+                playbookUpdatedAt: updatedAt
               };
             });
           }}
           onDeleteOption={(value) => {
             onDeleteTradeTagOption("playbook", value);
-            updateTradeNote(activePlaybookNote.id, (current) => {
+            updateTradeNote(activePlaybookNote.id, (current, updatedAt) => {
               if (current.playbook.trim().toLowerCase() !== value.trim().toLowerCase()) {
                 return current;
               }
 
               return {
                 ...current,
-                playbook: ""
+                playbook: "",
+                playbookUpdatedAt: updatedAt
               };
             });
           }}
@@ -761,6 +859,64 @@ const JournalTradeNotesPanelComponent = ({
           onClose={() => {
             setOpenPlaybookPickerId(null);
             setPlaybookSearchQuery("");
+          }}
+        />
+      ) : null}
+
+      {activeMistakeNote ? (
+        <TagDrawer
+          isOpen
+          title={`Mistakes - ${getTradeNoteLabel(
+            activeMistakeNote,
+            collectTradeNoteLinks(activeMistakeNote)
+              .map((link) => linkedTradeByKey.get(serializeTradeLink(link.tradeId, link.tradeDate)) ?? null)
+              .filter((trade): trade is EditableTradeRow => trade !== null),
+            0
+          )}`}
+          options={mistakeOptions}
+          selectionMode="multi"
+          currentValues={normalizeTradeNoteMistakes(activeMistakeNote)}
+          allowClear
+          clearLabel="No mistakes"
+          searchValue={mistakeSearchQuery}
+          onSearchChange={setMistakeSearchQuery}
+          onSelect={(value) => {
+            updateTradeNoteMistakes(activeMistakeNote.id, Array.isArray(value) ? value : []);
+          }}
+          onCreateOption={(value) => {
+            onCreateTradeTagOption("mistake", value);
+            updateTradeNoteMistakes(activeMistakeNote.id, [
+              ...normalizeTradeNoteMistakes(activeMistakeNote),
+              value
+            ]);
+            setMistakeSearchQuery("");
+          }}
+          onRenameOption={(currentValue, nextValue) => {
+            onRenameTradeTagOption("mistake", currentValue, nextValue);
+            updateTradeNoteMistakes(
+              activeMistakeNote.id,
+              normalizeTradeNoteMistakes(activeMistakeNote).map((value) =>
+                value.trim().toLowerCase() === currentValue.trim().toLowerCase() ? nextValue : value
+              )
+            );
+          }}
+          onDeleteOption={(value) => {
+            onDeleteTradeTagOption("mistake", value);
+            updateTradeNoteMistakes(
+              activeMistakeNote.id,
+              normalizeTradeNoteMistakes(activeMistakeNote).filter(
+                (currentValue) => currentValue.trim().toLowerCase() !== value.trim().toLowerCase()
+              )
+            );
+          }}
+          canManageOption={(value) =>
+            !defaultTradeTagOptionsByField.mistake.some(
+              (option) => option.toLowerCase() === value.toLowerCase()
+            )
+          }
+          onClose={() => {
+            setOpenMistakePickerId(null);
+            setMistakeSearchQuery("");
           }}
         />
       ) : null}

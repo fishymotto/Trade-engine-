@@ -12,6 +12,14 @@ export interface TradeTagVisibilitySettings {
   execution: boolean;
 }
 
+export interface RiskSessionSetting {
+  id: string;
+  name: string;
+  startTime: string;
+  endTime: string;
+  riskAllocationUsd: number;
+}
+
 export interface Settings {
   notionToken: string;
   notionDatabaseUrl: string;
@@ -27,6 +35,7 @@ export interface Settings {
   currencySymbolList: string;
   dailyShutdownRiskUsd: number;
   currencyDailyShutdownRiskUsd: number;
+  riskSessions: RiskSessionSetting[];
   mppLockInSteps: number[];
   desktopBackupIntervalMinutes: number;
   tradeTagVisibility: TradeTagVisibilitySettings;

@@ -1,6 +1,7 @@
 import type { JSONContent } from "@tiptap/core";
 import type { Editor } from "@tiptap/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createCleanPastedContent } from "../lib/richTextPaste";
 
 interface JournalBlockActionsMenuProps {
   editor: Editor;
@@ -96,6 +97,20 @@ export const JournalBlockActionsMenu = ({ editor, appearance = "default" }: Jour
     void navigator.clipboard.writeText(copiedText);
   }, []);
 
+  const cleanCurrentBlock = useCallback((nextEditor: Editor) => {
+    const range = getCurrentBlockRange(nextEditor);
+    if (!range) {
+      return;
+    }
+
+    const blockText = nextEditor.state.doc.textBetween(range.from, range.to, "\n").trim();
+    if (!blockText) {
+      return;
+    }
+
+    nextEditor.chain().focus().insertContentAt({ from: range.from, to: range.to }, createCleanPastedContent(blockText)).run();
+  }, []);
+
   const deleteCurrentTable = useCallback((nextEditor: Editor) => {
     nextEditor.chain().focus().deleteTable().run();
   }, []);
@@ -110,6 +125,13 @@ export const JournalBlockActionsMenu = ({ editor, appearance = "default" }: Jour
         run: (nextEditor) => {
           nextEditor.chain().focus().setParagraph().run();
         }
+      },
+      {
+        key: "clean-block",
+        label: "Clean Current Block",
+        description: "Remove pasted formatting or convert a Markdown table",
+        keywords: ["clean", "paste", "format", "markdown", "plain", "table", "convert"],
+        run: cleanCurrentBlock
       },
       {
         key: "turn-h2",
@@ -273,7 +295,7 @@ export const JournalBlockActionsMenu = ({ editor, appearance = "default" }: Jour
         run: deleteCurrentBlock
       }
     ],
-    [copyCurrentBlockText, deleteCurrentBlock, deleteCurrentTable, duplicateCurrentBlock]
+    [cleanCurrentBlock, copyCurrentBlockText, deleteCurrentBlock, deleteCurrentTable, duplicateCurrentBlock]
   );
 
   const filteredActions = useMemo(() => {

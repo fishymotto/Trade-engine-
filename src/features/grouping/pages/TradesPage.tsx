@@ -1116,7 +1116,7 @@ export const TradesPage = ({
                   onImageInsert={createTradeReviewImageInsertHandler(selectedTrade.id)}
                   placeholder="Capture execution notes, emotions, and what to improve next time."
                   compact
-                  showBlockActions={false}
+                  blockActionsVisibility="focus"
                 />
               </label>
               {selectedReview ? (

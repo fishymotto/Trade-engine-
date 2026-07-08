@@ -45,6 +45,16 @@ import {
 } from "../lib/trades/tradeTagOverrides";
 import { createTradeTagActions } from "../lib/trades/tradeTagActions";
 import {
+  applyTradeTagCleanupMerges,
+  buildTradeTagCleanupReport,
+  createExactTradeTagCleanupMerges,
+  type TradeTagCleanupMerge
+} from "../lib/trades/tradeTagCleanup";
+import {
+  backfillSecondTargetMissedTradeSessions,
+  backfillSecondTargetMissedTrades
+} from "../lib/tags/secondTargetMissed";
+import {
   loadWorkspaceState,
   recoverWorkspaceStateFromDesktopBackup,
   saveWorkspaceState,
@@ -72,6 +82,7 @@ import {
 import {
   buildJournalTradeContextById,
   syncJournalPagesFromTradeReviews,
+  syncTradeTagOverridesFromJournalTradeNotes,
   syncTradeReviewsFromJournalPages
 } from "../features/journal/lib/journalScreenshotSync";
 import { createSettingsPageActions } from "../features/settings/lib/settingsPageActions";
@@ -85,7 +96,13 @@ import {
   recoverLibraryPagesFromDesktopBackup,
   saveLibraryPages
 } from "../lib/library/libraryStore";
-import type { AppNavItem, AppRoute } from "../types/app";
+import type {
+  AppNavItem,
+  AppRoute,
+  AppRouteSnapshot,
+  LibraryNavigationState,
+  PlaybooksNavigationState
+} from "../types/app";
 import type { ChartInterval, HistoricalBarSet } from "../types/chart";
 import type { JournalPageRecord } from "../types/journal";
 import type { JSONContent } from "@tiptap/core";
@@ -112,6 +129,15 @@ const navItems: AppNavItem[] = [
 ];
 
 const JOURNAL_PAGES_SAVE_DEBOUNCE_MS = 4000;
+
+const defaultPlaybooksNavigationState: PlaybooksNavigationState = {
+  selectedPlaybookId: null,
+  activePlaybookPage: "playbook"
+};
+
+const defaultLibraryNavigationState: LibraryNavigationState = {
+  activeSection: "collections"
+};
 
 const DashboardPage = lazy(() =>
   import("../features/dashboard/pages/DashboardPage").then((module) => ({ default: module.DashboardPage }))
@@ -524,6 +550,17 @@ function App() {
   const [historicalBarSetsLoaded, setHistoricalBarSetsLoaded] = useState(false);
   const [workspaceRefreshKey, setWorkspaceRefreshKey] = useState(0);
   const [activeRoute, setActiveRoute] = useState<AppRoute>("dashboard");
+  const activeRouteRef = useRef<AppRoute>("dashboard");
+  const [libraryNavigationState, setLibraryNavigationState] = useState<LibraryNavigationState>(
+    defaultLibraryNavigationState
+  );
+  const libraryNavigationStateRef = useRef<LibraryNavigationState>(defaultLibraryNavigationState);
+  const [playbooksNavigationState, setPlaybooksNavigationState] = useState<PlaybooksNavigationState>(
+    defaultPlaybooksNavigationState
+  );
+  const playbooksNavigationStateRef = useRef<PlaybooksNavigationState>(defaultPlaybooksNavigationState);
+  const routeHistoryRef = useRef<AppRouteSnapshot[]>([]);
+  const [canNavigateBack, setCanNavigateBack] = useState(false);
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [allowedSymbols, setAllowedSymbols] = useState<string[]>([]);
@@ -564,6 +601,41 @@ function App() {
   const [, setBootError] = useState<string | null>(null);
   const journalPagesRef = useRef<JournalPageRecord[]>([]);
   journalPagesRef.current = journalPages;
+
+  useEffect(() => {
+    activeRouteRef.current = activeRoute;
+  }, [activeRoute]);
+
+  useEffect(() => {
+    libraryNavigationStateRef.current = libraryNavigationState;
+  }, [libraryNavigationState]);
+
+  useEffect(() => {
+    playbooksNavigationStateRef.current = playbooksNavigationState;
+  }, [playbooksNavigationState]);
+
+  const handleLibraryNavigationStateChange = useCallback((nextState: LibraryNavigationState) => {
+    const current = libraryNavigationStateRef.current;
+    if (current.activeSection === nextState.activeSection) {
+      return;
+    }
+
+    libraryNavigationStateRef.current = nextState;
+    setLibraryNavigationState(nextState);
+  }, []);
+
+  const handlePlaybooksNavigationStateChange = useCallback((nextState: PlaybooksNavigationState) => {
+    const current = playbooksNavigationStateRef.current;
+    if (
+      current.selectedPlaybookId === nextState.selectedPlaybookId &&
+      current.activePlaybookPage === nextState.activePlaybookPage
+    ) {
+      return;
+    }
+
+    playbooksNavigationStateRef.current = nextState;
+    setPlaybooksNavigationState(nextState);
+  }, []);
 
   const selectJournalPageById = useCallback((pageId: string) => {
     setSelectedJournalPageId(pageId);
@@ -1035,6 +1107,35 @@ function App() {
   }, [journalPages.length, journalPagesLoaded]);
 
   useEffect(() => {
+    if (!tradeSessionsLoaded) {
+      return;
+    }
+
+    const backfill = backfillSecondTargetMissedTradeSessions(tradeSessions);
+    if (!backfill.changed) {
+      return;
+    }
+
+    setTradeSessions(backfill.sessions);
+    setMessage(
+      `Tagged ${backfill.taggedTradeCount} saved trade${backfill.taggedTradeCount === 1 ? "" : "s"} with Second Target Missed.`
+    );
+  }, [tradeSessions, tradeSessionsLoaded]);
+
+  useEffect(() => {
+    if (!workspaceLoaded) {
+      return;
+    }
+
+    const backfill = backfillSecondTargetMissedTrades(trades);
+    if (!backfill.changed) {
+      return;
+    }
+
+    setTrades(backfill.trades);
+  }, [trades, workspaceLoaded]);
+
+  useEffect(() => {
     if (!journalPagesLoaded || !tradeReviewsLoaded) {
       return;
     }
@@ -1063,6 +1164,23 @@ function App() {
     tradeSessions,
     tradeSessionsLoaded,
     tradeTagOverrides,
+    tradeTagOverridesLoaded
+  ]);
+
+  useEffect(() => {
+    if (!journalPagesLoaded || !tradeSessionsLoaded || !tradeTagOverridesLoaded) {
+      return;
+    }
+
+    const journalSyncTrades = tradeSessions.flatMap((session) => session.trades);
+    setTradeTagOverrides((current) =>
+      syncTradeTagOverridesFromJournalTradeNotes(current, journalPages, journalSyncTrades)
+    );
+  }, [
+    journalPages,
+    journalPagesLoaded,
+    tradeSessions,
+    tradeSessionsLoaded,
     tradeTagOverridesLoaded
   ]);
 
@@ -1320,6 +1438,78 @@ function App() {
       ),
     [mergedTradeTagOptionsByField, settings.tradeTagVisibility]
   );
+  const tagCleanupReport = useMemo(
+    () =>
+      buildTradeTagCleanupReport({
+        tradeTagOptions,
+        trades,
+        tradeSessions,
+        tradeTagOverrides,
+        journalPages
+      }),
+    [journalPages, tradeSessions, tradeTagOptions, tradeTagOverrides, trades]
+  );
+  const applyTagCleanupMergesToWorkspace = useCallback(
+    (merges: TradeTagCleanupMerge[]): string => {
+      if (merges.length === 0) {
+        return "No tag cleanup needed.";
+      }
+
+      const result = applyTradeTagCleanupMerges({
+        tradeTagOptions,
+        tradeTagOverrides,
+        trades,
+        tradeSessions,
+        journalPages,
+        merges
+      });
+
+      if (!result.changed) {
+        return "No matching tag values needed cleanup.";
+      }
+
+      setTradeTagOptions(result.tradeTagOptions);
+      setTradeTagOverrides(result.tradeTagOverrides);
+      setTrades(result.trades);
+      setTradeSessions(result.tradeSessions);
+      setJournalPages(result.journalPages);
+
+      const cleanedTagCount = new Set(
+        merges.map((merge) => `${merge.field}:${merge.source.trim().toLowerCase()}:${merge.target.trim().toLowerCase()}`)
+      ).size;
+      const message = `Merged ${cleanedTagCount} tag name${cleanedTagCount === 1 ? "" : "s"} across ${result.changedValueCount} saved tag value${result.changedValueCount === 1 ? "" : "s"}.`;
+      setMessage(message);
+      return message;
+    },
+    [journalPages, tradeSessions, tradeTagOptions, tradeTagOverrides, trades]
+  );
+  const handleMergeExactTagDuplicates = useCallback(
+    () => applyTagCleanupMergesToWorkspace(createExactTradeTagCleanupMerges(tagCleanupReport)),
+    [applyTagCleanupMergesToWorkspace, tagCleanupReport]
+  );
+  const handleMergeSimilarTagPair = useCallback(
+    (merge: TradeTagCleanupMerge) => applyTagCleanupMergesToWorkspace([merge]),
+    [applyTagCleanupMergesToWorkspace]
+  );
+  useEffect(() => {
+    if (!tradeTagOptionsLoaded || !tradeTagOverridesLoaded || !tradeSessionsLoaded || !journalPagesLoaded) {
+      return;
+    }
+
+    const merges = createExactTradeTagCleanupMerges(tagCleanupReport);
+    if (merges.length === 0) {
+      return;
+    }
+
+    applyTagCleanupMergesToWorkspace(merges);
+  }, [
+    applyTagCleanupMergesToWorkspace,
+    journalPagesLoaded,
+    tagCleanupReport,
+    tradeSessionsLoaded,
+    tradeTagOptionsLoaded,
+    tradeTagOverridesLoaded
+  ]);
   const allStoredTrades = useMemo(
     () => resolvedTradeSessions.flatMap((session) => session.trades as EditableTradeRow[]),
     [resolvedTradeSessions]
@@ -1959,6 +2149,8 @@ function App() {
             trades={allStoredTrades}
             journalPages={journalPages}
             settings={settings}
+            navigationState={libraryNavigationState}
+            onNavigationStateChange={handleLibraryNavigationStateChange}
             onSelectTrade={(tradeId, tradeDate) => {
               setDashboardTradeDateFilterStart(tradeDate);
               setDashboardTradeDateFilterEnd(tradeDate);
@@ -1988,6 +2180,8 @@ function App() {
               setReportComparisonDateFilterEnd("");
               handleNavigate("reports");
             }}
+            playbooksNavigationState={playbooksNavigationState}
+            onPlaybooksNavigationStateChange={handlePlaybooksNavigationStateChange}
             onViewReportsForReviewPeriod={({ start, end, comparisonStart, comparisonEnd }) => {
               setDashboardTradeDateFilterStart(start);
               setDashboardTradeDateFilterEnd(end);
@@ -2009,6 +2203,8 @@ function App() {
             journalPages={journalPages}
             settings={settings}
             initialSection="playbooks"
+            navigationState={{ activeSection: "playbooks" }}
+            onNavigationStateChange={handleLibraryNavigationStateChange}
             onSelectTrade={(tradeId, tradeDate) => {
               setDashboardTradeDateFilterStart(tradeDate);
               setDashboardTradeDateFilterEnd(tradeDate);
@@ -2038,6 +2234,8 @@ function App() {
               setReportComparisonDateFilterEnd("");
               handleNavigate("reports");
             }}
+            playbooksNavigationState={playbooksNavigationState}
+            onPlaybooksNavigationStateChange={handlePlaybooksNavigationStateChange}
             onViewReportsForReviewPeriod={({ start, end, comparisonStart, comparisonEnd }) => {
               setDashboardTradeDateFilterStart(start);
               setDashboardTradeDateFilterEnd(end);
@@ -2123,6 +2321,9 @@ function App() {
             onLoadWorkspaceAttachmentSummary={handleLoadWorkspaceAttachmentSummary}
             onAuditWorkspaceAttachments={handleAuditWorkspaceAttachments}
             onPruneWorkspaceAttachments={handlePruneWorkspaceAttachments}
+            tagCleanupReport={tagCleanupReport}
+            onMergeExactTagDuplicates={handleMergeExactTagDuplicates}
+            onMergeSimilarTagPair={handleMergeSimilarTagPair}
           />
         );
       default:
@@ -2130,15 +2331,52 @@ function App() {
     }
   };
 
+  const getCurrentRouteSnapshot = (): AppRouteSnapshot => ({
+    route: activeRouteRef.current,
+    library: libraryNavigationStateRef.current,
+    playbooks: playbooksNavigationStateRef.current
+  });
+
+  const restoreRouteSnapshot = (snapshot: AppRouteSnapshot) => {
+    libraryNavigationStateRef.current = snapshot.library;
+    setLibraryNavigationState(snapshot.library);
+    playbooksNavigationStateRef.current = snapshot.playbooks;
+    setPlaybooksNavigationState(snapshot.playbooks);
+    activeRouteRef.current = snapshot.route;
+    setActiveRoute(snapshot.route);
+  };
+
+  const updateRouteHistory = (nextHistory: AppRouteSnapshot[]) => {
+    routeHistoryRef.current = nextHistory;
+    setCanNavigateBack(nextHistory.length > 0);
+  };
+
   const handleNavigate = (route: AppRoute) => {
-    if (route === activeRoute) {
+    const currentSnapshot = getCurrentRouteSnapshot();
+    if (route === currentSnapshot.route) {
       return;
     }
 
     void (async () => {
       await requestFlushDebouncedSaves();
       await waitForPendingSaves();
+      updateRouteHistory([...routeHistoryRef.current, currentSnapshot].slice(-30));
+      activeRouteRef.current = route;
       setActiveRoute(route);
+    })();
+  };
+
+  const handleNavigateBack = () => {
+    const targetSnapshot = routeHistoryRef.current[routeHistoryRef.current.length - 1];
+    if (!targetSnapshot) {
+      return;
+    }
+
+    void (async () => {
+      await requestFlushDebouncedSaves();
+      await waitForPendingSaves();
+      updateRouteHistory(routeHistoryRef.current.slice(0, -1));
+      restoreRouteSnapshot(targetSnapshot);
     })();
   };
 
@@ -2182,6 +2420,8 @@ function App() {
               activeRoute={activeRoute}
               navItems={navItems}
               onNavigate={handleNavigate}
+              onNavigateBack={handleNavigateBack}
+              canNavigateBack={canNavigateBack}
               accountLabel={user.username || OFFLINE_WORKSPACE_USER.username}
             >
               <div key={`${activeRoute}-${workspaceRefreshKey}`}>{renderActivePage()}</div>

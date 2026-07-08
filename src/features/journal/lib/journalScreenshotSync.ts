@@ -1,6 +1,7 @@
 import type { JSONContent } from "@tiptap/core";
 import { createEmptyJournalDoc, hasJournalDocContent } from "../../../lib/journal/journalContent";
 import { dedupeJournalPages } from "../../../lib/journal/journalStore";
+import { getTradeOverrideKey } from "../../../lib/trades/tradeTagOverrides";
 import type {
   JournalPageRecord,
   JournalScreenshotTagRecord,
@@ -9,6 +10,7 @@ import type {
 } from "../../../types/journal";
 import type { TradeReviewRecord } from "../../../types/review";
 import type { GroupedTrade } from "../../../types/trade";
+import type { TradeTagOverrideRecord } from "../../../types/tradeTags";
 import { normalizeJournalTradeDate } from "./journalPageActions";
 
 export interface JournalTradeContext {
@@ -24,10 +26,39 @@ type JournalTradeNoteSyncTrade = Pick<
 
 const TRADE_LINK_SEPARATOR = "::";
 
-const parseTimestamp = (value: string): number => {
+const parseTimestamp = (value: string | undefined): number => {
+  if (!value) {
+    return 0;
+  }
+
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
 };
+
+const hasOwn = <T extends object>(value: T, key: keyof T): boolean =>
+  Object.prototype.hasOwnProperty.call(value, key);
+
+const normalizeStringList = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return Array.from(
+      new Set(
+        value
+          .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+          .filter(Boolean)
+      )
+    );
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : [];
+  }
+
+  return [];
+};
+
+const hasSameStringList = (left: string[], right: string[]): boolean =>
+  left.length === right.length && left.every((value, index) => value === right[index]);
 
 const createJournalScreenshotTag = (tradeDate: string): JournalScreenshotTagRecord => ({
   linkedTrades: [],
@@ -71,6 +102,17 @@ const createJournalTradeNote = (
     linkedTradeDate: primaryLinkedTrade?.tradeDate ?? "",
     ticker: overrides.ticker ?? "",
     playbook: overrides.playbook ?? "",
+    ...(overrides.playbookUpdatedAt
+      ? { playbookUpdatedAt: overrides.playbookUpdatedAt }
+      : overrides.playbook?.trim()
+        ? { playbookUpdatedAt: timestamp }
+        : {}),
+    mistakes: normalizeStringList(overrides.mistakes),
+    ...(overrides.mistakesUpdatedAt
+      ? { mistakesUpdatedAt: overrides.mistakesUpdatedAt }
+      : normalizeStringList(overrides.mistakes).length > 0
+        ? { mistakesUpdatedAt: timestamp }
+        : {}),
     taggedDate: overrides.taggedDate ?? tradeDate,
     createdAt: overrides.createdAt ?? timestamp,
     updatedAt: overrides.updatedAt ?? timestamp
@@ -192,11 +234,14 @@ const buildTradeLinkedNote = (
   };
   const linkedNote = applyTradeLinksToNote(note, [tradeLink]);
   const playbook = getPrimaryTradePlaybook(trade);
+  const nextPlaybook = linkedNote.playbook || playbook;
+  const playbookUpdatedAt = linkedNote.playbookUpdatedAt || (linkedNote.playbook ? linkedNote.updatedAt : playbook ? timestamp : "");
 
   return {
     ...linkedNote,
     ticker: linkedNote.ticker || trade.symbol,
-    playbook: linkedNote.playbook || playbook,
+    playbook: nextPlaybook,
+    ...(playbookUpdatedAt ? { playbookUpdatedAt } : {}),
     taggedDate: normalizeJournalTradeDate(linkedNote.taggedDate) || tradeDate,
     updatedAt: timestamp
   };
@@ -283,12 +328,16 @@ const syncTradeNotesFromTrades = (
       }
 
       const playbook = getPrimaryTradePlaybook(trade);
+      const nextPlaybook = linkedNote.playbook || playbook;
+      const playbookUpdatedAt =
+        linkedNote.playbookUpdatedAt || (linkedNote.playbook ? linkedNote.updatedAt : playbook ? timestamp : "");
       const nextLinkedNote: JournalTradeNoteRecord = {
         ...linkedNote,
         linkedTradeId: linkedNote.linkedTradeId || trade.id,
         linkedTradeDate: normalizeJournalTradeDate(linkedNote.linkedTradeDate) || tradeDate,
         ticker: linkedNote.ticker || trade.symbol,
-        playbook: linkedNote.playbook || playbook,
+        playbook: nextPlaybook,
+        ...(playbookUpdatedAt ? { playbookUpdatedAt } : {}),
         taggedDate: normalizeJournalTradeDate(linkedNote.taggedDate) || tradeDate
       };
 
@@ -370,6 +419,17 @@ const consolidateTradeNoteGroup = (
   );
   const fallbackTicker = mergedNotes.map((note) => note.ticker.trim()).find(Boolean) ?? "";
   const fallbackPlaybook = mergedNotes.map((note) => note.playbook.trim()).find(Boolean) ?? "";
+  const latestPlaybookUpdatedAt = mergedNotes.reduce(
+    (current, note) =>
+      parseTimestamp(note.playbookUpdatedAt) > parseTimestamp(current) ? note.playbookUpdatedAt ?? current : current,
+    ""
+  );
+  const mergedMistakes = normalizeStringList(mergedNotes.flatMap((note) => normalizeStringList(note.mistakes)));
+  const latestMistakesUpdatedAt = mergedNotes.reduce(
+    (current, note) =>
+      parseTimestamp(note.mistakesUpdatedAt) > parseTimestamp(current) ? note.mistakesUpdatedAt ?? current : current,
+    ""
+  );
   const fallbackTaggedDate = mergedNotes.map((note) => note.taggedDate.trim()).find(Boolean) ?? targetNote.taggedDate;
   const nextTradeNotes = tradeNotes.filter((_, index) => index === targetIndex || !matchingIndexes.includes(index));
   const nextTargetIndex = nextTradeNotes.findIndex((note) => note.id === targetNote.id);
@@ -377,6 +437,9 @@ const consolidateTradeNoteGroup = (
     ...mergedNote,
     ticker: mergedNote.ticker || fallbackTicker,
     playbook: mergedNote.playbook || fallbackPlaybook,
+    ...(latestPlaybookUpdatedAt ? { playbookUpdatedAt: latestPlaybookUpdatedAt } : {}),
+    mistakes: mergedMistakes,
+    ...(latestMistakesUpdatedAt ? { mistakesUpdatedAt: latestMistakesUpdatedAt } : {}),
     taggedDate: mergedNote.taggedDate || fallbackTaggedDate,
     createdAt: earliestCreatedAt,
     updatedAt: latestUpdatedAt
@@ -437,6 +500,285 @@ const normalizeReviewNotesContent = (value: TradeReviewRecord["notes"]): JSONCon
 
 const contentMatches = (left: JSONContent, right: JSONContent): boolean =>
   stableStringify(left) === stableStringify(right);
+
+const hasPlaybookOverride = (override: TradeTagOverrideRecord | undefined): boolean =>
+  Boolean(override && hasOwn(override, "playbook"));
+
+const getTradeNotePlaybookUpdatedAt = (note: JournalTradeNoteRecord): string => {
+  if (note.playbookUpdatedAt?.trim()) {
+    return note.playbookUpdatedAt;
+  }
+
+  return note.playbook.trim().length > 0 ? note.updatedAt : "";
+};
+
+const normalizeTradeOverrideMistakes = (override: TradeTagOverrideRecord | undefined): string[] => {
+  if (!override) {
+    return [];
+  }
+
+  if (hasOwn(override, "mistakes")) {
+    return normalizeStringList(override.mistakes);
+  }
+
+  return normalizeStringList(override.mistake);
+};
+
+const hasMistakeOverride = (override: TradeTagOverrideRecord | undefined): boolean =>
+  Boolean(override && (hasOwn(override, "mistakes") || hasOwn(override, "mistake")));
+
+const getTradeNoteMistakesUpdatedAt = (note: JournalTradeNoteRecord): string => {
+  if (note.mistakesUpdatedAt?.trim()) {
+    return note.mistakesUpdatedAt;
+  }
+
+  return normalizeStringList(note.mistakes).length > 0 ? note.updatedAt : "";
+};
+
+export const syncTradeTagOverridesFromJournalTradeNotes = (
+  currentOverrides: TradeTagOverrideRecord[],
+  journalPages: JournalPageRecord[],
+  trades: JournalTradeNoteSyncTrade[]
+): TradeTagOverrideRecord[] => {
+  if (journalPages.length === 0 || trades.length === 0) {
+    return currentOverrides;
+  }
+
+  const tradeByLink = new Map(
+    trades.map((trade) => [createTradeLinkKey(trade.id, normalizeJournalTradeDate(trade.tradeDate)), trade])
+  );
+  const linkedNoteEvents = journalPages
+    .flatMap((page) =>
+      page.tradeNotes.flatMap((note) => {
+        return collectTradeNoteLinks(note).flatMap((link) => {
+          const trade = tradeByLink.get(createTradeLinkKey(link.tradeId, link.tradeDate));
+          if (!trade) {
+            return [];
+          }
+
+          return [
+            {
+              trade,
+              note
+            }
+          ];
+        });
+      })
+    );
+  const playbookEvents = linkedNoteEvents
+    .flatMap(({ trade, note }) => {
+      const notePlaybookUpdatedAt = getTradeNotePlaybookUpdatedAt(note);
+      if (!notePlaybookUpdatedAt) {
+        return [];
+      }
+
+      return [
+        {
+          trade,
+          noteId: note.id,
+          notePlaybookUpdatedAt,
+          playbook: note.playbook.trim()
+        }
+      ];
+    })
+    .sort((left, right) => parseTimestamp(left.notePlaybookUpdatedAt) - parseTimestamp(right.notePlaybookUpdatedAt));
+  const mistakeEvents = linkedNoteEvents
+    .flatMap(({ trade, note }) => {
+      const noteMistakesUpdatedAt = getTradeNoteMistakesUpdatedAt(note);
+      if (!noteMistakesUpdatedAt) {
+        return [];
+      }
+
+      return [
+        {
+          trade,
+          noteId: note.id,
+          noteMistakesUpdatedAt,
+          mistakes: normalizeStringList(note.mistakes)
+        }
+      ];
+    })
+    .sort((left, right) => parseTimestamp(left.noteMistakesUpdatedAt) - parseTimestamp(right.noteMistakesUpdatedAt));
+
+  if (playbookEvents.length === 0 && mistakeEvents.length === 0) {
+    return currentOverrides;
+  }
+
+  const nextOverrides = [...currentOverrides];
+  const indexByKey = new Map(nextOverrides.map((override, index) => [override.key, index]));
+  let changed = false;
+
+  const upsertJournalPlaybookOverride = (
+    trade: JournalTradeNoteSyncTrade,
+    noteId: string,
+    notePlaybookUpdatedAt: string,
+    playbook: string
+  ) => {
+    const key = getTradeOverrideKey(trade);
+    const existingIndex = indexByKey.get(key);
+    const existing = existingIndex === undefined ? undefined : nextOverrides[existingIndex];
+    const existingSource = existing?.journalTradeNotePlaybookSource ?? null;
+    const currentPlaybook = typeof existing?.playbook === "string" ? existing.playbook.trim() : "";
+    const existingHasPlaybookOverride = hasPlaybookOverride(existing);
+    const sourceIsThisNote = existingSource?.noteId === noteId;
+    const sourceIsJournalNote = Boolean(existingSource?.noteId);
+    const notePlaybookTimestamp = parseTimestamp(notePlaybookUpdatedAt);
+
+    if (!playbook) {
+      if (!existing || !sourceIsThisNote || parseTimestamp(existingSource.notePlaybookUpdatedAt) >= notePlaybookTimestamp) {
+        return;
+      }
+    } else if (
+      existing &&
+      existingHasPlaybookOverride &&
+      !sourceIsJournalNote &&
+      parseTimestamp(existing.updatedAt) > notePlaybookTimestamp
+    ) {
+      return;
+    } else if (
+      existing &&
+      sourceIsJournalNote &&
+      parseTimestamp(existingSource?.notePlaybookUpdatedAt) > notePlaybookTimestamp
+    ) {
+      return;
+    }
+
+    if (
+      existing &&
+      currentPlaybook === playbook &&
+      sourceIsThisNote &&
+      existingSource?.notePlaybookUpdatedAt === notePlaybookUpdatedAt
+    ) {
+      return;
+    }
+
+    const nextOverride: TradeTagOverrideRecord = {
+      ...(existing ?? {
+        key,
+        tradeDate: trade.tradeDate,
+        symbol: trade.symbol,
+        openTime: trade.openTime,
+        closeTime: trade.closeTime
+      }),
+      key,
+      tradeDate: trade.tradeDate,
+      symbol: trade.symbol,
+      openTime: trade.openTime,
+      closeTime: trade.closeTime,
+      playbook: playbook || null,
+      journalTradeNotePlaybookSource: {
+        noteId,
+        notePlaybookUpdatedAt
+      },
+      updatedAt: new Date().toISOString()
+    };
+
+    if (existingIndex === undefined) {
+      indexByKey.set(key, nextOverrides.length);
+      nextOverrides.push(nextOverride);
+    } else {
+      nextOverrides[existingIndex] = nextOverride;
+    }
+    changed = true;
+  };
+
+  const upsertJournalMistakeOverride = (
+    trade: JournalTradeNoteSyncTrade,
+    noteId: string,
+    noteMistakesUpdatedAt: string,
+    mistakes: string[]
+  ) => {
+    const key = getTradeOverrideKey(trade);
+    const existingIndex = indexByKey.get(key);
+    const existing = existingIndex === undefined ? undefined : nextOverrides[existingIndex];
+    const existingSource = existing?.journalTradeNoteMistakeSource ?? null;
+    const currentMistakes = normalizeTradeOverrideMistakes(existing);
+    const existingHasMistakeOverride = hasMistakeOverride(existing);
+    const sourceIsThisNote = existingSource?.noteId === noteId;
+    const sourceIsJournalNote = Boolean(existingSource?.noteId);
+    const noteMistakeTimestamp = parseTimestamp(noteMistakesUpdatedAt);
+
+    if (mistakes.length === 0) {
+      if (!existing || !sourceIsThisNote || parseTimestamp(existingSource.noteMistakesUpdatedAt) >= noteMistakeTimestamp) {
+        return;
+      }
+    } else if (
+      existing &&
+      existingHasMistakeOverride &&
+      !sourceIsJournalNote &&
+      parseTimestamp(existing.updatedAt) > noteMistakeTimestamp
+    ) {
+      return;
+    } else if (
+      existing &&
+      sourceIsJournalNote &&
+      parseTimestamp(existingSource?.noteMistakesUpdatedAt) > noteMistakeTimestamp
+    ) {
+      return;
+    }
+
+    if (
+      existing &&
+      hasSameStringList(currentMistakes, mistakes) &&
+      sourceIsThisNote &&
+      existingSource?.noteMistakesUpdatedAt === noteMistakesUpdatedAt
+    ) {
+      return;
+    }
+
+    const nextOverride: TradeTagOverrideRecord = {
+      ...(existing ?? {
+        key,
+        tradeDate: trade.tradeDate,
+        symbol: trade.symbol,
+        openTime: trade.openTime,
+        closeTime: trade.closeTime
+      }),
+      key,
+      tradeDate: trade.tradeDate,
+      symbol: trade.symbol,
+      openTime: trade.openTime,
+      closeTime: trade.closeTime,
+      mistakes,
+      journalTradeNoteMistakeSource: {
+        noteId,
+        noteMistakesUpdatedAt
+      },
+      updatedAt: new Date().toISOString()
+    };
+    delete nextOverride.mistake;
+
+    if (existingIndex === undefined) {
+      indexByKey.set(key, nextOverrides.length);
+      nextOverrides.push(nextOverride);
+    } else {
+      nextOverrides[existingIndex] = nextOverride;
+    }
+    changed = true;
+  };
+
+  for (const event of playbookEvents) {
+    upsertJournalPlaybookOverride(
+      event.trade,
+      event.noteId,
+      event.notePlaybookUpdatedAt,
+      event.playbook
+    );
+  }
+
+  for (const event of mistakeEvents) {
+    upsertJournalMistakeOverride(
+      event.trade,
+      event.noteId,
+      event.noteMistakesUpdatedAt,
+      event.mistakes
+    );
+  }
+
+  return changed
+    ? nextOverrides.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    : currentOverrides;
+};
 
 const parseTradeContextFromTradeId = (
   tradeId: string

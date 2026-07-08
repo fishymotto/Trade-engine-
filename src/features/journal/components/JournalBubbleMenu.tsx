@@ -1,6 +1,7 @@
 import type { Editor } from "@tiptap/react";
 import { BubbleMenu } from "@tiptap/react/menus";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useState } from "react";
+import { pickInlineImageFile } from "../lib/inlineImageFiles";
 
 interface JournalBubbleMenuProps {
   editor: Editor;
@@ -42,7 +43,6 @@ export const JournalBubbleMenu = ({
 }: JournalBubbleMenuProps) => {
   const [linkUrl, setLinkUrl] = useState("");
   const [showLinkInput, setShowLinkInput] = useState(false);
-  const imageInputRef = useRef<HTMLInputElement>(null);
 
   const handleAddLink = useCallback(() => {
     if (!linkUrl) {
@@ -70,36 +70,33 @@ export const JournalBubbleMenu = ({
     }
   };
 
-  const handleImageSelect = useCallback(
-    async (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.currentTarget.files?.[0];
-      if (!file) {
+  const handleImageButtonClick = useCallback(
+    () => {
+      if (imageUploadInProgress) {
         return;
       }
 
-      try {
-        if (onImageInsert) {
-          await onImageInsert(file);
-        } else {
-          const reader = new FileReader();
-          const imageUrl = await new Promise<string>((resolve) => {
-            reader.onload = (e) => {
-              resolve(e.target?.result as string);
-            };
-            reader.readAsDataURL(file);
-          });
+      pickInlineImageFile(async (file) => {
+        try {
+          if (onImageInsert) {
+            await onImageInsert(file);
+          } else {
+            const reader = new FileReader();
+            const imageUrl = await new Promise<string>((resolve) => {
+              reader.onload = (e) => {
+                resolve(e.target?.result as string);
+              };
+              reader.readAsDataURL(file);
+            });
 
-          editor.chain().focus().setImage({ src: imageUrl, alt: file.name }).run();
+            editor.chain().focus().setImage({ src: imageUrl, alt: file.name }).run();
+          }
+        } catch (error) {
+          console.error("Failed to insert image:", error);
         }
-      } catch (error) {
-        console.error("Failed to insert image:", error);
-      }
-
-      if (imageInputRef.current) {
-        imageInputRef.current.value = "";
-      }
+      });
     },
-    [editor, onImageInsert]
+    [editor, imageUploadInProgress, onImageInsert]
   );
 
   return (
@@ -221,19 +218,12 @@ export const JournalBubbleMenu = ({
       <div className="journal-bubble-divider" />
 
       <div className="journal-bubble-section">
-        <input
-          ref={imageInputRef}
-          type="file"
-          accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
-          className="journal-image-input"
-          onChange={handleImageSelect}
-        />
         <IconButton
           icon="Img"
           label={imageUploadInProgress ? "Uploading image" : "Image"}
           active={editor.isActive("image")}
           disabled={imageUploadInProgress}
-          onClick={() => imageInputRef.current?.click()}
+          onClick={handleImageButtonClick}
         />
         <IconButton
           icon="Tgl"
