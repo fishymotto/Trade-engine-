@@ -7379,7 +7379,9 @@ body {
 }
 
 .journal-checklist-section-primary .journal-rich-editor-shell-autosize .journal-rich-editor .ProseMirror {
+  flex: 1 1 0;
   min-height: 0;
+  max-height: none;
 }
 
 .journal-checklist-section-compact {
