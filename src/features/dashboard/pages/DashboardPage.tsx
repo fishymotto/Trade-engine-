@@ -182,6 +182,10 @@ const DashboardSummaryCard = ({
         <strong>{summary.winRate.toFixed(1)}%</strong>
       </div>
       <div>
+        <span>Loss From Top</span>
+        <strong>{formatMoney(summary.lossFromTop)}</strong>
+      </div>
+      <div>
         <span>Trades</span>
         <strong>{summary.totalTrades}</strong>
         <small>{summary.winCount}W - {summary.lossCount}L</small>
@@ -189,6 +193,10 @@ const DashboardSummaryCard = ({
       <div>
         <span>Shares Traded</span>
         <strong>{summary.totalSharesTraded.toLocaleString()}</strong>
+      </div>
+      <div>
+        <span>Value Traded</span>
+        <strong>{formatTradedValue(summary.totalValueTraded)}</strong>
       </div>
       <div>
         <span>Avg Trade</span>
@@ -245,6 +253,8 @@ const DashboardWidgetCard = ({
 const formatSignedMoney = (value: number): string => `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`;
 const formatSignedNumber = (value: number): string => `${value >= 0 ? "+" : "-"}${Math.abs(value).toFixed(2)}`;
 const formatMoney = (value: number): string => `$${Math.max(0, value).toFixed(2)}`;
+const formatTradedValue = (value: number): string =>
+  `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 const getRiskBumpBadgeIcon = (bumpLevel: number): string => {
   if (bumpLevel === 1) {
@@ -910,8 +920,10 @@ export const DashboardPage = ({
               <div><span>Net P&L</span><strong>{overallSummary.totalNetPnl.toFixed(2)}</strong></div>
               <div><span>Gross P&L</span><strong>{overallSummary.totalGrossPnl.toFixed(2)}</strong></div>
               <div><span>Win Rate</span><strong>{overallSummary.winRate.toFixed(1)}%</strong></div>
+              <div><span>Loss From Top</span><strong>{formatMoney(overallSummary.lossFromTop)}</strong></div>
               <div><span>Trades</span><strong>{overallSummary.totalTrades}</strong></div>
               <div><span>Fees</span><strong>{overallSummary.totalFees.toFixed(2)}</strong></div>
+              <div><span>Value Traded</span><strong>{formatTradedValue(overallSummary.totalValueTraded)}</strong></div>
               <div><span>Avg Trade</span><strong>{overallSummary.avgTrade.toFixed(2)}</strong></div>
               <div><span>Profit Factor</span><strong>{overallSummary.profitFactor.toFixed(2)}</strong></div>
             </div>
@@ -924,6 +936,7 @@ export const DashboardPage = ({
               <div><span>Total Trades</span><strong>{databaseStats.totalTrades}</strong></div>
               <div><span>Executions</span><strong>{databaseStats.totalExecutions}</strong></div>
               <div><span>Shares Traded</span><strong>{databaseStats.totalSharesTraded.toLocaleString()}</strong></div>
+              <div><span>Value Traded</span><strong>{formatTradedValue(databaseStats.totalValueTraded)}</strong></div>
               <div><span>Gross P&L</span><strong>{databaseStats.totalGrossPnl.toFixed(2)}</strong></div>
               <div><span>Fees</span><strong>{databaseStats.totalFees.toFixed(2)}</strong></div>
               <div><span>Sessions</span><strong>{databaseStats.sessions}</strong></div>

@@ -13,7 +13,7 @@ import { tradeTagFieldLabels, tradeTagOptionsByField as defaultTradeTagOptionsBy
 import { getTradePlaybookOptions, tradeHasPlaybook } from "../../../lib/trades/playbookFilters";
 import { createEmptyJournalDoc } from "../../../lib/journal/journalContent";
 import { saveWorkspaceInlineImage } from "../../../lib/workspace/workspaceAttachmentClient";
-import type { ChartInterval, HistoricalBarSet } from "../../../types/chart";
+import type { ChartInterval, HistoricalBar, HistoricalBarSet } from "../../../types/chart";
 import type { JSONContent } from "@tiptap/core";
 import type { TradeReviewRecord } from "../../../types/review";
 import type { GroupedTrade } from "../../../types/trade";
@@ -52,8 +52,10 @@ interface TradesPageProps {
   ) => void;
   onImportHistoricalBars: (trade: GroupedTrade, file: File) => Promise<void>;
   onFetchHistoricalBars: (trade: GroupedTrade) => Promise<void>;
+  onFetchTenSecondBars: (trade: GroupedTrade) => Promise<void>;
   onClearHistoricalBars: (trade: GroupedTrade) => void;
   hasTwelveDataApiKey: boolean;
+  hasAlpacaMarketDataCredentials: boolean;
   onChangeReviewChartInterval: (interval: ChartInterval) => void;
   onChangeDayChartInterval: (interval: ChartInterval) => void;
   onUpdateTradeTag: (trade: EditableTradeRow, field: EditableTradeTagField, value: string | string[] | null) => void;
@@ -92,7 +94,30 @@ const summarizeTaggedValues = (values: string[], emptyLabel = "None"): string =>
   return `${normalizedValues[0]}${normalizedValues.length > 1 ? ` +${normalizedValues.length - 1}` : ""}`;
 };
 
-const secondaryChartIntervals: ChartInterval[] = ["1m", "5m", "15m", "1h", "1D", "1W"];
+const hasSubMinuteBars = (bars: HistoricalBar[]): boolean => {
+  for (let index = 1; index < bars.length; index += 1) {
+    const delta = bars[index].time - bars[index - 1].time;
+    if (delta > 0 && delta < 60) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const getTenSecondBarsForSet = (barSet: HistoricalBarSet | null): HistoricalBar[] => {
+  if (!barSet) {
+    return [];
+  }
+
+  if (barSet.tenSecondBars && barSet.tenSecondBars.length > 0) {
+    return barSet.tenSecondBars;
+  }
+
+  return hasSubMinuteBars(barSet.bars) ? barSet.bars : [];
+};
+
+const secondaryChartIntervals: ChartInterval[] = ["10s", "1m", "5m", "15m", "1h", "1D", "1W"];
 const defaultChartLayerVisibility: TradeChartLayerVisibility = {
   entry: true,
   addToWinner: true,
@@ -171,8 +196,10 @@ export const TradesPage = ({
   onUpdateReview,
   onImportHistoricalBars,
   onFetchHistoricalBars,
+  onFetchTenSecondBars,
   onClearHistoricalBars,
   hasTwelveDataApiKey,
+  hasAlpacaMarketDataCredentials,
   onChangeReviewChartInterval,
   onChangeDayChartInterval,
   onUpdateTradeTag,
@@ -194,8 +221,10 @@ export const TradesPage = ({
   const [quickTagEditorField, setQuickTagEditorField] = useState<EditableTradeTagField | null>(null);
   const [quickTagEditorSearchQuery, setQuickTagEditorSearchQuery] = useState("");
   const [autoFetchingTradeKey, setAutoFetchingTradeKey] = useState<string | null>(null);
+  const [tenSecondFetchingTradeKey, setTenSecondFetchingTradeKey] = useState<string | null>(null);
   const barsInputRef = useRef<HTMLInputElement | null>(null);
   const autoFetchAttemptedKeysRef = useRef<Set<string>>(new Set());
+  const tenSecondFetchAttemptedKeysRef = useRef<Set<string>>(new Set());
   const quickTagLabels: Partial<Record<EditableTradeTagField, string>> = useMemo(
     () => ({
       game: "Game",
@@ -488,22 +517,33 @@ export const TradesPage = ({
       ) ?? null
     );
   }, [historicalBarSets, selectedTrade]);
+  const hasMinuteBars = Boolean(selectedBarSet && selectedBarSet.bars.length > 0);
 
   useEffect(() => {
-    if (!selectedBarSet) {
+    if (!selectedBarSet || selectedBarSet.bars.length === 0) {
       return;
     }
 
     autoFetchAttemptedKeysRef.current.add(selectedBarSet.key);
   }, [selectedBarSet]);
 
+  const cachedTenSecondBars = useMemo(() => getTenSecondBarsForSet(selectedBarSet), [selectedBarSet]);
+  const hasCachedTenSecondBars = cachedTenSecondBars.length > 0;
+
+  useEffect(() => {
+    if (selectedTradeBarKey && hasCachedTenSecondBars) {
+      tenSecondFetchAttemptedKeysRef.current.add(selectedTradeBarKey);
+    }
+  }, [hasCachedTenSecondBars, selectedTradeBarKey]);
+
   useEffect(() => {
     if (
       !historicalBarSetsLoaded ||
       !selectedTrade ||
       !hasTwelveDataApiKey ||
+      reviewChartInterval === "10s" ||
       busy ||
-      selectedBarSet ||
+      hasMinuteBars ||
       autoFetchAttemptedKeysRef.current.has(selectedTradeBarKey)
     ) {
       return;
@@ -532,9 +572,54 @@ export const TradesPage = ({
   }, [
     busy,
     hasTwelveDataApiKey,
+    hasMinuteBars,
     historicalBarSetsLoaded,
     onFetchHistoricalBars,
-    selectedBarSet,
+    reviewChartInterval,
+    selectedTrade,
+    selectedTradeBarKey
+  ]);
+
+  useEffect(() => {
+    if (
+      !historicalBarSetsLoaded ||
+      !selectedTrade ||
+      reviewChartInterval !== "10s" ||
+      hasCachedTenSecondBars ||
+      !hasAlpacaMarketDataCredentials ||
+      busy ||
+      tenSecondFetchAttemptedKeysRef.current.has(selectedTradeBarKey)
+    ) {
+      return;
+    }
+
+    tenSecondFetchAttemptedKeysRef.current.add(selectedTradeBarKey);
+    let isCancelled = false;
+
+    const autoFetchTenSecondBars = async () => {
+      setTenSecondFetchingTradeKey(selectedTradeBarKey);
+
+      try {
+        await onFetchTenSecondBars(selectedTrade);
+      } finally {
+        if (!isCancelled) {
+          setTenSecondFetchingTradeKey((current) => (current === selectedTradeBarKey ? null : current));
+        }
+      }
+    };
+
+    void autoFetchTenSecondBars();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [
+    busy,
+    hasAlpacaMarketDataCredentials,
+    hasCachedTenSecondBars,
+    historicalBarSetsLoaded,
+    onFetchTenSecondBars,
+    reviewChartInterval,
     selectedTrade,
     selectedTradeBarKey
   ]);
@@ -562,7 +647,14 @@ export const TradesPage = ({
   const hasAttemptedAutoFetch =
     selectedTradeBarKey.length > 0 && autoFetchAttemptedKeysRef.current.has(selectedTradeBarKey);
   const isAutoFetchingBars = autoFetchingTradeKey === selectedTradeBarKey;
+  const hasAttemptedTenSecondFetch =
+    selectedTradeBarKey.length > 0 && tenSecondFetchAttemptedKeysRef.current.has(selectedTradeBarKey);
+  const isFetchingTenSecondBars = tenSecondFetchingTradeKey === selectedTradeBarKey;
   const reviewChartBars = useMemo(() => {
+    if (reviewChartInterval === "10s") {
+      return cachedTenSecondBars;
+    }
+
     if (!selectedBarSet) {
       return [];
     }
@@ -570,7 +662,7 @@ export const TradesPage = ({
     return reviewChartInterval === "1D" || reviewChartInterval === "1W"
       ? (selectedBarSet.dailyBars ?? selectedBarSet.bars)
       : selectedBarSet.bars;
-  }, [reviewChartInterval, selectedBarSet]);
+  }, [cachedTenSecondBars, reviewChartInterval, selectedBarSet]);
   const chartMarkerTrades = useMemo(() => {
     if (!selectedTrade) {
       return [];
@@ -930,8 +1022,16 @@ export const TradesPage = ({
               <div className="trade-chart-meta-strip" aria-label="Chart data">
                 {selectedBarSet ? (
                   <>
-                    <span className="chart-meta-badge">{selectedBarSet.bars.length} bars</span>
+                    <span className="chart-meta-badge">{selectedBarSet.bars.length} minute bars</span>
                     <span className="chart-meta-badge">{selectedBarSet.sourceFileName}</span>
+                    {selectedBarSet.tenSecondBars && selectedBarSet.tenSecondBars.length > 0 ? (
+                      <>
+                        <span className="chart-meta-badge">{selectedBarSet.tenSecondBars.length} 10s bars</span>
+                        <span className="chart-meta-badge">
+                          {selectedBarSet.tenSecondSourceFileName ?? "Alpaca - 10s"}
+                        </span>
+                      </>
+                    ) : null}
                     <span className="chart-meta-badge">
                       Updated {new Date(selectedBarSet.updatedAt).toLocaleString()}
                     </span>
@@ -1020,7 +1120,42 @@ export const TradesPage = ({
                   </div>
                 )}
               </div>
-              {!selectedBarSet ? (
+              {reviewChartInterval === "10s" && reviewChartBars.length === 0 ? (
+                <div className="empty-chart-state">
+                  <strong>No 10-second bars loaded yet.</strong>
+                  <span>
+                    {hasAlpacaMarketDataCredentials
+                      ? isFetchingTenSecondBars
+                        ? `Fetching 10-second Alpaca bars for ${selectedTrade.symbol} around the trade window.`
+                        : hasAttemptedTenSecondFetch
+                          ? `Alpaca 10-second bars fetch when you select the 10s chart. If this one still needs data, retry the fetch or import a sub-minute bar CSV manually.`
+                          : `Alpaca 10-second bars will fetch as soon as this trade is ready.`
+                      : `Add your Alpaca API key and secret in Settings to fetch 10-second bars for ${selectedTrade.symbol}, or import a sub-minute bar CSV manually.`}
+                  </span>
+                  <div className="empty-chart-state-actions">
+                    <button
+                      type="button"
+                      className="mini-action"
+                      disabled={busy}
+                      onClick={() => barsInputRef.current?.click()}
+                    >
+                      <WorkspaceIcon icon="import" alt="Import bars icon" className="mini-action-icon" />
+                      Import Bars
+                    </button>
+                    {hasAlpacaMarketDataCredentials && !isFetchingTenSecondBars && hasAttemptedTenSecondFetch ? (
+                      <button
+                        type="button"
+                        className="mini-action"
+                        disabled={busy}
+                        onClick={() => selectedTrade && void onFetchTenSecondBars(selectedTrade)}
+                      >
+                        <WorkspaceIcon icon="reports" alt="Retry Alpaca fetch icon" className="mini-action-icon" />
+                        Retry Alpaca
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : reviewChartBars.length === 0 ? (
                 <div className="empty-chart-state">
                   <strong>No historical bars loaded yet.</strong>
                   <span>

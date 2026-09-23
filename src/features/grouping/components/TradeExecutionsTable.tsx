@@ -1,11 +1,14 @@
+import { useMemo, useState } from "react";
 import type { ExecutionPiece, GroupedTrade } from "../../../types/trade";
 
 type ExecutionKind = "Entry" | "Add" | "Exit";
+type ExecutionSortDirection = "asc" | "desc";
 
 interface ExecutionRow {
   kind: ExecutionKind;
   qualifier?: string;
   time: string;
+  timestamp: string;
   gateway?: string;
   side: "Buy" | "Sell";
   quantity?: number;
@@ -42,7 +45,6 @@ const deriveSide = (tradeSide: GroupedTrade["side"], kind: ExecutionKind): "Buy"
 };
 
 const buildRowFromExecution = (
-  trade: GroupedTrade,
   kind: ExecutionKind,
   execution: ExecutionPiece,
   qualifier?: string
@@ -56,6 +58,7 @@ const buildRowFromExecution = (
     kind,
     qualifier,
     time: execution.time,
+    timestamp: execution.timestamp,
     gateway: execution.gatewayName,
     side: execution.side,
     quantity: execution.quantity,
@@ -71,9 +74,11 @@ const buildRowFromExecution = (
 
 const buildFallbackRow = (trade: GroupedTrade, kind: ExecutionKind): ExecutionRow => {
   const price = kind === "Exit" ? trade.exitPrice : trade.entryPrice;
+  const time = kind === "Exit" ? trade.closeTime : trade.openTime;
   return {
     kind,
-    time: kind === "Exit" ? trade.closeTime : trade.openTime,
+    time,
+    timestamp: `${trade.tradeDate}T${time}`,
     side: deriveSide(trade.side, kind),
     price
   };
@@ -84,12 +89,12 @@ const buildExecutionRows = (trade: GroupedTrade): ExecutionRow[] => {
 
   if (trade.openingExecutions.length > 0) {
     const [first, ...rest] = trade.openingExecutions;
-    rows.push(buildRowFromExecution(trade, "Entry", first));
+    rows.push(buildRowFromExecution("Entry", first));
 
     rest.forEach((execution, index) => {
       const signal = trade.addSignals[index];
       const qualifier = signal?.averagedDown ? "Avg down" : signal?.addedToWinner ? "To winner" : undefined;
-      rows.push(buildRowFromExecution(trade, "Add", execution, qualifier));
+      rows.push(buildRowFromExecution("Add", execution, qualifier));
     });
   } else {
     rows.push(buildFallbackRow(trade, "Entry"));
@@ -98,12 +103,16 @@ const buildExecutionRows = (trade: GroupedTrade): ExecutionRow[] => {
   if (trade.closingExecutions.length > 0) {
     trade.closingExecutions.forEach((execution, index) => {
       const isPartial = index < trade.closingExecutions.length - 1;
-      rows.push(buildRowFromExecution(trade, "Exit", execution, isPartial ? "Partial" : undefined));
+      rows.push(buildRowFromExecution("Exit", execution, isPartial ? "Partial" : undefined));
     });
   } else {
     rows.push(buildFallbackRow(trade, "Exit"));
   }
 
+  return rows;
+};
+
+const applyRunningPosition = (rows: ExecutionRow[]): ExecutionRow[] => {
   let runningPosition = 0;
   return rows.map((row) => {
     if (row.quantity && row.quantity > 0) {
@@ -116,15 +125,61 @@ const buildExecutionRows = (trade: GroupedTrade): ExecutionRow[] => {
   });
 };
 
+const compareExecutionRowsByTime = (
+  left: ExecutionRow,
+  right: ExecutionRow,
+  direction: ExecutionSortDirection
+): number => {
+  const timestampCompare = left.timestamp.localeCompare(right.timestamp, undefined, {
+    numeric: true,
+    sensitivity: "base"
+  });
+
+  if (timestampCompare !== 0) {
+    return direction === "asc" ? timestampCompare : -timestampCompare;
+  }
+
+  return (left.sourceIndex ?? Number.MAX_SAFE_INTEGER) - (right.sourceIndex ?? Number.MAX_SAFE_INTEGER);
+};
+
 export function TradeExecutionsTable({ trade }: { trade: GroupedTrade }) {
-  const rows = buildExecutionRows(trade);
+  const [timeSortDirection, setTimeSortDirection] = useState<ExecutionSortDirection>("asc");
+  const rows = useMemo(() => {
+    const chronologicalRows = [...buildExecutionRows(trade)].sort((left, right) =>
+      compareExecutionRowsByTime(left, right, "asc")
+    );
+    const positionedRows = applyRunningPosition(chronologicalRows);
+
+    if (timeSortDirection === "asc") {
+      return positionedRows;
+    }
+
+    return [...positionedRows].sort((left, right) => compareExecutionRowsByTime(left, right, "desc"));
+  }, [trade, timeSortDirection]);
+  const sortDirectionLabel = timeSortDirection === "asc" ? "ascending" : "descending";
+  const toggleTimeSort = () => {
+    setTimeSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+  };
 
   return (
     <div className="trade-executions">
       <div className="trade-execution-grid trade-execution-header" role="row">
         <span className="trade-execution-header-cell">Type</span>
         <span className="trade-execution-header-cell">Side</span>
-        <span className="trade-execution-header-cell">Time</span>
+        <span className="trade-execution-header-cell">
+          <button
+            type="button"
+            className="sortable-header-button"
+            aria-label={`Sort executions by time. Currently ${sortDirectionLabel}.`}
+            title="Sort executions by time"
+            onClick={toggleTimeSort}
+          >
+            <span>Time</span>
+            <span className="sort-indicator sort-indicator-active" aria-hidden="true">
+              {timeSortDirection === "asc" ? "\u2191" : "\u2193"}
+            </span>
+          </button>
+        </span>
         <span className="trade-execution-header-cell">Gateway</span>
         <span className="trade-execution-header-cell trade-execution-cell-right">Size</span>
         <span className="trade-execution-header-cell trade-execution-cell-right">Pos</span>

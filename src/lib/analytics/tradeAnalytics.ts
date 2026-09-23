@@ -3,6 +3,7 @@ import type { GroupedTrade } from "../../types/trade";
 export interface TradeSummary {
   totalTrades: number;
   totalSharesTraded: number;
+  totalValueTraded: number;
   totalGrossPnl: number;
   totalNetPnl: number;
   totalFees: number;
@@ -11,6 +12,7 @@ export interface TradeSummary {
   winRate: number;
   avgTrade: number;
   avgHoldMinutes: number;
+  lossFromTop: number;
   profitFactor: number;
 }
 
@@ -18,6 +20,7 @@ export interface DatabaseStats {
   totalTrades: number;
   totalExecutions: number;
   totalSharesTraded: number;
+  totalValueTraded: number;
   totalGrossPnl: number;
   totalFees: number;
   sessions: number;
@@ -40,6 +43,7 @@ export interface PerformanceRow {
   label: string;
   trades: number;
   totalSharesTraded?: number;
+  totalValueTraded?: number;
   winRate: number;
   netPnl: number;
   avgPnl: number;
@@ -97,9 +101,19 @@ const getTotalSharesTraded = (trades: GroupedTrade[]): number =>
     0
   );
 
+const getTotalValueTraded = (trades: GroupedTrade[]): number =>
+  trades.reduce(
+    (sum, trade) =>
+      sum +
+      trade.openingExecutions.reduce((pieceSum, piece) => pieceSum + Math.abs(piece.quantity) * piece.price, 0) +
+      trade.closingExecutions.reduce((pieceSum, piece) => pieceSum + Math.abs(piece.quantity) * piece.price, 0),
+    0
+  );
+
 const summarizeGroup = (label: string, trades: GroupedTrade[]): PerformanceRow => {
   const tradeCount = trades.length;
   const totalSharesTraded = getTotalSharesTraded(trades);
+  const totalValueTraded = getTotalValueTraded(trades);
   const winCount = trades.filter((trade) => trade.status === "Win").length;
   const netPnl = trades.reduce((sum, trade) => sum + trade.netPnlUsd, 0);
   const totalFees = trades.reduce((sum, trade) => sum + trade.feesUsd, 0);
@@ -108,6 +122,7 @@ const summarizeGroup = (label: string, trades: GroupedTrade[]): PerformanceRow =
     label,
     trades: tradeCount,
     totalSharesTraded,
+    totalValueTraded: round(totalValueTraded),
     winRate: tradeCount > 0 ? (winCount / tradeCount) * 100 : 0,
     netPnl: round(netPnl),
     avgPnl: tradeCount > 0 ? round(netPnl / tradeCount) : 0,
@@ -115,9 +130,38 @@ const summarizeGroup = (label: string, trades: GroupedTrade[]): PerformanceRow =
   };
 };
 
+const getTradeChronologyKey = (trade: GroupedTrade): string => {
+  const closingExecution = trade.closingExecutions[trade.closingExecutions.length - 1];
+  const fallbackTime = trade.closeTime || trade.openTime || "00:00:00";
+
+  return closingExecution?.timestamp || `${trade.tradeDate}T${fallbackTime}`;
+};
+
+export const getLossFromTop = (trades: GroupedTrade[]): number => {
+  let runningNetPnl = 0;
+  let peakNetPnl = 0;
+
+  const orderedTrades = [...trades].sort((left, right) => {
+    const chronologyCompare = getTradeChronologyKey(left).localeCompare(getTradeChronologyKey(right));
+    if (chronologyCompare !== 0) {
+      return chronologyCompare;
+    }
+
+    return left.id.localeCompare(right.id);
+  });
+
+  for (const trade of orderedTrades) {
+    runningNetPnl += trade.netPnlUsd;
+    peakNetPnl = Math.max(peakNetPnl, runningNetPnl);
+  }
+
+  return round(Math.max(0, peakNetPnl - runningNetPnl));
+};
+
 export const getTradeSummary = (trades: GroupedTrade[]): TradeSummary => {
   const totalTrades = trades.length;
   const totalSharesTraded = getTotalSharesTraded(trades);
+  const totalValueTraded = getTotalValueTraded(trades);
   const totalGrossPnl = trades.reduce((sum, trade) => sum + trade.grossPnlUsd, 0);
   const totalNetPnl = trades.reduce((sum, trade) => sum + trade.netPnlUsd, 0);
   const totalFees = trades.reduce((sum, trade) => sum + trade.feesUsd, 0);
@@ -135,6 +179,7 @@ export const getTradeSummary = (trades: GroupedTrade[]): TradeSummary => {
   return {
     totalTrades,
     totalSharesTraded,
+    totalValueTraded: round(totalValueTraded),
     totalGrossPnl: round(totalGrossPnl),
     totalNetPnl: round(totalNetPnl),
     totalFees: round(totalFees),
@@ -143,6 +188,7 @@ export const getTradeSummary = (trades: GroupedTrade[]): TradeSummary => {
     winRate: totalTrades > 0 ? (winCount / totalTrades) * 100 : 0,
     avgTrade: totalTrades > 0 ? round(totalNetPnl / totalTrades) : 0,
     avgHoldMinutes: round(avgHoldMinutes),
+    lossFromTop: getLossFromTop(trades),
     profitFactor: grossLosses > 0 ? round(grossWins / grossLosses) : grossWins > 0 ? 999 : 0
   };
 };
@@ -176,6 +222,7 @@ export const getDatabaseStats = (trades: GroupedTrade[]): DatabaseStats => ({
     0
   ),
   totalSharesTraded: getTotalSharesTraded(trades),
+  totalValueTraded: round(getTotalValueTraded(trades)),
   totalGrossPnl: round(trades.reduce((sum, trade) => sum + trade.grossPnlUsd, 0)),
   totalFees: round(trades.reduce((sum, trade) => sum + trade.feesUsd, 0)),
   sessions: new Set(trades.map((trade) => trade.tradeDate)).size,

@@ -25,6 +25,33 @@ const ensureTwoRows = (rows: ReviewReflectionState["reading"]) =>
 
 const normalizeLinkedOptionKey = (value: string): string => value.trim().replace(/\s+/g, " ").toLowerCase();
 
+const normalizeReviewSelectOption = (value: string): string => value.trim().replace(/\s+/g, " ");
+
+const dedupeReviewSelectOptions = (values: string[]): string[] => {
+  const seen = new Set<string>();
+  const output: string[] = [];
+
+  for (const value of values) {
+    const normalized = normalizeReviewSelectOption(value);
+    if (!normalized) {
+      continue;
+    }
+
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    output.push(normalized);
+  }
+
+  return output;
+};
+
+const sortReviewSelectOptions = (values: string[]): string[] =>
+  dedupeReviewSelectOptions(values).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+
 const normalizeTradeDate = (value: string): string => {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return value;
@@ -153,6 +180,7 @@ type ReviewReflectionPanelProps = {
   defaultBookOptions: string[];
   defaultAuthorOptions: string[];
   bookAuthorByTitle: Record<string, string>;
+  onEnsureBookListEntry?: (book: string, author?: string) => void;
   onSelectTemplateId: (templateId: string) => void;
   onChangeReflection: (
     next: ReviewReflectionState | ((current: ReviewReflectionState) => ReviewReflectionState)
@@ -179,6 +207,7 @@ export const ReviewReflectionPanel = ({
   defaultBookOptions,
   defaultAuthorOptions,
   bookAuthorByTitle,
+  onEnsureBookListEntry,
   onSelectTemplateId,
   onChangeReflection,
   onSaveTemplate,
@@ -203,16 +232,45 @@ export const ReviewReflectionPanel = ({
     }
   }, [onSelectTemplateId, selectedTemplateId, templates]);
 
-  const { options: bookOptions, addOption: addBookOption } = useEditableSelectOptions(
+  const { options: storedBookOptions, addOption: addBookOption } = useEditableSelectOptions(
     "review.reading.books",
     defaultBookOptions
   );
-  const { options: authorOptions, addOption: addAuthorOption } = useEditableSelectOptions(
+  const { options: storedAuthorOptions, addOption: addAuthorOption } = useEditableSelectOptions(
     "review.reading.authors",
     defaultAuthorOptions
   );
 
   const [pendingTemplateName, setPendingTemplateName] = useState("");
+  const selectedReadingBookOptions = useMemo(
+    () => dedupeReviewSelectOptions(reflection.reading.map((row) => row.book)),
+    [reflection.reading]
+  );
+  const selectedReadingAuthorOptions = useMemo(
+    () => dedupeReviewSelectOptions(reflection.reading.map((row) => row.author)),
+    [reflection.reading]
+  );
+  const bookOptions = useMemo(
+    () => sortReviewSelectOptions([...storedBookOptions, ...selectedReadingBookOptions]),
+    [selectedReadingBookOptions, storedBookOptions]
+  );
+  const authorOptions = useMemo(
+    () => sortReviewSelectOptions([...storedAuthorOptions, ...selectedReadingAuthorOptions]),
+    [selectedReadingAuthorOptions, storedAuthorOptions]
+  );
+
+  useEffect(() => {
+    if (!onEnsureBookListEntry) {
+      return;
+    }
+
+    for (const row of reflection.reading) {
+      if (row.book.trim()) {
+        onEnsureBookListEntry(row.book, row.author);
+      }
+    }
+  }, [onEnsureBookListEntry, reflection.reading]);
+
   const reviewDates = useMemo(() => getWeekdayDatesInRange(reviewRange), [reviewRange]);
   const reviewTrades = useMemo(() => getReviewTrades(trades, reviewRange), [trades, reviewRange]);
   const savedPlaybookOptions = useMemo(
@@ -305,7 +363,18 @@ export const ReviewReflectionPanel = ({
       return;
     }
 
+    const currentAuthor = ensureTwoRows(reflection.reading)[index]?.author ?? "";
+    onEnsureBookListEntry?.(book, linkedAuthor || currentAuthor);
     setReadingRow(index, linkedAuthor ? { book, author: linkedAuthor } : { book });
+  };
+
+  const setReadingAuthor = (index: number, author: string) => {
+    const book = ensureTwoRows(reflection.reading)[index]?.book ?? "";
+    if (book.trim()) {
+      onEnsureBookListEntry?.(book, author);
+    }
+
+    setReadingRow(index, { author });
   };
 
   const removeReadingRow = (index: number) => {
@@ -557,7 +626,7 @@ export const ReviewReflectionPanel = ({
                     handleSelectWithAdd(
                       event.target.value,
                       addAuthorOption,
-                      (author) => setReadingRow(index, { author }),
+                      (author) => setReadingAuthor(index, author),
                       "author"
                     )
                   }

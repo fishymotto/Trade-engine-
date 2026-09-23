@@ -14,6 +14,18 @@ const createDoc = (content: JSONContent[]): JSONContent => ({
   content: content.length > 0 ? content : [createParagraphNode("")]
 });
 
+const createTableCellNode = (text: string, type: "tableCell" | "tableHeader" = "tableCell"): JSONContent => ({
+  type,
+  content: [createParagraphNode(text)]
+});
+
+const createTableRowNode = (
+  cells: Array<{ text: string; header?: boolean }>
+): JSONContent => ({
+  type: "tableRow",
+  content: cells.map((cell) => createTableCellNode(cell.text, cell.header ? "tableHeader" : "tableCell"))
+});
+
 export const createEmptyJournalDoc = (): JSONContent => createDoc([createParagraphNode("")]);
 
 export const createMorningChecklistDoc = (): JSONContent =>
@@ -72,6 +84,76 @@ export const createClosingChecklistDoc = (): JSONContent =>
         }
       ]
     }
+  ]);
+
+export const createClosingJournalTemplateDoc = (): JSONContent =>
+  createDoc([
+    {
+      type: "heading",
+      attrs: { level: 2 },
+      content: createTextContent("Daily Process Scores")
+    },
+    {
+      type: "table",
+      content: [
+        createTableRowNode([
+          { text: "Category", header: true },
+          { text: "What you are grading across the full day", header: true },
+          { text: "Score", header: true }
+        ]),
+        createTableRowNode([
+          { text: "1. Setup Quality" },
+          {
+            text:
+              "I had a clear setup before entering, and my trades made sense in the market/context I was trading."
+          },
+          { text: "___ / 5" }
+        ]),
+        createTableRowNode([
+          { text: "2. Stop Discipline" },
+          {
+            text:
+              "I defined where I was wrong before entering and respected that level instead of moving it or holding and hoping."
+          },
+          { text: "___ / 5" }
+        ]),
+        createTableRowNode([
+          { text: "3. Size & Risk" },
+          {
+            text:
+              "My size matched the setup, stop, and available daily risk. I did not size up just to make money back."
+          },
+          { text: "___ / 5" }
+        ]),
+        createTableRowNode([
+          { text: "4. Entry & Execution" },
+          {
+            text:
+              "I entered when the setup confirmed and executed quickly and cleanly without chasing, freezing, or key mistakes."
+          },
+          { text: "___ / 5" }
+        ]),
+        createTableRowNode([
+          { text: "5. Profit Taking" },
+          {
+            text:
+              "I had an exit plan once I was in the trade and took profit when it was offered instead of overholding or round-tripping. Profit target out as soon as in position."
+          },
+          { text: "___ / 5" }
+        ])
+      ]
+    },
+    createParagraphNode("DAILY PROCESS SCORE ___ / 25"),
+    {
+      type: "heading",
+      attrs: { level: 2 },
+      content: createTextContent("End-of-Day Review")
+    },
+    createParagraphNode(
+      "Use your lowest score to choose tomorrow's focus. If the same category keeps showing up, move it to the Recurring Mistake Audit."
+    ),
+    createParagraphNode("What was the main mistake or leak today?"),
+    createParagraphNode("What is the one adjustment for tomorrow?")
   ]);
 
 export const createMppPlanDoc = (): JSONContent =>

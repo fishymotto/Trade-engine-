@@ -13,6 +13,7 @@ import { getTickerIcon, resolveTickerGroupIcon, tickerIcons } from "../../../lib
 import { parseTickerList } from "../../../lib/tickers/tickerList";
 import { useDebouncedSave } from "../../../lib/hooks/useDebouncedSave";
 import { useEditableSelectOptions } from "../../../lib/select/useEditableSelectOptions";
+import { loadSelectOptionAdditions } from "../../../lib/select/selectOptionAdditionsStore";
 import {
   createLibraryBookRow,
   createLibraryPage,
@@ -29,6 +30,7 @@ import {
   WEEKLY_IMPROVEMENT_GOALS_COLLECTION_ID
 } from "../../../lib/library/libraryStore";
 import type { LibraryCollectionId, LibraryPageRecord } from "../../../types/library";
+import type { ReviewReadingEntry } from "../../../types/libraryReview";
 import type { JournalPageRecord, JournalScreenshotTagRecord, JournalScreenshotTradeLink } from "../../../types/journal";
 import type { LibraryNavigationState, LibrarySection, PlaybooksNavigationState } from "../../../types/app";
 import type { Settings } from "../../../types/trade";
@@ -174,6 +176,100 @@ const getBookFieldValue = (page: LibraryPageRecord, propertyName: string): strin
   renderPropertyValue(page, propertyName, "");
 
 const getBookAuthorLookupKey = (value: string): string => value.trim().replace(/\s+/g, " ").toLowerCase();
+
+const normalizeBookOptionValue = (value: string): string => value.trim().replace(/\s+/g, " ");
+
+type BookListEntry = {
+  title: string;
+  author?: string;
+};
+
+const buildPagesWithEnsuredBookRows = (
+  pages: LibraryPageRecord[],
+  entries: BookListEntry[]
+): LibraryPageRecord[] => {
+  const normalizedEntries: BookListEntry[] = [];
+  const seenEntries = new Set<string>();
+
+  for (const entry of entries) {
+    const title = normalizeBookOptionValue(entry.title);
+    if (!title) {
+      continue;
+    }
+
+    const key = getBookAuthorLookupKey(title);
+    const author = normalizeBookOptionValue(entry.author ?? "");
+    const existingIndex = normalizedEntries.findIndex((candidate) => getBookAuthorLookupKey(candidate.title) === key);
+
+    if (existingIndex >= 0) {
+      if (author && !normalizedEntries[existingIndex].author) {
+        normalizedEntries[existingIndex] = { ...normalizedEntries[existingIndex], author };
+      }
+      continue;
+    }
+
+    if (seenEntries.has(key)) {
+      continue;
+    }
+
+    seenEntries.add(key);
+    normalizedEntries.push({ title, author });
+  }
+
+  if (normalizedEntries.length === 0) {
+    return pages;
+  }
+
+  let nextPages = pages;
+  let changed = false;
+  const timestamp = new Date().toISOString();
+
+  for (const entry of normalizedEntries) {
+    const titleKey = getBookAuthorLookupKey(entry.title);
+    const existingPage = nextPages.find(
+      (page) => page.collectionId === "book-club" && isBookRow(page) && getBookAuthorLookupKey(page.title) === titleKey
+    );
+
+    if (existingPage) {
+      const currentAuthor = getBookFieldValue(existingPage, "Author").trim();
+      if (!entry.author || currentAuthor) {
+        continue;
+      }
+
+      nextPages = nextPages.map((page) =>
+        page.id === existingPage.id
+          ? {
+              ...page,
+              properties: {
+                ...(page.properties ?? {}),
+                Author: entry.author
+              },
+              updatedAt: timestamp
+            }
+          : page
+      );
+      changed = true;
+      continue;
+    }
+
+    const newPage = createLibraryBookRow();
+    nextPages = [
+      {
+        ...newPage,
+        title: entry.title,
+        properties: {
+          ...(newPage.properties ?? {}),
+          Author: entry.author ?? ""
+        },
+        updatedAt: timestamp
+      },
+      ...nextPages
+    ];
+    changed = true;
+  }
+
+  return changed ? nextPages : pages;
+};
 
 type BookCustomTextField = {
   id: string;
@@ -561,6 +657,92 @@ const parseWakeUpPlanMetric = (value: unknown): number | null => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+const normalizeReviewReadingText = (value: string): string => value.trim().replace(/\s+/g, " ");
+
+const hasReviewReadingContent = (entry: ReviewReadingEntry): boolean =>
+  Boolean(
+    normalizeReviewReadingText(entry.book) ||
+      normalizeReviewReadingText(entry.author) ||
+      normalizeReviewReadingText(entry.pages)
+  );
+
+const getReviewReadingBookKey = (value: string): string => normalizeReviewReadingText(value).toLowerCase();
+
+const appendUniqueReviewReadingText = (current: string, next: string): string => {
+  const currentParts = current
+    .split(",")
+    .map(normalizeReviewReadingText)
+    .filter(Boolean);
+  const nextParts = next
+    .split(",")
+    .map(normalizeReviewReadingText)
+    .filter(Boolean);
+  const seen = new Set(currentParts.map((part) => part.toLowerCase()));
+
+  for (const part of nextParts) {
+    const key = part.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    currentParts.push(part);
+  }
+
+  return currentParts.join(", ");
+};
+
+const collectMonthlyReadingEntriesFromWeeklyReviews = (
+  pages: LibraryPageRecord[],
+  monthRange: { start: string; end: string }
+): ReviewReadingEntry[] => {
+  const entriesByBook = new Map<string, ReviewReadingEntry>();
+
+  const weeklyPages = pages
+    .filter((page) => page.collectionId === "weekly-review")
+    .map((page) => ({ page, range: getReviewRange(page.properties) }))
+    .flatMap((entry) => {
+      if (!entry.range || entry.range.end < monthRange.start || entry.range.start > monthRange.end) {
+        return [];
+      }
+
+      return [{ page: entry.page, range: entry.range }];
+    })
+    .sort((left, right) => {
+      const rangeCompare = left.range.start.localeCompare(right.range.start);
+      return rangeCompare !== 0 ? rangeCompare : left.page.updatedAt.localeCompare(right.page.updatedAt);
+    });
+
+  for (const { page } of weeklyPages) {
+    const weeklyReflection = coerceReviewReflectionState(page.properties?.[REVIEW_REFLECTION_KEY]);
+    for (const row of weeklyReflection.reading) {
+      const book = normalizeReviewReadingText(row.book);
+      if (!book) {
+        continue;
+      }
+
+      const key = getReviewReadingBookKey(book);
+      const existing = entriesByBook.get(key);
+      if (!existing) {
+        entriesByBook.set(key, {
+          book,
+          author: normalizeReviewReadingText(row.author),
+          pages: normalizeReviewReadingText(row.pages)
+        });
+        continue;
+      }
+
+      entriesByBook.set(key, {
+        book: existing.book,
+        author: existing.author || normalizeReviewReadingText(row.author),
+        pages: appendUniqueReviewReadingText(existing.pages, row.pages)
+      });
+    }
+  }
+
+  return Array.from(entriesByBook.values());
+};
+
 const formatSignedUsd = (value: number): string => {
   const amount = Number.isFinite(value) ? value : 0;
   const formatted = Math.abs(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -581,6 +763,45 @@ const formatSignedDecimal = (value: number, digits = 4): string => {
 };
 
 const formatTradeNumber = (value: number): string => (Number.isFinite(value) ? value.toLocaleString() : "-");
+
+const getPreviousReviewRangeWithTrades = ({
+  period,
+  rangeStart,
+  rangeEnd,
+  trades
+}: {
+  period: ReviewPeriod;
+  rangeStart: string;
+  rangeEnd: string;
+  trades: GroupedTrade[];
+}): { start: string; end: string } | null => {
+  let candidate = getPreviousReviewRange(period, rangeStart, rangeEnd);
+  if (period !== "weekly") {
+    return candidate;
+  }
+
+  const earlierTradeDates = trades
+    .map((trade) => trade.tradeDate.slice(0, 10))
+    .filter((tradeDate) => /^\d{4}-\d{2}-\d{2}$/.test(tradeDate) && tradeDate < rangeStart)
+    .sort();
+  const earliestTradeDate = earlierTradeDates[0];
+  if (!earliestTradeDate) {
+    return null;
+  }
+
+  while (candidate && candidate.end >= earliestTradeDate) {
+    const hasTrades = earlierTradeDates.some(
+      (tradeDate) => tradeDate >= candidate!.start && tradeDate <= candidate!.end
+    );
+    if (hasTrades) {
+      return candidate;
+    }
+
+    candidate = getPreviousReviewRange(period, candidate.start, candidate.end);
+  }
+
+  return null;
+};
 
 type ReviewComparisonTone = "positive" | "negative" | "neutral";
 
@@ -609,6 +830,13 @@ type ReviewTradeSpotlightData = {
 };
 
 type ReviewTradeSpotlightKind = "best" | "worst";
+
+type ReviewTradeSpotlightItem = {
+  key: string;
+  title: string;
+  emptyTitle: string;
+  data: ReviewTradeSpotlightData | null;
+};
 
 const REVIEW_TRADE_LINK_SEPARATOR = "::";
 
@@ -699,20 +927,192 @@ const findTaggedChartForTrade = (journalPages: JournalPageRecord[], trade: Group
   return match;
 };
 
-const ReviewTradeSpotlightCard = ({
+const ReviewTradeSpotlightEntry = ({
+  item,
+  onSelectTrade,
+  onOpenJournalDate
+}: {
+  item: ReviewTradeSpotlightItem;
+  onSelectTrade: (tradeId: string, tradeDate: string) => void;
+  onOpenJournalDate: (tradeDate: string) => void;
+}) => {
+  const { title, emptyTitle, data } = item;
+
+  if (!data) {
+    return (
+      <div className="review-trade-spotlight-item review-trade-spotlight-item-empty">
+        <div className="review-trade-spotlight-item-header">
+          <strong>{title}</strong>
+        </div>
+        <div className="review-best-trade-empty">
+          <strong>{emptyTitle}</strong>
+          <span>This review range does not have any trades to rank.</span>
+        </div>
+      </div>
+    );
+  }
+
+  const { trade, taggedChart } = data;
+  const tradeDate = normalizeIsoTradeDate(trade.tradeDate);
+  const symbolIcon = getTickerIcon(trade.symbol);
+  const fillCount = trade.openingExecutions.length + trade.closingExecutions.length;
+  const statCards: Array<{ label: string; value: string; tone?: "positive" | "negative" }> = [
+    {
+      label: "Net P/L",
+      value: formatSignedUsd(trade.netPnlUsd),
+      tone: trade.netPnlUsd >= 0 ? "positive" : "negative"
+    },
+    {
+      label: "Gross P/L",
+      value: formatSignedUsd(trade.grossPnlUsd),
+      tone: trade.grossPnlUsd >= 0 ? "positive" : "negative"
+    },
+    { label: "Fees", value: formatUsd(trade.feesUsd) },
+    {
+      label: "Return / Share",
+      value: formatSignedDecimal(trade.returnPerShare),
+      tone: trade.returnPerShare >= 0 ? "positive" : "negative"
+    },
+    { label: "Size", value: formatTradeNumber(Math.abs(trade.size || 0)) },
+    { label: "Entry", value: formatTradePrice(trade.entryPrice) },
+    { label: "Exit", value: formatTradePrice(trade.exitPrice) },
+    { label: "Hold", value: trade.holdTime || `${Math.round((trade.holdSeconds || 0) / 60)}m` },
+    { label: "Side", value: trade.side },
+    { label: "Fills", value: formatTradeNumber(fillCount) }
+  ];
+  const tagGroups = [
+    { label: "Playbook", values: trade.setups.filter((value) => value && value !== "No Setup") },
+    { label: "Mistakes", values: trade.mistakes },
+    { label: "Catalyst", values: trade.catalyst },
+    { label: "Execution", values: trade.execution },
+    { label: "Out Tag", values: trade.outTag },
+    { label: "Gateways", values: trade.gateways }
+  ]
+    .map((group) => ({
+      ...group,
+      values: Array.from(new Set(group.values.map((value) => value.trim()).filter(Boolean)))
+    }))
+    .filter((group) => group.values.length > 0);
+
+  return (
+    <div className="review-trade-spotlight-item">
+      <div className="review-trade-spotlight-item-header">
+        <strong>{title}</strong>
+        <button
+          type="button"
+          className="mini-action"
+          onClick={() => onSelectTrade(trade.id, tradeDate || trade.tradeDate)}
+        >
+          Open Trade
+        </button>
+      </div>
+
+      <div className="review-best-trade-layout">
+        <div className="review-best-trade-details">
+          <div className="review-best-trade-identity">
+            <span className="symbol-pill review-best-trade-symbol">
+              {symbolIcon ? (
+                <img src={symbolIcon} alt={`${trade.symbol} icon`} className="symbol-pill-icon" />
+              ) : (
+                <WorkspaceIcon icon="trades" alt="" className="symbol-pill-icon" />
+              )}
+              {trade.symbol}
+            </span>
+            <div className="review-best-trade-title">
+              <strong>{trade.name || `${trade.symbol} ${trade.side}`}</strong>
+              <span>
+                {tradeDate || trade.tradeDate} | {trade.openTime || "--"} to {trade.closeTime || "--"}
+              </span>
+            </div>
+            <span className={`review-best-trade-status review-best-trade-status-${trade.status.toLowerCase()}`}>
+              {trade.status}
+            </span>
+          </div>
+
+          <div className="review-best-trade-stats" aria-label={`${title} stats`}>
+            {statCards.map((stat) => (
+              <div
+                key={stat.label}
+                className={`review-best-trade-stat${stat.tone ? ` review-best-trade-stat-${stat.tone}` : ""}`}
+              >
+                <span>{stat.label}</span>
+                <strong>{stat.value}</strong>
+              </div>
+            ))}
+          </div>
+
+          <div className="review-best-trade-tag-area" aria-label={`${title} tags`}>
+            {tagGroups.length > 0 ? (
+              tagGroups.map((group) => (
+                <div key={group.label} className="review-best-trade-tag-group">
+                  <span>{group.label}</span>
+                  <div>
+                    {group.values.map((value) => (
+                      <em key={`${group.label}-${value}`}>{value}</em>
+                    ))}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <span className="review-best-trade-tag-empty">No trade tags on this one yet.</span>
+            )}
+          </div>
+        </div>
+
+        <div className="review-best-trade-chart">
+          {taggedChart ? (
+            <>
+              <button
+                type="button"
+                className="review-best-trade-chart-button"
+                onClick={() => onSelectTrade(trade.id, tradeDate || trade.tradeDate)}
+                title={`Open ${trade.symbol} trade`}
+              >
+                <img
+                  src={resolveWorkspaceAttachmentSrc(taggedChart.screenshotUrl)}
+                  alt={`${trade.symbol} tagged chart`}
+                />
+              </button>
+              <div className="review-best-trade-chart-meta">
+                <strong>Tagged Chart</strong>
+                <span>
+                  {taggedChart.taggedDate
+                    ? `Tagged ${taggedChart.taggedDate}`
+                    : `Journal ${taggedChart.journalTradeDate || tradeDate}`}
+                </span>
+              </div>
+            </>
+          ) : (
+            <div className="review-best-trade-chart-empty">
+              <WorkspaceIcon icon="chart-screenshots" alt="" className="mini-action-icon" />
+              <strong>No tagged chart yet</strong>
+              <span>Tag a journal screenshot to this trade and it will show here.</span>
+              {tradeDate ? (
+                <button type="button" className="mini-action mini-action-soft" onClick={() => onOpenJournalDate(tradeDate)}>
+                  Open Journal
+                </button>
+              ) : null}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ReviewTradeSpotlightSection = ({
   kind,
-  data,
+  items,
   onSelectTrade,
   onOpenJournalDate
 }: {
   kind: ReviewTradeSpotlightKind;
-  data: ReviewTradeSpotlightData | null;
+  items: ReviewTradeSpotlightItem[];
   onSelectTrade: (tradeId: string, tradeDate: string) => void;
   onOpenJournalDate: (tradeDate: string) => void;
 }) => {
   const isWorst = kind === "worst";
-  const title = isWorst ? "Worst Trade" : "Best Trade";
-  const emptyTitle = isWorst ? "No worst trade yet." : "No best trade yet.";
+  const title = isWorst ? "Worst Trades" : "Best Trades";
 
   return (
     <section
@@ -725,169 +1125,131 @@ const ReviewTradeSpotlightCard = ({
           <WorkspaceIcon icon={isWorst ? "worst-trade" : "best-trade"} alt="" className="mini-action-icon" />
           <strong>{title}</strong>
         </div>
-        {data ? (
-          <div className="journal-writing-header-actions">
-            <button
-              type="button"
-              className="mini-action"
-              onClick={() =>
-                onSelectTrade(data.trade.id, normalizeIsoTradeDate(data.trade.tradeDate) || data.trade.tradeDate)
-              }
-            >
-              Open Trade
-            </button>
-          </div>
-        ) : null}
       </div>
 
-      {data ? (
-        (() => {
-          const { trade, taggedChart } = data;
-          const tradeDate = normalizeIsoTradeDate(trade.tradeDate);
-          const symbolIcon = getTickerIcon(trade.symbol);
-          const fillCount = trade.openingExecutions.length + trade.closingExecutions.length;
-          const statCards: Array<{ label: string; value: string; tone?: "positive" | "negative" }> = [
-            {
-              label: "Net PnL",
-              value: formatSignedUsd(trade.netPnlUsd),
-              tone: trade.netPnlUsd >= 0 ? "positive" : "negative"
-            },
-            {
-              label: "Gross PnL",
-              value: formatSignedUsd(trade.grossPnlUsd),
-              tone: trade.grossPnlUsd >= 0 ? "positive" : "negative"
-            },
-            { label: "Fees", value: formatUsd(trade.feesUsd) },
-            {
-              label: "Return / Share",
-              value: formatSignedDecimal(trade.returnPerShare),
-              tone: trade.returnPerShare >= 0 ? "positive" : "negative"
-            },
-            { label: "Size", value: formatTradeNumber(Math.abs(trade.size || 0)) },
-            { label: "Entry", value: formatTradePrice(trade.entryPrice) },
-            { label: "Exit", value: formatTradePrice(trade.exitPrice) },
-            { label: "Hold", value: trade.holdTime || `${Math.round((trade.holdSeconds || 0) / 60)}m` },
-            { label: "Side", value: trade.side },
-            { label: "Fills", value: formatTradeNumber(fillCount) }
-          ];
-          const tagGroups = [
-            { label: "Playbook", values: trade.setups.filter((value) => value && value !== "No Setup") },
-            { label: "Mistakes", values: trade.mistakes },
-            { label: "Catalyst", values: trade.catalyst },
-            { label: "Execution", values: trade.execution },
-            { label: "Out Tag", values: trade.outTag },
-            { label: "Gateways", values: trade.gateways }
-          ]
-            .map((group) => ({
-              ...group,
-              values: Array.from(new Set(group.values.map((value) => value.trim()).filter(Boolean)))
-            }))
-            .filter((group) => group.values.length > 0);
-
-          return (
-            <div className="review-best-trade-layout">
-              <div className="review-best-trade-details">
-                <div className="review-best-trade-identity">
-                  <span className="symbol-pill review-best-trade-symbol">
-                    {symbolIcon ? (
-                      <img src={symbolIcon} alt={`${trade.symbol} icon`} className="symbol-pill-icon" />
-                    ) : (
-                      <WorkspaceIcon icon="trades" alt="" className="symbol-pill-icon" />
-                    )}
-                    {trade.symbol}
-                  </span>
-                  <div className="review-best-trade-title">
-                    <strong>{trade.name || `${trade.symbol} ${trade.side}`}</strong>
-                    <span>
-                      {tradeDate || trade.tradeDate} | {trade.openTime || "--"} to {trade.closeTime || "--"}
-                    </span>
-                  </div>
-                  <span className={`review-best-trade-status review-best-trade-status-${trade.status.toLowerCase()}`}>
-                    {trade.status}
-                  </span>
-                </div>
-
-                <div className="review-best-trade-stats" aria-label={`${title} stats`}>
-                  {statCards.map((stat) => (
-                    <div
-                      key={stat.label}
-                      className={`review-best-trade-stat${stat.tone ? ` review-best-trade-stat-${stat.tone}` : ""}`}
-                    >
-                      <span>{stat.label}</span>
-                      <strong>{stat.value}</strong>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="review-best-trade-tag-area" aria-label={`${title} tags`}>
-                  {tagGroups.length > 0 ? (
-                    tagGroups.map((group) => (
-                      <div key={group.label} className="review-best-trade-tag-group">
-                        <span>{group.label}</span>
-                        <div>
-                          {group.values.map((value) => (
-                            <em key={`${group.label}-${value}`}>{value}</em>
-                          ))}
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <span className="review-best-trade-tag-empty">No trade tags on this one yet.</span>
-                  )}
-                </div>
-              </div>
-
-              <div className="review-best-trade-chart">
-                {taggedChart ? (
-                  <>
-                    <button
-                      type="button"
-                      className="review-best-trade-chart-button"
-                      onClick={() => onSelectTrade(trade.id, tradeDate || trade.tradeDate)}
-                      title={`Open ${trade.symbol} trade`}
-                    >
-                      <img
-                        src={resolveWorkspaceAttachmentSrc(taggedChart.screenshotUrl)}
-                        alt={`${trade.symbol} tagged chart`}
-                      />
-                    </button>
-                    <div className="review-best-trade-chart-meta">
-                      <strong>Tagged Chart</strong>
-                      <span>
-                        {taggedChart.taggedDate
-                          ? `Tagged ${taggedChart.taggedDate}`
-                          : `Journal ${taggedChart.journalTradeDate || tradeDate}`}
-                      </span>
-                    </div>
-                  </>
-                ) : (
-                  <div className="review-best-trade-chart-empty">
-                    <WorkspaceIcon icon="chart-screenshots" alt="" className="mini-action-icon" />
-                    <strong>No tagged chart yet</strong>
-                    <span>Tag a journal screenshot to this trade and it will show here.</span>
-                    {tradeDate ? (
-                      <button
-                        type="button"
-                        className="mini-action mini-action-soft"
-                        onClick={() => onOpenJournalDate(tradeDate)}
-                      >
-                        Open Journal
-                      </button>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })()
-      ) : (
-        <div className="review-best-trade-empty">
-          <strong>{emptyTitle}</strong>
-          <span>This review range does not have any trades to rank.</span>
-        </div>
-      )}
+      <div className="review-trade-spotlight-list">
+        {items.map((item) => (
+          <ReviewTradeSpotlightEntry
+            key={item.key}
+            item={item}
+            onSelectTrade={onSelectTrade}
+            onOpenJournalDate={onOpenJournalDate}
+          />
+        ))}
+      </div>
     </section>
   );
+};
+
+const getSortableReviewTradeValue = (value: number): number => (Number.isFinite(value) ? value : 0);
+
+const getReviewTradeSortKey = (trade: GroupedTrade): string =>
+  `${normalizeIsoTradeDate(trade.tradeDate) || trade.tradeDate}-${trade.openTime || ""}-${trade.id}`;
+
+const compareReviewTradesNewestFirst = (left: GroupedTrade, right: GroupedTrade): number =>
+  getReviewTradeSortKey(right).localeCompare(getReviewTradeSortKey(left));
+
+const compareReviewTradesOldestFirst = (left: GroupedTrade, right: GroupedTrade): number =>
+  getReviewTradeSortKey(left).localeCompare(getReviewTradeSortKey(right));
+
+const compareBestNetPnlReviewTrades = (left: GroupedTrade, right: GroupedTrade): number => {
+  const netDelta = getSortableReviewTradeValue(right.netPnlUsd) - getSortableReviewTradeValue(left.netPnlUsd);
+  if (netDelta !== 0) {
+    return netDelta;
+  }
+
+  const grossDelta = getSortableReviewTradeValue(right.grossPnlUsd) - getSortableReviewTradeValue(left.grossPnlUsd);
+  if (grossDelta !== 0) {
+    return grossDelta;
+  }
+
+  const returnDelta =
+    getSortableReviewTradeValue(right.returnPerShare) - getSortableReviewTradeValue(left.returnPerShare);
+  if (returnDelta !== 0) {
+    return returnDelta;
+  }
+
+  return compareReviewTradesNewestFirst(left, right);
+};
+
+const compareBestReturnPerShareReviewTrades = (left: GroupedTrade, right: GroupedTrade): number => {
+  const returnDelta =
+    getSortableReviewTradeValue(right.returnPerShare) - getSortableReviewTradeValue(left.returnPerShare);
+  if (returnDelta !== 0) {
+    return returnDelta;
+  }
+
+  const netDelta = getSortableReviewTradeValue(right.netPnlUsd) - getSortableReviewTradeValue(left.netPnlUsd);
+  if (netDelta !== 0) {
+    return netDelta;
+  }
+
+  const grossDelta = getSortableReviewTradeValue(right.grossPnlUsd) - getSortableReviewTradeValue(left.grossPnlUsd);
+  if (grossDelta !== 0) {
+    return grossDelta;
+  }
+
+  return compareReviewTradesNewestFirst(left, right);
+};
+
+const compareWorstNetPnlReviewTrades = (left: GroupedTrade, right: GroupedTrade): number => {
+  const netDelta = getSortableReviewTradeValue(left.netPnlUsd) - getSortableReviewTradeValue(right.netPnlUsd);
+  if (netDelta !== 0) {
+    return netDelta;
+  }
+
+  const grossDelta = getSortableReviewTradeValue(left.grossPnlUsd) - getSortableReviewTradeValue(right.grossPnlUsd);
+  if (grossDelta !== 0) {
+    return grossDelta;
+  }
+
+  const returnDelta =
+    getSortableReviewTradeValue(left.returnPerShare) - getSortableReviewTradeValue(right.returnPerShare);
+  if (returnDelta !== 0) {
+    return returnDelta;
+  }
+
+  return compareReviewTradesOldestFirst(left, right);
+};
+
+const compareWorstReturnPerShareReviewTrades = (left: GroupedTrade, right: GroupedTrade): number => {
+  const returnDelta =
+    getSortableReviewTradeValue(left.returnPerShare) - getSortableReviewTradeValue(right.returnPerShare);
+  if (returnDelta !== 0) {
+    return returnDelta;
+  }
+
+  const netDelta = getSortableReviewTradeValue(left.netPnlUsd) - getSortableReviewTradeValue(right.netPnlUsd);
+  if (netDelta !== 0) {
+    return netDelta;
+  }
+
+  const grossDelta = getSortableReviewTradeValue(left.grossPnlUsd) - getSortableReviewTradeValue(right.grossPnlUsd);
+  if (grossDelta !== 0) {
+    return grossDelta;
+  }
+
+  return compareReviewTradesOldestFirst(left, right);
+};
+
+const selectReviewTradeSpotlightData = (
+  trades: GroupedTrade[],
+  journalPages: JournalPageRecord[],
+  compareTrades: (left: GroupedTrade, right: GroupedTrade) => number
+): ReviewTradeSpotlightData | null => {
+  if (trades.length === 0) {
+    return null;
+  }
+
+  const [trade] = [...trades].sort(compareTrades);
+  if (!trade) {
+    return null;
+  }
+
+  return {
+    trade,
+    taggedChart: findTaggedChartForTrade(journalPages, trade)
+  };
 };
 
 const parseReviewMppNumber = (value: string): number | null => {
@@ -1006,6 +1368,30 @@ const buildReviewMoneyCardData = (
     previousValue,
     favorableDirection: "increase",
     formatValue: formatSignedUsd,
+    formatDeltaValue: formatSignedUsd
+  });
+
+const buildReviewUnsignedMoneyCardData = (
+  currentValue: number | null,
+  previousValue: number | null
+): ReviewCompareCardData =>
+  buildReviewCompareCardData({
+    currentValue,
+    previousValue,
+    favorableDirection: "increase",
+    formatValue: formatUsd,
+    formatDeltaValue: formatSignedUsd
+  });
+
+const buildReviewLossFromTopCardData = (
+  currentValue: number | null,
+  previousValue: number | null
+): ReviewCompareCardData =>
+  buildReviewCompareCardData({
+    currentValue,
+    previousValue,
+    favorableDirection: "decrease",
+    formatValue: formatUsd,
     formatDeltaValue: formatSignedUsd
   });
 
@@ -1205,6 +1591,31 @@ export const LibraryPage = ({
       }).catch(() => undefined);
     }
   };
+
+  useEffect(() => {
+    const entries: BookListEntry[] = [];
+    const storedReadingBooks = loadSelectOptionAdditions()["review.reading.books"] ?? [];
+
+    for (const book of storedReadingBooks) {
+      entries.push({ title: book });
+    }
+
+    for (const page of pagesRef.current) {
+      if (getReviewPeriodForCollection(page.collectionId) === null) {
+        continue;
+      }
+
+      const reflection = coerceReviewReflectionState(page.properties?.[REVIEW_REFLECTION_KEY]);
+      for (const row of reflection.reading) {
+        entries.push({ title: row.book, author: row.author });
+      }
+    }
+
+    const nextPages = buildPagesWithEnsuredBookRows(pagesRef.current, entries);
+    if (nextPages !== pagesRef.current) {
+      persistPages(nextPages);
+    }
+  }, []);
 
   useEffect(() => {
     setActiveSection(navigationState?.activeSection ?? initialSection);
@@ -1797,6 +2208,23 @@ export const LibraryPage = ({
     const rawMpp = renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.currencyMpp, "");
     return buildReviewMppCardData(rawMpp);
   }, [selectedPage]);
+  const selectedReviewPreviousRange = useMemo(() => {
+    if (!selectedPage || !isReviewCollection || !selectedReviewPeriod) {
+      return null;
+    }
+
+    const range = getReviewRange(selectedPage.properties);
+    if (!range) {
+      return null;
+    }
+
+    return getPreviousReviewRangeWithTrades({
+      period: selectedReviewPeriod,
+      rangeStart: range.start,
+      rangeEnd: range.end,
+      trades
+    });
+  }, [isReviewCollection, selectedPage, selectedReviewPeriod, trades]);
   const selectedReviewComparisonData = useMemo(() => {
     if (!selectedPage || !isReviewCollection || !selectedReviewPeriod) {
       return null;
@@ -1807,7 +2235,7 @@ export const LibraryPage = ({
       return null;
     }
 
-    const previousRange = getPreviousReviewRange(selectedReviewPeriod, range.start, range.end);
+    const previousRange = selectedReviewPreviousRange;
     if (!previousRange) {
       return null;
     }
@@ -1828,13 +2256,15 @@ export const LibraryPage = ({
     });
 
     return {
-      previousPeriodLabel: selectedReviewPeriod === "monthly" ? "Last month" : "Last week",
+      previousPeriodLabel: selectedReviewPeriod === "monthly" ? "Last month" : "Last active week",
       trades: buildReviewCountCardData(currentMetrics.tradeCount, previousMetrics.tradeCount, "increase"),
       shares: buildReviewCountCardData(currentMetrics.shares, previousMetrics.shares, "increase"),
+      valueTraded: buildReviewUnsignedMoneyCardData(currentMetrics.valueTraded, previousMetrics.valueTraded),
       winRate: {
         ...buildReviewPercentCardData(currentMetrics.winRate, previousMetrics.winRate),
         currentDetailLabel: `${currentMetrics.winCount}/${currentMetrics.tradeCount} wins`
       },
+      lossFromTop: buildReviewLossFromTopCardData(currentMetrics.lossFromTop, previousMetrics.lossFromTop),
       net: buildReviewMoneyCardData(currentMetrics.net, previousMetrics.net),
       gross: buildReviewMoneyCardData(currentMetrics.gross, previousMetrics.gross),
       redDays: buildReviewCountCardData(currentMetrics.redDays, previousMetrics.redDays, "decrease"),
@@ -1844,6 +2274,7 @@ export const LibraryPage = ({
     currencyDailyShutdownRiskUsd,
     isReviewCollection,
     selectedPage,
+    selectedReviewPreviousRange,
     selectedReviewPeriod,
     settings.currencySymbolList,
     trades
@@ -1891,6 +2322,19 @@ export const LibraryPage = ({
     };
   }, [pages, selectedPage, selectedReviewPeriod]);
 
+  const selectedMonthlyReadingEntries = useMemo<ReviewReadingEntry[]>(() => {
+    if (!selectedPage || selectedReviewPeriod !== "monthly") {
+      return [];
+    }
+
+    const monthRange = getReviewRange(selectedPage.properties);
+    if (!monthRange) {
+      return [];
+    }
+
+    return collectMonthlyReadingEntriesFromWeeklyReviews(pages, monthRange);
+  }, [pages, selectedPage, selectedReviewPeriod]);
+
   const selectedReviewReportRange = useMemo(() => {
     if (!selectedPage || !isReviewCollection || !selectedReviewPeriod) {
       return null;
@@ -1901,7 +2345,7 @@ export const LibraryPage = ({
       return null;
     }
 
-    const comparisonRange = getPreviousReviewRange(selectedReviewPeriod, range.start, range.end);
+    const comparisonRange = selectedReviewPreviousRange;
     if (!comparisonRange) {
       return null;
     }
@@ -1913,7 +2357,7 @@ export const LibraryPage = ({
       comparisonStart: comparisonRange.start,
       comparisonEnd: comparisonRange.end
     };
-  }, [isReviewCollection, selectedPage, selectedReviewPeriod]);
+  }, [isReviewCollection, selectedPage, selectedReviewPeriod, selectedReviewPreviousRange]);
 
   const bestDayEntries = useMemo(() => {
     if (!selectedPage) {
@@ -1973,63 +2417,71 @@ export const LibraryPage = ({
     });
   }, [isReviewCollection, selectedPage, selectedReviewPeriod, trades]);
 
-  const bestReviewTrade = useMemo<ReviewTradeSpotlightData | null>(() => {
-    if (selectedReviewRangeTrades.length === 0) {
-      return null;
-    }
+  const bestNetPnlReviewTrade = useMemo<ReviewTradeSpotlightData | null>(
+    () => selectReviewTradeSpotlightData(selectedReviewRangeTrades, journalPages, compareBestNetPnlReviewTrades),
+    [journalPages, selectedReviewRangeTrades]
+  );
 
-    const [trade] = [...selectedReviewRangeTrades].sort((left, right) => {
-      const netDelta = right.netPnlUsd - left.netPnlUsd;
-      if (netDelta !== 0) {
-        return netDelta;
+  const bestReturnPerShareReviewTrade = useMemo<ReviewTradeSpotlightData | null>(
+    () =>
+      selectReviewTradeSpotlightData(
+        selectedReviewRangeTrades,
+        journalPages,
+        compareBestReturnPerShareReviewTrades
+      ),
+    [journalPages, selectedReviewRangeTrades]
+  );
+
+  const worstNetPnlReviewTrade = useMemo<ReviewTradeSpotlightData | null>(
+    () => selectReviewTradeSpotlightData(selectedReviewRangeTrades, journalPages, compareWorstNetPnlReviewTrades),
+    [journalPages, selectedReviewRangeTrades]
+  );
+
+  const worstReturnPerShareReviewTrade = useMemo<ReviewTradeSpotlightData | null>(
+    () =>
+      selectReviewTradeSpotlightData(
+        selectedReviewRangeTrades,
+        journalPages,
+        compareWorstReturnPerShareReviewTrades
+      ),
+    [journalPages, selectedReviewRangeTrades]
+  );
+
+  const bestReviewTradeItems = useMemo<ReviewTradeSpotlightItem[]>(
+    () => [
+      {
+        key: "best-net-pnl",
+        title: "Best Net P/L",
+        emptyTitle: "No best net P/L trade yet.",
+        data: bestNetPnlReviewTrade
+      },
+      {
+        key: "best-return-share",
+        title: "Best Return / Share",
+        emptyTitle: "No best return/share trade yet.",
+        data: bestReturnPerShareReviewTrade
       }
+    ],
+    [bestNetPnlReviewTrade, bestReturnPerShareReviewTrade]
+  );
 
-      const grossDelta = right.grossPnlUsd - left.grossPnlUsd;
-      if (grossDelta !== 0) {
-        return grossDelta;
+  const worstReviewTradeItems = useMemo<ReviewTradeSpotlightItem[]>(
+    () => [
+      {
+        key: "worst-net-pnl",
+        title: "Worst Net P/L",
+        emptyTitle: "No worst net P/L trade yet.",
+        data: worstNetPnlReviewTrade
+      },
+      {
+        key: "worst-return-share",
+        title: "Worst Return / Share",
+        emptyTitle: "No worst return/share trade yet.",
+        data: worstReturnPerShareReviewTrade
       }
-
-      return `${right.tradeDate}-${right.openTime}`.localeCompare(`${left.tradeDate}-${left.openTime}`);
-    });
-
-    if (!trade) {
-      return null;
-    }
-
-    return {
-      trade,
-      taggedChart: findTaggedChartForTrade(journalPages, trade)
-    };
-  }, [journalPages, selectedReviewRangeTrades]);
-
-  const worstReviewTrade = useMemo<ReviewTradeSpotlightData | null>(() => {
-    if (selectedReviewRangeTrades.length === 0) {
-      return null;
-    }
-
-    const [trade] = [...selectedReviewRangeTrades].sort((left, right) => {
-      const netDelta = left.netPnlUsd - right.netPnlUsd;
-      if (netDelta !== 0) {
-        return netDelta;
-      }
-
-      const grossDelta = left.grossPnlUsd - right.grossPnlUsd;
-      if (grossDelta !== 0) {
-        return grossDelta;
-      }
-
-      return `${left.tradeDate}-${left.openTime}`.localeCompare(`${right.tradeDate}-${right.openTime}`);
-    });
-
-    if (!trade) {
-      return null;
-    }
-
-    return {
-      trade,
-      taggedChart: findTaggedChartForTrade(journalPages, trade)
-    };
-  }, [journalPages, selectedReviewRangeTrades]);
+    ],
+    [worstNetPnlReviewTrade, worstReturnPerShareReviewTrade]
+  );
 
   const reviewReadingBookDefaults = useMemo(() => {
     const titles = pages
@@ -2068,6 +2520,13 @@ export const LibraryPage = ({
 
     return links;
   }, [pages]);
+
+  const ensureReviewReadingBookInLibrary = (book: string, author = "") => {
+    const nextPages = buildPagesWithEnsuredBookRows(pagesRef.current, [{ title: book, author }]);
+    if (nextPages !== pagesRef.current) {
+      persistPages(nextPages);
+    }
+  };
 
   const handleSaveReviewTemplate = (period: "weekly" | "monthly", templateId: string, content: unknown) => {
     setReviewTemplates((current) => {
@@ -2576,6 +3035,54 @@ export const LibraryPage = ({
     setShowLegacyReviewNotes(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isReviewCollection, selectedPage?.id]);
+
+  useEffect(() => {
+    if (!selectedPage || selectedReviewPeriod !== "monthly" || selectedMonthlyReadingEntries.length === 0) {
+      return;
+    }
+
+    const currentPage = pagesRef.current.find((page) => page.id === selectedPage.id);
+    if (!currentPage) {
+      return;
+    }
+
+    const currentReflection = coerceReviewReflectionState(currentPage.properties?.[REVIEW_REFLECTION_KEY]);
+    if (currentReflection.reading.some(hasReviewReadingContent)) {
+      return;
+    }
+
+    const nextReading =
+      selectedMonthlyReadingEntries.length >= 2
+        ? selectedMonthlyReadingEntries
+        : [
+            ...selectedMonthlyReadingEntries,
+            ...Array.from({ length: 2 - selectedMonthlyReadingEntries.length }, () => ({
+              book: "",
+              author: "",
+              pages: ""
+            }))
+          ];
+    const nextReflection = {
+      ...currentReflection,
+      reading: nextReading
+    };
+    const now = new Date().toISOString();
+
+    persistPages(
+      pagesRef.current.map((page) =>
+        page.id === currentPage.id
+          ? {
+              ...page,
+              properties: {
+                ...(page.properties ?? {}),
+                [REVIEW_REFLECTION_KEY]: nextReflection
+              },
+              updatedAt: now
+            }
+          : page
+      )
+    );
+  }, [selectedMonthlyReadingEntries, selectedPage, selectedReviewPeriod]);
 
   const updateTickerGroupTickers = (groupPageId: string, nextTickers: string[]) => {
     const normalizedTickers = Array.from(
@@ -4135,6 +4642,23 @@ export const LibraryPage = ({
                       ) : null}
                     </label>
                     <label className="library-open-page-property library-open-page-property-compare">
+                      <span>Value Traded</span>
+                      <strong>
+                        {selectedReviewComparisonData?.valueTraded.currentLabel ??
+                          renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.valueTraded, "-")}
+                      </strong>
+                      {selectedReviewComparisonData ? (
+                        <small>
+                          {selectedReviewComparisonData.previousPeriodLabel} {selectedReviewComparisonData.valueTraded.previousLabel}
+                        </small>
+                      ) : null}
+                      {selectedReviewComparisonData?.valueTraded.deltaLabel ? (
+                        <em className={`report-period-delta report-period-delta-${selectedReviewComparisonData.valueTraded.deltaTone}`}>
+                          {selectedReviewComparisonData.valueTraded.deltaLabel}
+                        </em>
+                      ) : null}
+                    </label>
+                    <label className="library-open-page-property library-open-page-property-compare">
                       <span>Win Rate</span>
                       <strong>
                         {selectedReviewComparisonData?.winRate.currentLabel ??
@@ -4151,6 +4675,24 @@ export const LibraryPage = ({
                       {selectedReviewComparisonData?.winRate.deltaLabel ? (
                         <em className={`report-period-delta report-period-delta-${selectedReviewComparisonData.winRate.deltaTone}`}>
                           {selectedReviewComparisonData.winRate.deltaLabel}
+                        </em>
+                      ) : null}
+                    </label>
+
+                    <label className="library-open-page-property library-open-page-property-compare">
+                      <span>Loss From Top</span>
+                      <strong>
+                        {selectedReviewComparisonData?.lossFromTop.currentLabel ??
+                          renderPropertyValue(selectedPage, REVIEW_PROPERTY_KEYS.lossFromTop, "-")}
+                      </strong>
+                      {selectedReviewComparisonData ? (
+                        <small>
+                          {selectedReviewComparisonData.previousPeriodLabel} {selectedReviewComparisonData.lossFromTop.previousLabel}
+                        </small>
+                      ) : null}
+                      {selectedReviewComparisonData?.lossFromTop.deltaLabel ? (
+                        <em className={`report-period-delta report-period-delta-${selectedReviewComparisonData.lossFromTop.deltaTone}`}>
+                          {selectedReviewComparisonData.lossFromTop.deltaLabel}
                         </em>
                       ) : null}
                     </label>
@@ -4367,15 +4909,15 @@ export const LibraryPage = ({
                     </div>
                   </div>
 
-                  <ReviewTradeSpotlightCard
+                  <ReviewTradeSpotlightSection
                     kind="best"
-                    data={bestReviewTrade}
+                    items={bestReviewTradeItems}
                     onSelectTrade={onSelectTrade}
                     onOpenJournalDate={handleOpenJournalDate}
                   />
-                  <ReviewTradeSpotlightCard
+                  <ReviewTradeSpotlightSection
                     kind="worst"
-                    data={worstReviewTrade}
+                    items={worstReviewTradeItems}
                     onSelectTrade={onSelectTrade}
                     onOpenJournalDate={handleOpenJournalDate}
                   />
@@ -4407,6 +4949,7 @@ export const LibraryPage = ({
                     defaultBookOptions={reviewReadingBookDefaults}
                     defaultAuthorOptions={reviewReadingAuthorDefaults}
                     bookAuthorByTitle={reviewReadingBookAuthorByTitle}
+                    onEnsureBookListEntry={ensureReviewReadingBookInLibrary}
                     onSelectTemplateId={
                       selectedReviewPeriod === "monthly"
                         ? setSelectedMonthlyReviewTemplateId

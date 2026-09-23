@@ -101,6 +101,36 @@ export const SettingsModal = ({
           />
         </label>
         <label>
+          <span>Alpaca Market Data Key ID</span>
+          <input
+            type="password"
+            value={settings.alpacaApiKey}
+            onChange={(event) => update({ alpacaApiKey: event.target.value })}
+            placeholder="Paste your Alpaca API key ID"
+          />
+          <small>Used only when the trade chart is switched to 10-second candles.</small>
+        </label>
+        <label>
+          <span>Alpaca Market Data Secret</span>
+          <input
+            type="password"
+            value={settings.alpacaSecretKey}
+            onChange={(event) => update({ alpacaSecretKey: event.target.value })}
+            placeholder="Paste your Alpaca secret key"
+          />
+        </label>
+        <label>
+          <span>Alpaca Data Feed</span>
+          <select
+            value={settings.alpacaDataFeed}
+            onChange={(event) => update({ alpacaDataFeed: event.target.value === "iex" ? "iex" : "sip" })}
+          >
+            <option value="sip">SIP</option>
+            <option value="iex">IEX</option>
+          </select>
+          <small>SIP is consolidated US market data; IEX is available as a lighter fallback.</small>
+        </label>
+        <label>
           <span>BRL to USD Rate</span>
           <input
             type="number"
@@ -145,6 +175,40 @@ export const SettingsModal = ({
             placeholder="Example: 10"
           />
           <small>Used to count ETH/currency breach days separately from stock breach days.</small>
+        </label>
+        <label>
+          <span>Monthly Drawdown Limit (USD)</span>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            inputMode="decimal"
+            value={settings.monthlyDrawdownLimitUsd || ""}
+            onChange={(event) => update({ monthlyDrawdownLimitUsd: Number(event.target.value) || 0 })}
+            placeholder="Example: 200"
+          />
+          <small>Used by the Journal monthly P&amp;L card to show cushion against your monthly loss limit.</small>
+        </label>
+        <label>
+          <span>Firm P&amp;L Adjustment Month</span>
+          <input
+            type="month"
+            value={settings.monthlyPnlAdjustmentMonth}
+            onChange={(event) => update({ monthlyPnlAdjustmentMonth: event.target.value })}
+          />
+          <small>Applies the firm reconciliation only to this calendar month.</small>
+        </label>
+        <label>
+          <span>Firm P&amp;L Adjustment (USD)</span>
+          <input
+            type="number"
+            step="0.01"
+            inputMode="decimal"
+            value={settings.monthlyPnlAdjustmentUsd || ""}
+            onChange={(event) => update({ monthlyPnlAdjustmentUsd: Number(event.target.value) || 0 })}
+            placeholder="Example: -3822.17"
+          />
+          <small>Added to imported trade P&amp;L so the Journal matches the firm statement.</small>
         </label>
         <section className="settings-section">
           <div>

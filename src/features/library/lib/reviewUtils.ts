@@ -3,6 +3,7 @@ import type { LibraryCollectionId, LibraryPageRecord } from "../../../types/libr
 import { calculateMPPWindow } from "../../../lib/analytics/mppAnalytics";
 import { getMPPDayRecordsForTrades } from "../../../lib/analytics/assetMppAnalytics";
 import { getMppRiskBump } from "../../../lib/analytics/mppRiskBump";
+import { getLossFromTop } from "../../../lib/analytics/tradeAnalytics";
 import { getTradeAssetClass } from "../../../lib/trades/assetClassification";
 
 export type ReviewPeriod = "weekly" | "monthly";
@@ -25,7 +26,9 @@ export const REVIEW_PROPERTY_KEYS = {
   tickersTraded: "Tickers Traded",
   trades: "Trades",
   shares: "Shares",
+  valueTraded: "Value Traded",
   winRate: "Win Rate",
+  lossFromTop: "Loss From Top",
   net: "Net",
   gross: "Gross",
   mpp: "MPP",
@@ -113,6 +116,9 @@ export const getReviewRange = (
 
 const formatSignedMoney = (value: number): string => `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`;
 
+const formatMoney = (value: number): string =>
+  `$${Math.abs(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 const formatPercent = (value: number): string => `${value.toFixed(1)}%`;
 
 const toWholeNumberString = (value: number): string => String(Math.round(value));
@@ -172,8 +178,16 @@ export const computeReviewMetrics = ({
   const tickersTraded = Array.from(new Set(inRange.map((trade) => trade.symbol))).sort();
   const tradeCount = inRange.length;
   const shares = inRange.reduce((sum, trade) => sum + Math.abs(trade.size || 0), 0);
+  const valueTraded = inRange.reduce(
+    (sum, trade) =>
+      sum +
+      trade.openingExecutions.reduce((pieceSum, piece) => pieceSum + Math.abs(piece.quantity) * piece.price, 0) +
+      trade.closingExecutions.reduce((pieceSum, piece) => pieceSum + Math.abs(piece.quantity) * piece.price, 0),
+    0
+  );
   const winners = inRange.filter((trade) => trade.netPnlUsd > 0).length;
   const winRate = tradeCount > 0 ? (winners / tradeCount) * 100 : 0;
+  const lossFromTop = getLossFromTop(inRange);
   const net = inRange.reduce((sum, trade) => sum + (trade.netPnlUsd || 0), 0);
   const gross = inRange.reduce((sum, trade) => sum + (trade.grossPnlUsd || 0), 0);
   const stockMppDays = getMPPDayRecordsForTrades(trades, {
@@ -241,8 +255,10 @@ export const computeReviewMetrics = ({
     tickersTraded,
     tradeCount,
     shares,
+    valueTraded,
     winCount: winners,
     winRate,
+    lossFromTop,
     net,
     gross,
     mppSummary: getMppSummary("stock"),
@@ -267,7 +283,9 @@ export const buildReviewPropertiesPatch = ({
   next[REVIEW_PROPERTY_KEYS.tickersTraded] = metrics.tickersTraded;
   next[REVIEW_PROPERTY_KEYS.trades] = toWholeNumberString(metrics.tradeCount);
   next[REVIEW_PROPERTY_KEYS.shares] = toWholeNumberString(metrics.shares);
+  next[REVIEW_PROPERTY_KEYS.valueTraded] = formatMoney(metrics.valueTraded);
   next[REVIEW_PROPERTY_KEYS.winRate] = formatPercent(metrics.winRate);
+  next[REVIEW_PROPERTY_KEYS.lossFromTop] = formatMoney(metrics.lossFromTop);
   next[REVIEW_PROPERTY_KEYS.net] = formatSignedMoney(metrics.net);
   next[REVIEW_PROPERTY_KEYS.gross] = formatSignedMoney(metrics.gross);
   next[REVIEW_PROPERTY_KEYS.mpp] = metrics.mppSummary;

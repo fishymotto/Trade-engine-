@@ -32,6 +32,10 @@ export const DEFAULT_BRL_TICKER_LIST = [
 ].join(", ");
 
 export const DEFAULT_MPP_LOCK_IN_STEPS = [5, 10, 20, 30, 40, 50] as const;
+export const LEGACY_MONTHLY_DRAWDOWN_LIMIT_USD = 200;
+export const DEFAULT_MONTHLY_DRAWDOWN_LIMIT_USD = 4000;
+export const DEFAULT_MONTHLY_PNL_ADJUSTMENT_MONTH = "2026-09";
+export const DEFAULT_MONTHLY_PNL_ADJUSTMENT_USD = -3822.17;
 
 export const DEFAULT_RISK_SESSIONS: RiskSessionSetting[] = [
   {
@@ -53,11 +57,17 @@ export const defaultSettings: Settings = {
   workspaceTransferLastExportedAt: "",
   workspaceTransferLastImportedAt: "",
   twelveDataApiKey: "",
+  alpacaApiKey: "",
+  alpacaSecretKey: "",
+  alpacaDataFeed: "sip",
   brlToUsdRate: 0,
   brlTickerList: DEFAULT_BRL_TICKER_LIST,
   currencySymbolList: DEFAULT_CURRENCY_SYMBOL_LIST,
   dailyShutdownRiskUsd: 0,
   currencyDailyShutdownRiskUsd: 0,
+  monthlyDrawdownLimitUsd: DEFAULT_MONTHLY_DRAWDOWN_LIMIT_USD,
+  monthlyPnlAdjustmentMonth: DEFAULT_MONTHLY_PNL_ADJUSTMENT_MONTH,
+  monthlyPnlAdjustmentUsd: DEFAULT_MONTHLY_PNL_ADJUSTMENT_USD,
   riskSessions: DEFAULT_RISK_SESSIONS.map((session) => ({ ...session })),
   mppLockInSteps: [...DEFAULT_MPP_LOCK_IN_STEPS],
   desktopBackupIntervalMinutes: 0,
@@ -113,6 +123,25 @@ const normalizeBackupIntervalMinutes = (value: unknown): number => {
   }
 
   return Math.min(60 * 24 * 30, Math.round(parsed));
+};
+
+const normalizeAlpacaDataFeed = (value: unknown): Settings["alpacaDataFeed"] =>
+  value === "iex" ? "iex" : "sip";
+
+const normalizeUsdAmount = (value: unknown, fallback = 0): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+
+  return parsed;
+};
+
+const normalizeMonthlyDrawdownLimitUsd = (value: unknown): number => {
+  const normalized = normalizeUsdAmount(value, DEFAULT_MONTHLY_DRAWDOWN_LIMIT_USD);
+  return normalized === LEGACY_MONTHLY_DRAWDOWN_LIMIT_USD
+    ? DEFAULT_MONTHLY_DRAWDOWN_LIMIT_USD
+    : normalized;
 };
 
 const normalizeMppLockInSteps = (value: unknown): number[] => {
@@ -358,6 +387,9 @@ const normalizeSettings = (settings: Partial<Settings>): Settings => ({
   ...defaultSettings,
   ...settings,
   brlTickerList: settings.brlTickerList?.trim() ? settings.brlTickerList : DEFAULT_BRL_TICKER_LIST,
+  alpacaApiKey: typeof settings.alpacaApiKey === "string" ? settings.alpacaApiKey : "",
+  alpacaSecretKey: typeof settings.alpacaSecretKey === "string" ? settings.alpacaSecretKey : "",
+  alpacaDataFeed: normalizeAlpacaDataFeed(settings.alpacaDataFeed),
   currencySymbolList: normalizeCurrencySymbolList(settings.currencySymbolList),
   workspaceExportStartDate: normalizeWorkspaceExportStartDate(settings.workspaceExportStartDate),
   workspaceExportEndDate: normalizeWorkspaceExportEndDate(settings.workspaceExportEndDate),
@@ -372,6 +404,15 @@ const normalizeSettings = (settings: Partial<Settings>): Settings => ({
   ),
   dailyShutdownRiskUsd: Number(settings.dailyShutdownRiskUsd) || 0,
   currencyDailyShutdownRiskUsd: Number(settings.currencyDailyShutdownRiskUsd) || 0,
+  monthlyDrawdownLimitUsd: normalizeMonthlyDrawdownLimitUsd(settings.monthlyDrawdownLimitUsd),
+  monthlyPnlAdjustmentMonth:
+    typeof settings.monthlyPnlAdjustmentMonth === "string"
+      ? settings.monthlyPnlAdjustmentMonth
+      : DEFAULT_MONTHLY_PNL_ADJUSTMENT_MONTH,
+  monthlyPnlAdjustmentUsd:
+    settings.monthlyPnlAdjustmentUsd === undefined
+      ? DEFAULT_MONTHLY_PNL_ADJUSTMENT_USD
+      : Number(settings.monthlyPnlAdjustmentUsd) || 0,
   riskSessions: normalizeRiskSessions(settings.riskSessions),
   mppLockInSteps: normalizeMppLockInSteps(settings.mppLockInSteps),
   desktopBackupIntervalMinutes: normalizeBackupIntervalMinutes(settings.desktopBackupIntervalMinutes),

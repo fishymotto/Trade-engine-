@@ -10,6 +10,7 @@ import type {
 } from "../../types/journal";
 import {
   createClosingChecklistDoc,
+  createClosingJournalTemplateDoc,
   createEmptyJournalDoc,
   createMorningChecklistDoc,
   hasJournalDocContent,
@@ -386,6 +387,9 @@ const isDefaultMorningChecklist = (content: JSONContent): boolean =>
 const isDefaultClosingChecklist = (content: JSONContent): boolean =>
   stableStringify(content) === stableStringify(createClosingChecklistDoc());
 
+const isDefaultClosingJournalTemplate = (content: JSONContent): boolean =>
+  stableStringify(content) === stableStringify(createClosingJournalTemplateDoc());
+
 const isEmptyJournalDoc = (content: JSONContent): boolean =>
   stableStringify(content) === stableStringify(createEmptyJournalDoc());
 
@@ -411,7 +415,11 @@ const getJournalContentScore = (page: JournalPageRecord): number => {
     score += 10;
   }
 
-  if (!isEmptyJournalDoc(page.closingContent) && readDocText(page.closingContent).length > 0) {
+  if (
+    !isEmptyJournalDoc(page.closingContent) &&
+    !isDefaultClosingJournalTemplate(page.closingContent) &&
+    readDocText(page.closingContent).length > 0
+  ) {
     score += 10;
   }
 
@@ -584,7 +592,7 @@ const hasManualJournalSignals = (page: JournalPageRecord): boolean => {
 
   return !(
     isEmptyJournalDoc(page.morningContent) &&
-    isEmptyJournalDoc(page.closingContent) &&
+    (isEmptyJournalDoc(page.closingContent) || isDefaultClosingJournalTemplate(page.closingContent)) &&
     isEmptyJournalDoc(page.notesContent)
   );
 };

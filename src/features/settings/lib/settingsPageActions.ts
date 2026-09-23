@@ -316,6 +316,8 @@ export const createSettingsPageActions = ({
       workspaceExportSelectedDates: _workspaceExportSelectedDates,
       notionToken: _notionToken,
       twelveDataApiKey: _twelveDataApiKey,
+      alpacaApiKey: _alpacaApiKey,
+      alpacaSecretKey: _alpacaSecretKey,
       ...portableSettings
     } = settings;
 

@@ -56,6 +56,11 @@ const normalizeLoadedTradeDates = (value: unknown): string[] =>
 const normalizeLoadedTrades = (value: unknown): GroupedTrade[] =>
   Array.isArray(value) ? value.filter((entry): entry is GroupedTrade => Boolean(entry && typeof entry === "object")) : [];
 
+const chartIntervals: ChartInterval[] = ["10s", "1m", "5m", "15m", "1h", "1D", "1W"];
+
+const normalizeChartInterval = (value: unknown, fallback: ChartInterval): ChartInterval =>
+  chartIntervals.includes(value as ChartInterval) ? (value as ChartInterval) : fallback;
+
 const normalizeTradeFilters = (value: unknown): WorkspaceTradeFilters => {
   if (!value || typeof value !== "object") {
     return defaultWorkspaceTradeFilters;
@@ -91,6 +96,8 @@ const normalizeWorkspaceState = (state: unknown): WorkspaceState => {
     ...parsed,
     loadedTradeDates,
     loadedTrades,
+    reviewChartInterval: normalizeChartInterval(parsed.reviewChartInterval, defaultWorkspaceState.reviewChartInterval),
+    dayChartInterval: normalizeChartInterval(parsed.dayChartInterval, defaultWorkspaceState.dayChartInterval),
     selectedJournalPageId:
       typeof parsed.selectedJournalPageId === "string" ? parsed.selectedJournalPageId : "",
     focusedTradeId: typeof parsed.focusedTradeId === "string" ? parsed.focusedTradeId : "",

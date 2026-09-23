@@ -39,12 +39,28 @@ fn default_backup_interval_minutes() -> u32 {
     0
 }
 
+fn default_monthly_drawdown_limit_usd() -> f64 {
+    4000.0
+}
+
+fn default_monthly_pnl_adjustment_month() -> String {
+    "2026-09".to_string()
+}
+
+fn default_monthly_pnl_adjustment_usd() -> f64 {
+    -3822.17
+}
+
 fn default_mpp_lock_in_steps() -> Vec<u32> {
     vec![5, 10, 20, 30, 40, 50]
 }
 
 fn default_currency_symbol_list() -> String {
     "ETH".to_string()
+}
+
+fn default_alpaca_data_feed() -> String {
+    "sip".to_string()
 }
 
 fn default_morning_session_id() -> String {
@@ -105,6 +121,12 @@ pub struct AppSettings {
     #[serde(default)]
     workspace_export_selected_dates: Vec<String>,
     twelve_data_api_key: String,
+    #[serde(default)]
+    alpaca_api_key: String,
+    #[serde(default)]
+    alpaca_secret_key: String,
+    #[serde(default = "default_alpaca_data_feed")]
+    alpaca_data_feed: String,
     brl_to_usd_rate: f64,
     brl_ticker_list: String,
     #[serde(default = "default_currency_symbol_list")]
@@ -113,6 +135,12 @@ pub struct AppSettings {
     daily_shutdown_risk_usd: f64,
     #[serde(default)]
     currency_daily_shutdown_risk_usd: f64,
+    #[serde(default = "default_monthly_drawdown_limit_usd")]
+    monthly_drawdown_limit_usd: f64,
+    #[serde(default = "default_monthly_pnl_adjustment_month")]
+    monthly_pnl_adjustment_month: String,
+    #[serde(default = "default_monthly_pnl_adjustment_usd")]
+    monthly_pnl_adjustment_usd: f64,
     #[serde(default = "default_risk_sessions")]
     risk_sessions: Vec<RiskSessionSetting>,
     #[serde(default = "default_mpp_lock_in_steps")]
@@ -132,6 +160,9 @@ pub fn default_settings() -> AppSettings {
         workspace_export_end_date: String::new(),
         workspace_export_selected_dates: Vec::new(),
         twelve_data_api_key: String::new(),
+        alpaca_api_key: String::new(),
+        alpaca_secret_key: String::new(),
+        alpaca_data_feed: default_alpaca_data_feed(),
         brl_to_usd_rate: 0.0,
         brl_ticker_list:
             "BBAS3, ITSA4, BBDC4, VALE3, ASAI3, CEAB3, ABEV3, PETR4, PRIO3, CSAN3, BRAV3, RECV3, COGN3, AMBP3, GGPS3, WEGE3, EMBJ3, HAPV3"
@@ -139,6 +170,9 @@ pub fn default_settings() -> AppSettings {
         currency_symbol_list: default_currency_symbol_list(),
         daily_shutdown_risk_usd: 0.0,
         currency_daily_shutdown_risk_usd: 0.0,
+        monthly_drawdown_limit_usd: default_monthly_drawdown_limit_usd(),
+        monthly_pnl_adjustment_month: default_monthly_pnl_adjustment_month(),
+        monthly_pnl_adjustment_usd: default_monthly_pnl_adjustment_usd(),
         risk_sessions: default_risk_sessions(),
         mpp_lock_in_steps: default_mpp_lock_in_steps(),
         trade_tag_visibility: default_trade_tag_visibility(),

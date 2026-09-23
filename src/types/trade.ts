@@ -30,11 +30,17 @@ export interface Settings {
   workspaceTransferLastExportedAt: string;
   workspaceTransferLastImportedAt: string;
   twelveDataApiKey: string;
+  alpacaApiKey: string;
+  alpacaSecretKey: string;
+  alpacaDataFeed: "sip" | "iex";
   brlToUsdRate: number;
   brlTickerList: string;
   currencySymbolList: string;
   dailyShutdownRiskUsd: number;
   currencyDailyShutdownRiskUsd: number;
+  monthlyDrawdownLimitUsd: number;
+  monthlyPnlAdjustmentMonth: string;
+  monthlyPnlAdjustmentUsd: number;
   riskSessions: RiskSessionSetting[];
   mppLockInSteps: number[];
   desktopBackupIntervalMinutes: number;

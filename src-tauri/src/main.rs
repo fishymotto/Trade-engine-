@@ -41,6 +41,7 @@ fn main() {
             load_workspace_store_backup,
             save_workspace_store_backup,
             notion_api_request,
+            fetch_alpaca_stock_trades,
             fetch_twelve_data_time_series
         ])
         .run(tauri::generate_context!())

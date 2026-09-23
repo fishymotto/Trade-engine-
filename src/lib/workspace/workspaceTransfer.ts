@@ -897,7 +897,12 @@ const mergeWorkspaceTransferValue = (storageKey: string, existing: unknown, inco
     case "trade-engine-headlines":
       return mergeHeadlinesRecord(existing, incoming);
     case "trade-engine-journal-checklist-templates":
-      return mergeTemplateRecord(existing, incoming, ["morningTemplates", "closingTemplates", "mppTemplates"]);
+      return mergeTemplateRecord(existing, incoming, [
+        "morningTemplates",
+        "closingTemplates",
+        "closingJournalTemplates",
+        "mppTemplates"
+      ]);
     case "trade-engine-review-templates":
       return mergeTemplateRecord(existing, incoming, ["weeklyTemplates", "monthlyTemplates"]);
     default:

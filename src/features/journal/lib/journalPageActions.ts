@@ -1,13 +1,17 @@
 import { createEmptyJournalDoc, hasJournalDocContent } from "../../../lib/journal/journalContent";
 import {
   getDefaultChecklistContent,
+  type JournalChecklistTemplateType,
   type JournalChecklistTemplates,
   type NamedChecklistTemplate
 } from "../../../lib/journal/journalTemplateStore";
 import type { JournalContentField, JournalPageRecord } from "../../../types/journal";
 
-type JournalChecklistTemplateType = "morning" | "closing" | "mpp";
-type JournalChecklistTemplateKey = "morningTemplates" | "closingTemplates" | "mppTemplates";
+type JournalChecklistTemplateKey =
+  | "morningTemplates"
+  | "closingTemplates"
+  | "closingJournalTemplates"
+  | "mppTemplates";
 
 export type JournalPageUpdates = Partial<
   Pick<
@@ -130,7 +134,7 @@ const buildJournalTemplate = (
   closingChecklistContent: getDefaultChecklistContent(checklistTemplates, "closing"),
   morningChecklistContent: getDefaultChecklistContent(checklistTemplates, "morning"),
   morningContent: createEmptyJournalDoc(),
-  closingContent: createEmptyJournalDoc(),
+  closingContent: getDefaultChecklistContent(checklistTemplates, "closingJournal"),
   mppPlanContent: getDefaultChecklistContent(checklistTemplates, "mpp"),
   weeklyEarningsContent,
   inPlayStocksContent: createEmptyJournalDoc(),
@@ -139,10 +143,22 @@ const buildJournalTemplate = (
 });
 
 const getTemplateKey = (type: JournalChecklistTemplateType): JournalChecklistTemplateKey =>
-  type === "morning" ? "morningTemplates" : type === "closing" ? "closingTemplates" : "mppTemplates";
+  type === "morning"
+    ? "morningTemplates"
+    : type === "closing"
+      ? "closingTemplates"
+      : type === "closingJournal"
+        ? "closingJournalTemplates"
+        : "mppTemplates";
 
 const getTemplateLabel = (type: JournalChecklistTemplateType): string =>
-  type === "morning" ? "Morning" : type === "closing" ? "Closing" : "MPP";
+  type === "morning"
+    ? "Morning"
+    : type === "closing"
+      ? "Closing Checklist"
+      : type === "closingJournal"
+        ? "Closing Journal"
+        : "MPP";
 
 const formatTradeDateRangeLabel = (tradeDates: string[]): string => {
   if (tradeDates.length === 0) {

@@ -1,6 +1,7 @@
 import type { JSONContent } from "@tiptap/core";
 import {
   createClosingChecklistDoc,
+  createClosingJournalTemplateDoc,
   createMppPlanDoc,
   createMorningChecklistDoc,
   hasJournalDocContent
@@ -17,8 +18,11 @@ export interface NamedChecklistTemplate {
 export interface JournalChecklistTemplates {
   morningTemplates: NamedChecklistTemplate[];
   closingTemplates: NamedChecklistTemplate[];
+  closingJournalTemplates: NamedChecklistTemplate[];
   mppTemplates: NamedChecklistTemplate[];
 }
+
+export type JournalChecklistTemplateType = "morning" | "closing" | "closingJournal" | "mpp";
 
 const createTemplate = (name: string, content: JSONContent): NamedChecklistTemplate => ({
   id: `template-${Math.random().toString(36).slice(2, 10)}`,
@@ -63,6 +67,7 @@ const ensureTemplateArray = (
 export const defaultJournalChecklistTemplates = (): JournalChecklistTemplates => ({
   morningTemplates: [createTemplate("Default Morning", createMorningChecklistDoc())],
   closingTemplates: [createTemplate("Default Closing", createClosingChecklistDoc())],
+  closingJournalTemplates: [createTemplate("Default Closing Journal", createClosingJournalTemplateDoc())],
   mppTemplates: [createTemplate("Default MPP", createMppPlanDoc())]
 });
 
@@ -87,6 +92,7 @@ const stableStringify = (value: unknown): string => {
 const stripTemplateIdsForComparison = (templates: JournalChecklistTemplates): JournalChecklistTemplates => ({
   morningTemplates: templates.morningTemplates.map(({ name, content }) => ({ id: "", name, content })),
   closingTemplates: templates.closingTemplates.map(({ name, content }) => ({ id: "", name, content })),
+  closingJournalTemplates: templates.closingJournalTemplates.map(({ name, content }) => ({ id: "", name, content })),
   mppTemplates: templates.mppTemplates.map(({ name, content }) => ({ id: "", name, content }))
 });
 
@@ -95,21 +101,25 @@ const getComparableTemplatesScore = (templates: JournalChecklistTemplates): stri
 
 export const getDefaultChecklistContent = (
   templates: JournalChecklistTemplates,
-  type: "morning" | "closing" | "mpp"
+  type: JournalChecklistTemplateType
 ): JSONContent =>
   (
     type === "morning"
       ? templates.morningTemplates[0]
       : type === "closing"
         ? templates.closingTemplates[0]
-        : templates.mppTemplates[0]
+        : type === "closingJournal"
+          ? templates.closingJournalTemplates[0]
+          : templates.mppTemplates[0]
   )?.content ??
   (
     type === "morning"
       ? createMorningChecklistDoc()
       : type === "closing"
         ? createClosingChecklistDoc()
-        : createMppPlanDoc()
+        : type === "closingJournal"
+          ? createClosingJournalTemplateDoc()
+          : createMppPlanDoc()
   );
 
 export const loadJournalChecklistTemplates = (): JournalChecklistTemplates => {
@@ -119,6 +129,8 @@ export const loadJournalChecklistTemplates = (): JournalChecklistTemplates => {
       | {
           morningChecklistContent?: JSONContent;
           closingChecklistContent?: JSONContent;
+          closingJournalContent?: JSONContent;
+          closingContent?: JSONContent;
           mppPlanContent?: JSONContent;
         }
     >(defaultJournalChecklistTemplates());
@@ -132,14 +144,25 @@ export const loadJournalChecklistTemplates = (): JournalChecklistTemplates => {
       | {
           morningChecklistContent?: JSONContent;
           closingChecklistContent?: JSONContent;
+          closingJournalContent?: JSONContent;
+          closingContent?: JSONContent;
           mppPlanContent?: JSONContent;
         };
 
     if (
       "morningChecklistContent" in parsedRecord ||
       "closingChecklistContent" in parsedRecord ||
+      "closingJournalContent" in parsedRecord ||
+      "closingContent" in parsedRecord ||
       "mppPlanContent" in parsedRecord
     ) {
+      const closingJournalContent =
+        hasJournalDocContent(parsedRecord.closingJournalContent)
+          ? (parsedRecord.closingJournalContent as JSONContent)
+          : hasJournalDocContent(parsedRecord.closingContent)
+            ? (parsedRecord.closingContent as JSONContent)
+            : createClosingJournalTemplateDoc();
+
       return {
         morningTemplates: [
           createTemplate(
@@ -157,6 +180,7 @@ export const loadJournalChecklistTemplates = (): JournalChecklistTemplates => {
               : createClosingChecklistDoc()
           )
         ],
+        closingJournalTemplates: [createTemplate("Default Closing Journal", closingJournalContent)],
         mppTemplates: [
           createTemplate(
             "Default MPP",
@@ -181,6 +205,11 @@ export const loadJournalChecklistTemplates = (): JournalChecklistTemplates => {
         "Default Closing",
         createClosingChecklistDoc
       ),
+      closingJournalTemplates: ensureTemplateArray(
+        templateParsed.closingJournalTemplates,
+        "Default Closing Journal",
+        createClosingJournalTemplateDoc
+      ),
       mppTemplates: ensureTemplateArray(
         templateParsed.mppTemplates,
         "Default MPP",
@@ -198,6 +227,11 @@ export const persistJournalChecklistTemplates = async (
   const normalized = {
     morningTemplates: ensureTemplateArray(templates.morningTemplates, "Default Morning", createMorningChecklistDoc),
     closingTemplates: ensureTemplateArray(templates.closingTemplates, "Default Closing", createClosingChecklistDoc),
+    closingJournalTemplates: ensureTemplateArray(
+      templates.closingJournalTemplates,
+      "Default Closing Journal",
+      createClosingJournalTemplateDoc
+    ),
     mppTemplates: ensureTemplateArray(templates.mppTemplates, "Default MPP", createMppPlanDoc)
   };
   const syncPromise = syncStores.journalChecklistTemplates.save(normalized);
@@ -231,6 +265,11 @@ export const recoverJournalChecklistTemplatesFromDesktopBackup = async (
   const normalizedDesktopTemplates = {
     morningTemplates: ensureTemplateArray(desktopTemplates.morningTemplates, "Default Morning", createMorningChecklistDoc),
     closingTemplates: ensureTemplateArray(desktopTemplates.closingTemplates, "Default Closing", createClosingChecklistDoc),
+    closingJournalTemplates: ensureTemplateArray(
+      desktopTemplates.closingJournalTemplates,
+      "Default Closing Journal",
+      createClosingJournalTemplateDoc
+    ),
     mppTemplates: ensureTemplateArray(desktopTemplates.mppTemplates, "Default MPP", createMppPlanDoc)
   };
 

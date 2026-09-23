@@ -71,6 +71,33 @@ interface TradeChartProps {
 type DrawingTool = "cursor" | "trendline" | "horizontal" | "vertical" | "fibonacci" | "pitchfork" | "channel";
 type ChartPriceScaleMode = "normal" | "log" | "percent";
 type ChartSessionMode = "extended" | "regular";
+type ChartFocusPreset = "entry" | "exit" | "trade" | "plus5" | "plus15" | "day";
+type ChartReplayMode = "fills" | "bars";
+type ReplaySpeedMs = 1200 | 800 | 450;
+
+const focusPresetOptions: Array<{ key: ChartFocusPreset; label: string }> = [
+  { key: "entry", label: "Entry" },
+  { key: "exit", label: "Exit" },
+  { key: "trade", label: "Trade" },
+  { key: "plus5", label: "+5m" },
+  { key: "plus15", label: "+15m" },
+  { key: "day", label: "Day" }
+];
+
+const replaySpeedOptions: Array<{ value: ReplaySpeedMs; label: string }> = [
+  { value: 1200, label: "0.5x" },
+  { value: 800, label: "1x" },
+  { value: 450, label: "2x" }
+];
+
+const REPLAY_PRICE_PADDING_RATIO = 0.18;
+const MIN_REPLAY_PRICE_PADDING = 0.01;
+const CHART_BACKGROUND = "#0b0f14";
+const CHART_GRID_LINE_COLOR = "rgba(120, 144, 180, 0.12)";
+const CHART_AXIS_LINE_COLOR = "rgba(120, 144, 180, 0.18)";
+const STATIC_REFERENCE_AUTOSCALE = {
+  autoscaleInfoProvider: () => null
+};
 
 const drawingToolOptions: Array<{
   key: DrawingTool;
@@ -152,6 +179,30 @@ interface ExecutionMarkerPoint {
   executionSide: "Buy" | "Sell";
 }
 
+type ChartReplayKind = ExecutionMarkerPoint["kind"] | "bar";
+type ChartReplaySide = ExecutionMarkerPoint["executionSide"] | "Neutral";
+
+interface ChartReplayStep {
+  id: string;
+  markerId?: string;
+  time: number;
+  rawTime: number;
+  price: number;
+  kind: ChartReplayKind;
+  executionSide: ChartReplaySide;
+  sequence: number;
+  label: string;
+  detail: string;
+}
+
+interface ExecutionReplayStep extends ChartReplayStep {
+  markerId: string;
+  quantity: number;
+  sourceIndex: number;
+  kind: ExecutionMarkerPoint["kind"];
+  executionSide: ExecutionMarkerPoint["executionSide"];
+}
+
 type DrawingDragTarget =
   | { id: string; type: "trendline-start" }
   | { id: string; type: "trendline-end" }
@@ -207,6 +258,7 @@ interface DrawingAdapter {
 const FAST_EMA_PERIOD = 9;
 const SLOW_EMA_PERIOD = 12;
 const intervalLabels: Record<ChartInterval, string> = {
+  "10s": "10s",
   "1m": "1m",
   "5m": "5m",
   "15m": "15m",
@@ -389,6 +441,7 @@ const formatVolume = (value?: number) => {
 const formatSignedMoney = (value: number) => `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`;
 
 const intervalFallbackSeconds: Record<ChartInterval, number> = {
+  "10s": 10,
   "1m": 60,
   "5m": 5 * 60,
   "15m": 15 * 60,
@@ -492,6 +545,16 @@ const formatTimestampLabel = (timestamp: number, interval: ChartInterval) => {
     });
   }
 
+  if (interval === "10s") {
+    return date.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    });
+  }
+
   return date.toLocaleString(undefined, {
     month: "short",
     day: "numeric",
@@ -512,6 +575,7 @@ const formatChartCrosshairTime = (time: Time): string => {
     year: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    second: "2-digit",
     hour12: false
   });
 };
@@ -670,6 +734,9 @@ const getMinuteBucketStart = (timestamp: number, minutes: number): number => {
   return Math.floor(date.getTime() / 1000);
 };
 
+const getSecondBucketStart = (timestamp: number, seconds: number): number =>
+  Math.floor(timestamp / seconds) * seconds;
+
 const getHourBucketStart = (timestamp: number, hours: number): number => {
   const date = new Date(timestamp * 1000);
   date.setMinutes(0, 0, 0);
@@ -694,6 +761,8 @@ const aggregateBars = (bars: HistoricalBar[], interval: ChartInterval): Historic
 
   const getBucketStart = (timestamp: number): number => {
     switch (interval) {
+      case "10s":
+        return getSecondBucketStart(timestamp, 10);
       case "5m":
         return getMinuteBucketStart(timestamp, 5);
       case "15m":
@@ -797,6 +866,145 @@ const buildExecutionMarkers = (
   return markers;
 };
 
+const replayKindLabels: Record<ExecutionMarkerPoint["kind"], string> = {
+  entry: "Entry",
+  addToWinner: "Add",
+  averageDown: "Avg Down",
+  exit: "Exit"
+};
+
+const formatExecutionPrice = (price: number): string => price.toFixed(price >= 100 ? 2 : 4);
+
+const buildExecutionReplaySteps = (
+  bars: HistoricalBar[],
+  trade: GroupedTrade | null
+): ExecutionReplayStep[] => {
+  if (!trade || bars.length === 0) {
+    return [];
+  }
+
+  const steps: ExecutionReplayStep[] = [];
+  let sequence = 0;
+
+  trade.openingExecutions.forEach((execution, index) => {
+    const signal = trade.addSignals[index - 1];
+    const kind: ExecutionMarkerPoint["kind"] =
+      index === 0
+        ? "entry"
+        : signal?.averagedDown
+          ? "averageDown"
+          : "addToWinner";
+    const markerId =
+      kind === "entry"
+        ? `${trade.id}-entry-${execution.sourceIndex}-${index}`
+        : `${trade.id}-${kind === "addToWinner" ? "add-to-winner" : "average-down"}-${execution.sourceIndex}-${index - 1}`;
+    const rawTime = toTradeTimestamp(execution.tradeDate, execution.time);
+
+    steps.push({
+      id: `${trade.id}-replay-open-${execution.sourceIndex}-${index}`,
+      markerId,
+      time: getNearestBarTime(bars, rawTime),
+      rawTime,
+      price: execution.price,
+      quantity: execution.quantity,
+      kind,
+      executionSide: execution.side,
+      sourceIndex: execution.sourceIndex,
+      sequence: sequence + 1,
+      label: replayKindLabels[kind],
+      detail: `${execution.time} ${execution.side} ${execution.quantity.toLocaleString()} @ ${formatExecutionPrice(execution.price)}`
+    });
+    sequence += 1;
+  });
+
+  trade.closingExecutions.forEach((execution, index) => {
+    const rawTime = toTradeTimestamp(execution.tradeDate, execution.time);
+
+    steps.push({
+      id: `${trade.id}-replay-close-${execution.sourceIndex}-${index}`,
+      markerId: `${trade.id}-exit-${execution.sourceIndex}-${index}`,
+      time: getNearestBarTime(bars, rawTime),
+      rawTime,
+      price: execution.price,
+      quantity: execution.quantity,
+      kind: "exit",
+      executionSide: execution.side,
+      sourceIndex: execution.sourceIndex,
+      sequence: sequence + 1,
+      label: replayKindLabels.exit,
+      detail: `${execution.time} ${execution.side} ${execution.quantity.toLocaleString()} @ ${formatExecutionPrice(execution.price)}`
+    });
+    sequence += 1;
+  });
+
+  return steps
+    .sort((left, right) => left.rawTime - right.rawTime || left.sourceIndex - right.sourceIndex)
+    .map((step, index) => ({
+      ...step,
+      sequence: index + 1
+    }));
+};
+
+const buildBarReplaySteps = (
+  bars: HistoricalBar[],
+  trade: GroupedTrade | null,
+  interval: ChartInterval
+): ChartReplayStep[] => {
+  if (bars.length === 0) {
+    return [];
+  }
+
+  const from = trade ? toTradeTimestamp(trade.tradeDate, trade.openTime) - 15 * 60 : bars[0].time;
+  const to = trade ? toTradeTimestamp(trade.tradeDate, trade.closeTime) + 15 * 60 : bars[bars.length - 1].time;
+  const windowBars = bars.filter((bar) => bar.time >= from && bar.time <= to);
+  const replayBars = windowBars.length > 0 ? windowBars : bars;
+
+  return replayBars.map((bar, index) => ({
+    id: `bar-replay-${bar.time}-${index}`,
+    time: bar.time,
+    rawTime: bar.time,
+    price: bar.close,
+    kind: "bar",
+    executionSide: "Neutral",
+    sequence: index + 1,
+    label: "Bar",
+    detail: `${formatTimestampLabel(bar.time, interval)} O ${bar.open.toFixed(2)} H ${bar.high.toFixed(2)} L ${bar.low.toFixed(2)} C ${bar.close.toFixed(2)} V ${formatVolume(bar.volume)}`
+  }));
+};
+
+const buildReplayPriceRange = (
+  bars: HistoricalBar[],
+  rawFrom: number,
+  rawTo: number,
+  anchorPrice: number
+): { from: number; to: number } | null => {
+  const from = Math.min(rawFrom, rawTo);
+  const to = Math.max(rawFrom, rawTo);
+  const windowBars = bars.filter((bar) => bar.time >= from && bar.time <= to);
+  const priceValues = windowBars.flatMap((bar) => [bar.low, bar.high]);
+
+  if (isFiniteNumber(anchorPrice)) {
+    priceValues.push(anchorPrice);
+  }
+
+  const finitePrices = priceValues.filter(isFiniteNumber);
+  if (finitePrices.length === 0) {
+    return null;
+  }
+
+  const low = Math.min(...finitePrices);
+  const high = Math.max(...finitePrices);
+  const priceRange = Math.max(high - low, 0);
+  const referencePrice = Math.max(Math.abs(high), Math.abs(low), 1);
+  const padding = Math.max(priceRange * REPLAY_PRICE_PADDING_RATIO, referencePrice * 0.001, MIN_REPLAY_PRICE_PADDING);
+  const paddedLow = low >= 0 ? Math.max(0, low - padding) : low - padding;
+
+  return {
+    from: paddedLow,
+    to: high + padding
+  };
+};
+
 export const TradeChart = ({
   bars,
   trade,
@@ -861,6 +1069,11 @@ export const TradeChart = ({
   const [overlaySize, setOverlaySize] = useState({ width: 0, height: 0 });
   const [priceScaleMode, setPriceScaleMode] = useState<ChartPriceScaleMode>("normal");
   const [sessionMode, setSessionMode] = useState<ChartSessionMode>(regularSessionOnly ? "regular" : "extended");
+  const [activeFocusPreset, setActiveFocusPreset] = useState<ChartFocusPreset | null>("plus15");
+  const [replayMode, setReplayMode] = useState<ChartReplayMode>("fills");
+  const [activeReplayIndex, setActiveReplayIndex] = useState(0);
+  const [isReplayPlaying, setIsReplayPlaying] = useState(false);
+  const [replaySpeedMs, setReplaySpeedMs] = useState<ReplaySpeedMs>(800);
 
   const closeChartMenus = useCallback(() => {
     setShowIndicatorMenu(false);
@@ -890,6 +1103,10 @@ export const TradeChart = ({
     return trade ? [trade] : [];
   }, [markerTrades, trade]);
   const displayBars = useMemo(() => aggregateBars(sourceBars, interval), [interval, sourceBars]);
+  const executionReplaySteps = useMemo(() => buildExecutionReplaySteps(displayBars, trade), [displayBars, trade]);
+  const barReplaySteps = useMemo(() => buildBarReplaySteps(displayBars, trade, interval), [displayBars, interval, trade]);
+  const replaySteps = replayMode === "bars" ? barReplaySteps : executionReplaySteps;
+  const activeReplayStep = replaySteps[activeReplayIndex] ?? null;
   const vwapData = useMemo(() => buildVwapSeries(displayBars), [displayBars]);
   const fastEmaData = useMemo(() => buildEmaSeries(displayBars, FAST_EMA_PERIOD), [displayBars]);
   const slowEmaData = useMemo(() => buildEmaSeries(displayBars, SLOW_EMA_PERIOD), [displayBars]);
@@ -917,6 +1134,11 @@ export const TradeChart = ({
     setOverlayVersion((current) => current + 1);
   }, []);
 
+  const resetPriceScaleAuto = useCallback(() => {
+    seriesRef.current?.priceScale().setAutoScale(true);
+    requestAnimationFrame(refreshOverlay);
+  }, [refreshOverlay]);
+
   const handleAdapterDrawingsChange = useCallback(
     (nextManagedDrawings: TradeChartDrawing[]) => {
       if (!onDrawingsChange) {
@@ -940,6 +1162,39 @@ export const TradeChart = ({
       setSessionMode("regular");
     }
   }, [regularSessionOnly]);
+
+  useEffect(() => {
+    setIsReplayPlaying(false);
+    setActiveReplayIndex(0);
+    setActiveFocusPreset("plus15");
+  }, [interval, trade?.id]);
+
+  useEffect(() => {
+    setIsReplayPlaying(false);
+    setActiveReplayIndex(0);
+    resetPriceScaleAuto();
+  }, [replayMode, resetPriceScaleAuto]);
+
+  useEffect(() => {
+    if (replayMode === "fills" && executionReplaySteps.length === 0 && barReplaySteps.length > 0) {
+      setReplayMode("bars");
+      return;
+    }
+
+    if (replayMode === "bars" && barReplaySteps.length === 0 && executionReplaySteps.length > 0) {
+      setReplayMode("fills");
+    }
+  }, [barReplaySteps.length, executionReplaySteps.length, replayMode]);
+
+  useEffect(() => {
+    if (replaySteps.length === 0) {
+      setIsReplayPlaying(false);
+      setActiveReplayIndex(0);
+      return;
+    }
+
+    setActiveReplayIndex((current) => Math.min(current, replaySteps.length - 1));
+  }, [replaySteps.length]);
 
   useEffect(() => {
     if (!shouldUseDrawingAdapter || !onDrawingsChange) {
@@ -1039,34 +1294,201 @@ export const TradeChart = ({
     requestAnimationFrame(refreshOverlay);
   }, [priceScaleMode, refreshOverlay]);
 
-  const fitTradeRange = useCallback(() => {
-    if (!chartRef.current || displayBarsRef.current.length === 0) {
-      return;
-    }
+  const setVisibleTimestampRange = useCallback(
+    (rawFrom: number, rawTo: number) => {
+      if (!chartRef.current || displayBarsRef.current.length === 0) {
+        return;
+      }
 
-    if (!trade || focusMode === "day") {
-      chartRef.current.timeScale().fitContent();
-      return;
-    }
+      const from = Math.min(rawFrom, rawTo);
+      const to = Math.max(rawFrom, rawTo);
+      const boundedTo = to > from ? to : from + intervalFallbackSeconds[interval];
+      chartRef.current.timeScale().setVisibleRange({
+        from: getNearestBarTime(displayBarsRef.current, from),
+        to: getNearestBarTime(displayBarsRef.current, boundedTo)
+      });
+      requestAnimationFrame(refreshOverlay);
+    },
+    [interval, refreshOverlay]
+  );
 
-    const from = toTradeTimestamp(trade.tradeDate, trade.openTime) - 15 * 60;
-    const to = toTradeTimestamp(trade.tradeDate, trade.closeTime) + 15 * 60;
-    chartRef.current.timeScale().setVisibleRange({
-      from: getNearestBarTime(displayBarsRef.current, from),
-      to: getNearestBarTime(displayBarsRef.current, to)
-    });
-    requestAnimationFrame(refreshOverlay);
-  }, [focusMode, refreshOverlay, trade]);
+  const applyBarReplayPriceRange = useCallback(
+    (rawFrom: number, rawTo: number, anchorPrice: number) => {
+      const priceScale = seriesRef.current?.priceScale();
+      if (!priceScale) {
+        return;
+      }
+
+      if (priceScaleMode !== "normal") {
+        priceScale.setAutoScale(true);
+        requestAnimationFrame(refreshOverlay);
+        return;
+      }
+
+      const replayPriceRange = buildReplayPriceRange(displayBarsRef.current, rawFrom, rawTo, anchorPrice);
+      if (!replayPriceRange) {
+        priceScale.setAutoScale(true);
+        requestAnimationFrame(refreshOverlay);
+        return;
+      }
+
+      priceScale.setVisibleRange(replayPriceRange);
+      requestAnimationFrame(refreshOverlay);
+    },
+    [priceScaleMode, refreshOverlay]
+  );
 
   const fitDayRange = useCallback(() => {
     chartRef.current?.timeScale().fitContent();
     requestAnimationFrame(refreshOverlay);
   }, [refreshOverlay]);
 
+  const focusTradeRange = useCallback(
+    (preset: ChartFocusPreset) => {
+      if (!chartRef.current || displayBarsRef.current.length === 0) {
+        return;
+      }
+
+      if (preset === "day" || !trade || focusMode === "day") {
+        fitDayRange();
+        setActiveFocusPreset("day");
+        return;
+      }
+
+      const open = toTradeTimestamp(trade.tradeDate, trade.openTime);
+      const close = toTradeTimestamp(trade.tradeDate, trade.closeTime);
+      const intervalSeconds = intervalFallbackSeconds[interval];
+      const tightPaddingSeconds = Math.max(60, Math.min(5 * 60, intervalSeconds * 8));
+      const tradePaddingSeconds = Math.max(30, Math.min(2 * 60, intervalSeconds * 2));
+
+      switch (preset) {
+        case "entry":
+          setVisibleTimestampRange(open - tightPaddingSeconds, open + tightPaddingSeconds);
+          break;
+        case "exit":
+          setVisibleTimestampRange(close - tightPaddingSeconds, close + tightPaddingSeconds);
+          break;
+        case "trade":
+          setVisibleTimestampRange(open - tradePaddingSeconds, close + tradePaddingSeconds);
+          break;
+        case "plus5":
+          setVisibleTimestampRange(open - 5 * 60, close + 5 * 60);
+          break;
+        case "plus15":
+          setVisibleTimestampRange(open - 15 * 60, close + 15 * 60);
+          break;
+        default:
+          fitDayRange();
+          break;
+      }
+
+      setActiveFocusPreset(preset);
+    },
+    [fitDayRange, focusMode, interval, setVisibleTimestampRange, trade]
+  );
+
+  const focusReplayStep = useCallback(
+    (step: ChartReplayStep | null) => {
+      if (!step) {
+        return;
+      }
+
+      const intervalSeconds = intervalFallbackSeconds[interval];
+      const replayPaddingSeconds = Math.max(60, Math.min(8 * 60, intervalSeconds * 8));
+      const rangeFrom = step.rawTime - replayPaddingSeconds;
+      const rangeTo = step.rawTime + replayPaddingSeconds;
+      setVisibleTimestampRange(rangeFrom, rangeTo);
+      if (step.kind === "bar") {
+        applyBarReplayPriceRange(rangeFrom, rangeTo, step.price);
+      }
+      setActiveFocusPreset(null);
+    },
+    [applyBarReplayPriceRange, interval, setVisibleTimestampRange]
+  );
+
   const resetChartView = useCallback(() => {
     chartRef.current?.timeScale().resetTimeScale();
     requestAnimationFrame(refreshOverlay);
   }, [refreshOverlay]);
+
+  const handleSetReplayIndex = useCallback(
+    (nextIndex: number, shouldFocus = true) => {
+      if (replaySteps.length === 0) {
+        setActiveReplayIndex(0);
+        setIsReplayPlaying(false);
+        return;
+      }
+
+      const clampedIndex = Math.max(0, Math.min(nextIndex, replaySteps.length - 1));
+      setActiveReplayIndex(clampedIndex);
+      if (shouldFocus) {
+        focusReplayStep(replaySteps[clampedIndex]);
+      }
+    },
+    [focusReplayStep, replaySteps]
+  );
+
+  const handleReplayPrevious = useCallback(() => {
+    setIsReplayPlaying(false);
+    handleSetReplayIndex(activeReplayIndex - 1);
+  }, [activeReplayIndex, handleSetReplayIndex]);
+
+  const handleReplayNext = useCallback(() => {
+    setIsReplayPlaying(false);
+    handleSetReplayIndex(activeReplayIndex + 1);
+  }, [activeReplayIndex, handleSetReplayIndex]);
+
+  const handleReplayRestart = useCallback(() => {
+    setIsReplayPlaying(false);
+    handleSetReplayIndex(0);
+  }, [handleSetReplayIndex]);
+
+  const handleToggleReplay = useCallback(() => {
+    if (replaySteps.length === 0) {
+      return;
+    }
+
+    if (activeReplayIndex >= replaySteps.length - 1) {
+      handleSetReplayIndex(0);
+      setIsReplayPlaying(true);
+      return;
+    }
+
+    setIsReplayPlaying((current) => !current);
+    if (!isReplayPlaying) {
+      focusReplayStep(activeReplayStep);
+    }
+  }, [
+    activeReplayIndex,
+    activeReplayStep,
+    focusReplayStep,
+    handleSetReplayIndex,
+    isReplayPlaying,
+    replaySteps.length
+  ]);
+
+  useEffect(() => {
+    if (!isReplayPlaying || replaySteps.length <= 1) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      if (activeReplayIndex >= replaySteps.length - 1) {
+        setIsReplayPlaying(false);
+        return;
+      }
+
+      handleSetReplayIndex(activeReplayIndex + 1);
+    }, replaySpeedMs);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    activeReplayIndex,
+    handleSetReplayIndex,
+    isReplayPlaying,
+    replaySteps.length,
+    replaySpeedMs
+  ]);
 
   const removeRsiPane = useCallback(() => {
     const chart = chartRef.current;
@@ -2180,7 +2602,7 @@ export const TradeChart = ({
       autoSize: true,
       height,
       layout: {
-        background: { type: ColorType.Solid, color: "#05070b" },
+        background: { type: ColorType.Solid, color: CHART_BACKGROUND },
         textColor: "#a1a8b8",
         attributionLogo: false,
         panes: {
@@ -2190,18 +2612,26 @@ export const TradeChart = ({
         }
       },
       grid: {
-        vertLines: { color: "rgba(255,255,255,0.05)", style: 2 },
-        horzLines: { color: "rgba(255,255,255,0.05)", style: 2 }
+        vertLines: { color: CHART_GRID_LINE_COLOR, style: 2 },
+        horzLines: { color: CHART_GRID_LINE_COLOR, style: 2 }
       },
       rightPriceScale: {
-        borderColor: "rgba(255,255,255,0.12)"
+        borderColor: CHART_AXIS_LINE_COLOR,
+        entireTextOnly: true,
+        minimumWidth: 58,
+        scaleMargins: {
+          top: 0.07,
+          bottom: 0.08
+        }
       },
       timeScale: {
-        borderColor: "rgba(255,255,255,0.12)",
+        borderColor: CHART_AXIS_LINE_COLOR,
         timeVisible: true,
         secondsVisible: false,
-        rightOffset: 8,
-        barSpacing: 10,
+        rightOffsetPixels: 46,
+        barSpacing: 12,
+        minBarSpacing: 3,
+        rightBarStaysOnScroll: true,
         tickMarkFormatter: formatChartTickMark
       },
       localization: {
@@ -2258,7 +2688,8 @@ export const TradeChart = ({
       lineStyle: LineStyle.Dashed,
       crosshairMarkerVisible: false,
       priceLineVisible: false,
-      lastValueVisible: false
+      lastValueVisible: false,
+      ...STATIC_REFERENCE_AUTOSCALE
     });
 
     const hodSeries = chart.addSeries(LineSeries, {
@@ -2267,7 +2698,8 @@ export const TradeChart = ({
       lineStyle: LineStyle.Dashed,
       crosshairMarkerVisible: false,
       priceLineVisible: false,
-      lastValueVisible: false
+      lastValueVisible: false,
+      ...STATIC_REFERENCE_AUTOSCALE
     });
 
     const lodSeries = chart.addSeries(LineSeries, {
@@ -2276,7 +2708,8 @@ export const TradeChart = ({
       lineStyle: LineStyle.Dashed,
       crosshairMarkerVisible: false,
       priceLineVisible: false,
-      lastValueVisible: false
+      lastValueVisible: false,
+      ...STATIC_REFERENCE_AUTOSCALE
     });
 
     const volumeSeries = volumePane.addSeries(HistogramSeries, {
@@ -2292,22 +2725,26 @@ export const TradeChart = ({
         top: 0.08,
         bottom: 0
       },
-      borderColor: "rgba(255,255,255,0.12)"
+      borderColor: CHART_AXIS_LINE_COLOR
     });
     volumePane.priceScale("left").applyOptions({
       visible: false
     });
     pricePane?.priceScale("right").applyOptions({
-      borderColor: "rgba(255,255,255,0.12)",
+      borderColor: CHART_AXIS_LINE_COLOR,
+      entireTextOnly: true,
+      minimumWidth: 58,
       scaleMargins: {
-        top: 0.08,
-        bottom: 0.05
+        top: 0.07,
+        bottom: 0.08
       }
     });
     series.priceScale().applyOptions({
+      entireTextOnly: true,
+      minimumWidth: 58,
       scaleMargins: {
-        top: 0.08,
-        bottom: 0.05
+        top: 0.07,
+        bottom: 0.08
       }
     });
 
@@ -2416,6 +2853,10 @@ export const TradeChart = ({
       return;
     }
 
+    chartRef.current.timeScale().applyOptions({
+      secondsVisible: interval === "10s"
+    });
+
     displayBarsRef.current = displayBars;
     setHoveredBar(displayBars.length > 0 ? displayBars[displayBars.length - 1] : null);
 
@@ -2460,7 +2901,7 @@ export const TradeChart = ({
       layerVisibility.lod && typeof dayLow === "number" ? buildFlatPriceSeries(displayBars, dayLow) : []
     );
 
-  }, [displayBars, fastEmaData, layerVisibility, showEma, slowEmaData, vwapData, bollingerBandsData]);
+  }, [displayBars, fastEmaData, interval, layerVisibility, showEma, slowEmaData, vwapData, bollingerBandsData]);
 
   useEffect(() => {
     if (!chartRef.current || !layerVisibility.macd || macdData.length === 0) {
@@ -2528,10 +2969,17 @@ export const TradeChart = ({
       return;
     }
 
-    fitTradeRange();
-  }, [displayBars, fitDayRange, fitTradeRange, focusMode, interval, trade?.id]);
+    focusTradeRange("plus15");
+  }, [displayBars, fitDayRange, focusMode, focusTradeRange, interval, trade?.id]);
 
-  const headerBar = hoveredBar ?? (displayBars.length > 0 ? displayBars[displayBars.length - 1] : null);
+  const activeReplayBar = useMemo(() => {
+    if (replayMode !== "bars" || !activeReplayStep) {
+      return null;
+    }
+
+    return displayBars.find((bar) => bar.time === activeReplayStep.time) ?? null;
+  }, [activeReplayStep, displayBars, replayMode]);
+  const headerBar = hoveredBar ?? activeReplayBar ?? (displayBars.length > 0 ? displayBars[displayBars.length - 1] : null);
   const previousBar = useMemo(() => {
     if (!headerBar) {
       return null;
@@ -3032,26 +3480,18 @@ export const TradeChart = ({
     trade?.side
   ]);
 
-  const resetPriceScaleAuto = useCallback(() => {
-    seriesRef.current?.priceScale().setAutoScale(true);
-    requestAnimationFrame(refreshOverlay);
-  }, [refreshOverlay]);
-
-  const handleFitTradeCommand = useCallback(() => {
+  const handleFocusPresetCommand = useCallback((preset: ChartFocusPreset) => {
     closeChartMenus();
     resetPriceScaleAuto();
-    fitTradeRange();
-  }, [closeChartMenus, fitTradeRange, resetPriceScaleAuto]);
-
-  const handleFitDayCommand = useCallback(() => {
-    closeChartMenus();
-    resetPriceScaleAuto();
-    fitDayRange();
-  }, [closeChartMenus, fitDayRange, resetPriceScaleAuto]);
+    setIsReplayPlaying(false);
+    focusTradeRange(preset);
+  }, [closeChartMenus, focusTradeRange, resetPriceScaleAuto]);
 
   const handleResetChartCommand = useCallback(() => {
     closeChartMenus();
     resetPriceScaleAuto();
+    setIsReplayPlaying(false);
+    setActiveFocusPreset(null);
     resetChartView();
   }, [closeChartMenus, resetChartView, resetPriceScaleAuto]);
 
@@ -3075,7 +3515,7 @@ export const TradeChart = ({
     resetPriceScaleAuto();
   }, [closeChartMenus, resetPriceScaleAuto]);
 
-  const getExecutionMarkerFill = useCallback((marker: ExecutionMarkerPoint) => {
+  const getExecutionMarkerFill = useCallback((marker: { executionSide: ChartReplaySide; kind: ChartReplayKind }) => {
     if (marker.executionSide === "Buy") {
       return "#4CFFB1";
     }
@@ -3094,6 +3534,8 @@ export const TradeChart = ({
         return "#ffcf5a";
       case "exit":
         return "#FF6B7A";
+      case "bar":
+        return "#ffcf5a";
       default:
         return "#ffffff";
     }
@@ -3346,6 +3788,97 @@ export const TradeChart = ({
     </div>
   ) : null;
 
+  const focusToolbar = trade && focusMode !== "day" ? (
+    <div className="trade-chart-command-group trade-chart-command-group-focus" aria-label="Trade window focus">
+      {focusPresetOptions.map((option) => (
+        <button
+          key={option.key}
+          type="button"
+          className={`trade-chart-command-chip trade-chart-focus-chip${activeFocusPreset === option.key ? " is-active" : ""}`}
+          onClick={() => handleFocusPresetCommand(option.key)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  ) : null;
+
+  const replayToolbar = trade && focusMode !== "day" && (executionReplaySteps.length > 0 || barReplaySteps.length > 0) ? (
+    <div className="trade-chart-command-group trade-chart-command-group-replay" aria-label="Execution replay">
+      <button
+        type="button"
+        className={`trade-chart-command-chip trade-chart-replay-mode${replayMode === "fills" ? " is-active" : ""}`}
+        onClick={() => setReplayMode("fills")}
+        disabled={executionReplaySteps.length === 0}
+        title="Replay execution fills"
+      >
+        Fills
+      </button>
+      <button
+        type="button"
+        className={`trade-chart-command-chip trade-chart-replay-mode${replayMode === "bars" ? " is-active" : ""}`}
+        onClick={() => setReplayMode("bars")}
+        disabled={barReplaySteps.length === 0}
+        title="Replay candle by candle"
+      >
+        Bars
+      </button>
+      <button
+        type="button"
+        className="trade-chart-command-chip trade-chart-replay-button"
+        onClick={handleReplayRestart}
+        disabled={replaySteps.length === 0 || (replaySteps.length <= 1 && activeReplayIndex === 0)}
+        title="Restart replay"
+      >
+        Reset
+      </button>
+      <button
+        type="button"
+        className="trade-chart-command-chip trade-chart-replay-button"
+        onClick={handleReplayPrevious}
+        disabled={activeReplayIndex <= 0 || replaySteps.length === 0}
+        title={replayMode === "bars" ? "Previous bar" : "Previous fill"}
+      >
+        Prev
+      </button>
+      <button
+        type="button"
+        className={`trade-chart-command-chip trade-chart-replay-play${isReplayPlaying ? " is-active" : ""}`}
+        onClick={handleToggleReplay}
+        disabled={replaySteps.length === 0}
+        title={isReplayPlaying ? "Pause replay" : replayMode === "bars" ? "Play bar replay" : "Play execution replay"}
+      >
+        {isReplayPlaying ? "Pause" : "Play"}
+      </button>
+      <button
+        type="button"
+        className="trade-chart-command-chip trade-chart-replay-button"
+        onClick={handleReplayNext}
+        disabled={replaySteps.length === 0 || activeReplayIndex >= replaySteps.length - 1}
+        title={replayMode === "bars" ? "Next bar" : "Next fill"}
+      >
+        Next
+      </button>
+      <select
+        className="trade-chart-replay-speed"
+        value={replaySpeedMs}
+        onChange={(event) => setReplaySpeedMs(Number(event.target.value) as ReplaySpeedMs)}
+        aria-label="Replay speed"
+      >
+        {replaySpeedOptions.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <span className="trade-chart-replay-status">
+        {activeReplayStep
+          ? `${activeReplayIndex + 1}/${replaySteps.length} ${activeReplayStep.label} - ${activeReplayStep.detail}`
+          : `0/${replaySteps.length}`}
+      </span>
+    </div>
+  ) : null;
+
   const chartModeToolbar = (
     <div className="trade-chart-command-group trade-chart-command-group-modes" aria-label="Chart modes">
       <button
@@ -3433,12 +3966,8 @@ export const TradeChart = ({
           ) : null}
         </div>
         <div className="trade-chart-command-group trade-chart-command-group-actions">
-          <button type="button" className="trade-chart-command-chip trade-chart-command-chip-menu" onClick={handleFitTradeCommand} disabled={!trade || focusMode === "day"}>
-            Fit Trade
-          </button>
-          <button type="button" className="trade-chart-command-chip trade-chart-command-chip-menu" onClick={handleFitDayCommand}>
-            Fit Day
-          </button>
+          {focusToolbar}
+          {replayToolbar}
           <button type="button" className="trade-chart-command-chip trade-chart-command-chip-menu" onClick={handleResetChartCommand}>
             Reset
           </button>
@@ -3752,7 +4281,7 @@ export const TradeChart = ({
               <g key={marker.id}>
                 <polygon
                   points={getExecutionMarkerPoints(marker.x, marker.y, marker.executionSide)}
-                  className={`trade-chart-execution-marker trade-chart-execution-marker-${marker.kind} trade-chart-execution-marker-${marker.executionSide.toLowerCase()}`}
+                  className={`trade-chart-execution-marker trade-chart-execution-marker-${marker.kind} trade-chart-execution-marker-${marker.executionSide.toLowerCase()}${marker.id === activeReplayStep?.markerId ? " is-replay-active" : ""}`}
                   fill={getExecutionMarkerFill(marker)}
                 />
               </g>

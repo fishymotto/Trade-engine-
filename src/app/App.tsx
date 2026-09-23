@@ -29,6 +29,7 @@ import {
   fetchDailyHistoricalBarsFromTwelveData,
   fetchHistoricalBarsFromTwelveData
 } from "../lib/charts/twelveDataClient";
+import { fetchTenSecondBarsFromAlpaca } from "../lib/charts/alpacaClient";
 import { parseHistoricalBarsCsv } from "../lib/parser/historicalBarsParser";
 import { loadTradeSessions, mergeTradesIntoSessions, saveTradeSessions } from "../lib/sessions/tradeSessionStore";
 import { processTradeFile } from "../features/import/lib/tradePipeline";
@@ -1863,7 +1864,15 @@ function App() {
         updatedAt: new Date().toISOString()
       };
 
-      setHistoricalBarSets((current) => upsertHistoricalBarSet(current, nextBarSet));
+      setHistoricalBarSets((current) => {
+        const existing = current.find((set) => set.key === nextBarSet.key);
+        return upsertHistoricalBarSet(current, {
+          ...nextBarSet,
+          tenSecondBars: existing?.tenSecondBars,
+          tenSecondSourceFileName: existing?.tenSecondSourceFileName,
+          tenSecondUpdatedAt: existing?.tenSecondUpdatedAt
+        });
+      });
       setMessage(`Imported ${bars.length} historical bars for ${trade.symbol} on ${trade.tradeDate}.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "The historical bar file could not be imported.");
@@ -1889,12 +1898,52 @@ function App() {
         updatedAt: new Date().toISOString()
       };
 
-      setHistoricalBarSets((current) => upsertHistoricalBarSet(current, nextBarSet));
+      setHistoricalBarSets((current) => {
+        const existing = current.find((set) => set.key === nextBarSet.key);
+        return upsertHistoricalBarSet(current, {
+          ...nextBarSet,
+          tenSecondBars: existing?.tenSecondBars,
+          tenSecondSourceFileName: existing?.tenSecondSourceFileName,
+          tenSecondUpdatedAt: existing?.tenSecondUpdatedAt
+        });
+      });
       setMessage(
         `Fetched ${bars.length} minute bars and ${dailyBars.length} day bars from Twelve Data for ${trade.symbol}.`
       );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "The Twelve Data request failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const fetchTenSecondBars = async (trade: GroupedTrade) => {
+    setBusy(true);
+    try {
+      const result = await fetchTenSecondBarsFromAlpaca(settings, trade);
+      const key = buildBarSetKey(trade.symbol, trade.tradeDate);
+      const updatedAt = new Date().toISOString();
+
+      setHistoricalBarSets((current) => {
+        const existing = current.find((set) => set.key === key);
+        const nextBarSet: HistoricalBarSet = {
+          key,
+          symbol: trade.symbol,
+          tradeDate: trade.tradeDate,
+          sourceFileName: existing?.sourceFileName ?? "Alpaca - 10s only",
+          bars: existing?.bars ?? [],
+          dailyBars: existing?.dailyBars,
+          tenSecondBars: result.bars,
+          tenSecondSourceFileName: result.sourceFileName,
+          tenSecondUpdatedAt: updatedAt,
+          updatedAt
+        };
+
+        return upsertHistoricalBarSet(current, nextBarSet);
+      });
+      setMessage(`Fetched ${result.bars.length} 10-second bars from Alpaca for ${trade.symbol}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The Alpaca Market Data request failed.");
     } finally {
       setBusy(false);
     }
@@ -2072,8 +2121,12 @@ function App() {
               onUpdateReview={updateTradeReview}
               onImportHistoricalBars={importHistoricalBars}
               onFetchHistoricalBars={fetchHistoricalBars}
+              onFetchTenSecondBars={fetchTenSecondBars}
               onClearHistoricalBars={clearHistoricalBars}
               hasTwelveDataApiKey={Boolean(settings.twelveDataApiKey.trim())}
+              hasAlpacaMarketDataCredentials={Boolean(
+                settings.alpacaApiKey.trim() && settings.alpacaSecretKey.trim()
+              )}
               onChangeReviewChartInterval={setReviewChartInterval}
               onChangeDayChartInterval={setDayChartInterval}
               onUpdateTradeTag={updateTradeTag}

@@ -258,6 +258,7 @@ const JournalTradeNotesPanelComponent = ({
   onRenameTradeTagOption,
   onDeleteTradeTagOption
 }: JournalTradeNotesPanelProps) => {
+  const [isTradeNotesCollapsed, setIsTradeNotesCollapsed] = useState(false);
   const [openTradePickerId, setOpenTradePickerId] = useState<string | null>(null);
   const [openPlaybookPickerId, setOpenPlaybookPickerId] = useState<string | null>(null);
   const [openMistakePickerId, setOpenMistakePickerId] = useState<string | null>(null);
@@ -355,12 +356,30 @@ const JournalTradeNotesPanelComponent = ({
     [openMistakePickerId, tradeNotes]
   );
 
+  const tradeNotesBodyId = `journal-trade-notes-${page.id}`;
+
+  const handleToggleTradeNotesSection = () => {
+    setIsTradeNotesCollapsed((current) => {
+      if (!current) {
+        setOpenTradePickerId(null);
+        setOpenPlaybookPickerId(null);
+        setPlaybookSearchQuery("");
+        setOpenMistakePickerId(null);
+        setMistakeSearchQuery("");
+      }
+
+      return !current;
+    });
+  };
+
   const updateTradeNotes = (nextTradeNotes: JournalTradeNoteRecord[]) => {
     onUpdatePage(page.id, { tradeNotes: nextTradeNotes });
   };
 
   const handleCreateTradeNote = (insertAfterIndex?: number) => {
     const nextTradeNote = createTradeNoteRecord(page.tradeDate);
+    setIsTradeNotesCollapsed(false);
+
     if (insertAfterIndex === undefined) {
       updateTradeNotes([...tradeNotes, nextTradeNote]);
       return;
@@ -426,7 +445,11 @@ const JournalTradeNotesPanelComponent = ({
   };
 
   return (
-    <section className="journal-writing-section journal-trade-note-section">
+    <section
+      className={`journal-writing-section journal-trade-note-section${
+        isTradeNotesCollapsed ? " is-collapsed" : ""
+      }`}
+    >
       <div className="journal-writing-header">
         <div className="journal-writing-header-title">
           <WorkspaceIcon icon="text" alt="Trade notes icon" className="mini-action-icon" />
@@ -438,6 +461,17 @@ const JournalTradeNotesPanelComponent = ({
         <div className="journal-writing-header-actions">
           <button
             type="button"
+            className="mini-action mini-action-soft journal-section-collapse-button"
+            aria-expanded={!isTradeNotesCollapsed}
+            aria-controls={tradeNotesBodyId}
+            aria-label={isTradeNotesCollapsed ? "Expand trade notes" : "Collapse trade notes"}
+            title={isTradeNotesCollapsed ? "Expand trade notes" : "Collapse trade notes"}
+            onClick={handleToggleTradeNotesSection}
+          >
+            <span className="journal-section-collapse-button-icon" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
             className="mini-action"
             onClick={() => handleCreateTradeNote()}
           >
@@ -446,23 +480,28 @@ const JournalTradeNotesPanelComponent = ({
         </div>
       </div>
 
-      {tradeNotes.length === 0 ? (
-        <div className="headline-empty journal-trade-note-empty">
-          <div className="headline-empty-text">
-            <strong>No trade notes yet.</strong>
-            <span>Add card-based notes here, then attach them to the right trade once it lands from the backend.</span>
+      <div
+        id={tradeNotesBodyId}
+        className="journal-trade-note-body"
+        hidden={isTradeNotesCollapsed}
+      >
+        {tradeNotes.length === 0 ? (
+          <div className="headline-empty journal-trade-note-empty">
+            <div className="headline-empty-text">
+              <strong>No trade notes yet.</strong>
+              <span>Add card-based notes here, then attach them to the right trade once it lands from the backend.</span>
+            </div>
+            <button
+              type="button"
+              className="mini-action headline-mini-action headline-open-action"
+              onClick={() => handleCreateTradeNote()}
+            >
+              + Add trade note
+            </button>
           </div>
-          <button
-            type="button"
-            className="mini-action headline-mini-action headline-open-action"
-            onClick={() => handleCreateTradeNote()}
-          >
-            + Add trade note
-          </button>
-        </div>
-      ) : (
-        <div className="journal-trade-note-grid">
-          {tradeNotes.map((note, index) => {
+        ) : (
+          <div className="journal-trade-note-grid">
+            {tradeNotes.map((note, index) => {
             const selectedTradeValues = assignedTradeValuesByNoteId.get(note.id) ?? [];
             const selectedTradeValueSet = new Set(selectedTradeValues);
             const isTradePickerOpen = openTradePickerId === note.id;
@@ -485,21 +524,21 @@ const JournalTradeNotesPanelComponent = ({
             const noteLabel = getTradeNoteLabel(note, linkedTradeRecords, index);
             const updatedLabel = new Date(note.updatedAt).toLocaleString();
 
-            return (
-              <article key={note.id} className="journal-trade-note-card">
-                <div className="journal-trade-note-card-header">
-                  <div className="journal-trade-note-card-title">
-                    <strong>{noteLabel}</strong>
-                    <span>
-                      {linkedTradeCount === 0
-                        ? `Tagged ${formatJournalDate(note.taggedDate)}`
-                        : linkedTradeCount === 1 && primaryLinkedTrade
-                          ? `${primaryLinkedTrade.side} - ${primaryLinkedTrade.openTime} to ${primaryLinkedTrade.closeTime}`
-                          : `${linkedTradeCount} linked trades`}
-                    </span>
+              return (
+                <article key={note.id} className="journal-trade-note-card">
+                  <div className="journal-trade-note-card-header">
+                    <div className="journal-trade-note-card-title">
+                      <strong>{noteLabel}</strong>
+                      <span>
+                        {linkedTradeCount === 0
+                          ? `Tagged ${formatJournalDate(note.taggedDate)}`
+                          : linkedTradeCount === 1 && primaryLinkedTrade
+                            ? `${primaryLinkedTrade.side} - ${primaryLinkedTrade.openTime} to ${primaryLinkedTrade.closeTime}`
+                            : `${linkedTradeCount} linked trades`}
+                      </span>
+                    </div>
+                    <span className="journal-trade-note-card-meta">Updated {updatedLabel}</span>
                   </div>
-                  <span className="journal-trade-note-card-meta">Updated {updatedLabel}</span>
-                </div>
 
                 <div className="journal-screenshot-tag-grid">
                   <div className="journal-screenshot-tag-field journal-screenshot-tag-field-wide">
@@ -781,11 +820,12 @@ const JournalTradeNotesPanelComponent = ({
                     </button>
                   </div>
                 </div>
-              </article>
-            );
-          })}
-        </div>
-      )}
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       {activePlaybookNote ? (
         <TagDrawer

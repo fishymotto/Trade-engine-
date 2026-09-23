@@ -81,6 +81,7 @@ export const ReviewDatabaseTable = ({
             <th>Tickers Traded</th>
             <th># Trades</th>
             <th>Shares</th>
+            <th>Value Traded</th>
             <th>Win Rate</th>
             <th>Net</th>
             <th>Gross</th>
@@ -119,6 +120,7 @@ export const ReviewDatabaseTable = ({
                   <td>{renderTickers(page.properties?.[REVIEW_PROPERTY_KEYS.tickersTraded])}</td>
                   <td>{renderStringValue(page.properties?.[REVIEW_PROPERTY_KEYS.trades])}</td>
                   <td>{renderStringValue(page.properties?.[REVIEW_PROPERTY_KEYS.shares])}</td>
+                  <td>{renderStringValue(page.properties?.[REVIEW_PROPERTY_KEYS.valueTraded])}</td>
                   <td>{renderStringValue(page.properties?.[REVIEW_PROPERTY_KEYS.winRate])}</td>
                   <td>{renderStringValue(page.properties?.[REVIEW_PROPERTY_KEYS.net])}</td>
                   <td>{renderStringValue(page.properties?.[REVIEW_PROPERTY_KEYS.gross])}</td>
@@ -137,7 +139,7 @@ export const ReviewDatabaseTable = ({
             })
           ) : (
             <tr>
-              <td colSpan={18}>No entries yet. Create your first {periodLabel.toLowerCase()}ly review.</td>
+              <td colSpan={19}>No entries yet. Create your first {periodLabel.toLowerCase()}ly review.</td>
             </tr>
           )}
         </tbody>

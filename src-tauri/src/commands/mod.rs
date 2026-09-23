@@ -1,3 +1,4 @@
+pub mod alpaca;
 pub mod export;
 pub mod attachments;
 pub mod notion;
@@ -11,6 +12,7 @@ pub mod workspace_data;
 pub mod workspace_store_backups;
 pub mod workspace_transfer;
 
+pub use alpaca::fetch_alpaca_stock_trades;
 pub use export::{pick_export_folder, save_export_csv};
 pub use attachments::{
     audit_workspace_attachments,

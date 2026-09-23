@@ -47,6 +47,9 @@ const dedupeByLower = (values: string[]) => {
   return output;
 };
 
+const areOptionsEqual = (left: string[], right: string[]): boolean =>
+  left.length === right.length && left.every((value, index) => value === right[index]);
+
 export const useEditableSelectOptions = (storageKey: string, defaultOptions: string[]) => {
   const normalizedDefaults = useMemo(() => dedupeByLower(defaultOptions), [defaultOptions]);
   const defaultLookup = useMemo(() => new Set(normalizedDefaults.map((value) => value.toLowerCase())), [normalizedDefaults]);
@@ -54,7 +57,33 @@ export const useEditableSelectOptions = (storageKey: string, defaultOptions: str
   const [additions, setAdditions] = useState<string[]>(() =>
     dedupeByLower(loadStoredAdditions(storageKey)).filter((value) => !defaultLookup.has(value.toLowerCase()))
   );
+  const additionsRef = useRef(additions);
+  additionsRef.current = additions;
   const skipNextSaveRef = useRef(true);
+
+  const persistAdditionsForKey = useCallback(
+    (nextAdditions: string[]) => {
+      try {
+        const current = loadSelectOptionAdditions();
+        void persistSelectOptionAdditions({
+          ...(current && typeof current === "object" ? current : {}),
+          [storageKey]: nextAdditions
+        });
+      } catch {
+        // ignore
+      }
+    },
+    [storageKey]
+  );
+
+  const setAndPersistAdditions = useCallback(
+    (nextAdditions: string[]) => {
+      additionsRef.current = nextAdditions;
+      setAdditions(nextAdditions);
+      persistAdditionsForKey(nextAdditions);
+    },
+    [persistAdditionsForKey]
+  );
 
   useEffect(() => {
     if (skipNextSaveRef.current) {
@@ -76,9 +105,11 @@ export const useEditableSelectOptions = (storageKey: string, defaultOptions: str
   useEffect(() => {
     const handleHydrated = () => {
       skipNextSaveRef.current = true;
-      setAdditions(
-        dedupeByLower(loadStoredAdditions(storageKey)).filter((value) => !defaultLookup.has(value.toLowerCase()))
+      const nextAdditions = dedupeByLower(loadStoredAdditions(storageKey)).filter(
+        (value) => !defaultLookup.has(value.toLowerCase())
       );
+      additionsRef.current = nextAdditions;
+      setAdditions(nextAdditions);
     };
 
     window.addEventListener(SYNC_HYDRATED_EVENT, handleHydrated);
@@ -101,16 +132,16 @@ export const useEditableSelectOptions = (storageKey: string, defaultOptions: str
         return normalized;
       }
 
-      setAdditions((current) => {
-        const next = dedupeByLower([...current, normalized]).filter(
-          (option) => !defaultLookup.has(option.toLowerCase())
-        );
-        return next;
-      });
+      const nextAdditions = dedupeByLower([...additionsRef.current, normalized]).filter(
+        (option) => !defaultLookup.has(option.toLowerCase())
+      );
+      if (!areOptionsEqual(nextAdditions, additionsRef.current)) {
+        setAndPersistAdditions(nextAdditions);
+      }
 
       return normalized;
     },
-    [defaultLookup]
+    [defaultLookup, setAndPersistAdditions]
   );
 
   const renameOption = useCallback(
@@ -129,14 +160,14 @@ export const useEditableSelectOptions = (storageKey: string, defaultOptions: str
         return false;
       }
 
-      if (!additions.some((option) => option.toLowerCase() === currentKey)) {
+      if (!additionsRef.current.some((option) => option.toLowerCase() === currentKey)) {
         return false;
       }
 
       if (isCaseOnlyRename) {
-        setAdditions((current) =>
+        setAndPersistAdditions(
           dedupeByLower(
-            current.map((option) => (option.toLowerCase() === currentKey ? nextNormalized : option))
+            additionsRef.current.map((option) => (option.toLowerCase() === currentKey ? nextNormalized : option))
           ).filter((option) => !defaultLookup.has(option.toLowerCase()))
         );
         return true;
@@ -146,19 +177,19 @@ export const useEditableSelectOptions = (storageKey: string, defaultOptions: str
         return false;
       }
 
-      if (additions.some((option) => option.toLowerCase() === nextKey)) {
+      if (additionsRef.current.some((option) => option.toLowerCase() === nextKey)) {
         return false;
       }
 
-      setAdditions((current) => {
-        const withoutCurrent = current.filter((option) => option.toLowerCase() !== currentKey);
-        return dedupeByLower([...withoutCurrent, nextNormalized]).filter(
+      const withoutCurrent = additionsRef.current.filter((option) => option.toLowerCase() !== currentKey);
+      setAndPersistAdditions(
+        dedupeByLower([...withoutCurrent, nextNormalized]).filter(
           (option) => !defaultLookup.has(option.toLowerCase())
-        );
-      });
+        )
+      );
       return true;
     },
-    [additions, defaultLookup]
+    [defaultLookup, setAndPersistAdditions]
   );
 
   const removeOption = useCallback(
@@ -173,14 +204,14 @@ export const useEditableSelectOptions = (storageKey: string, defaultOptions: str
         return false;
       }
 
-      if (!additions.some((option) => option.toLowerCase() === key)) {
+      if (!additionsRef.current.some((option) => option.toLowerCase() === key)) {
         return false;
       }
 
-      setAdditions(additions.filter((option) => option.toLowerCase() !== key));
+      setAndPersistAdditions(additionsRef.current.filter((option) => option.toLowerCase() !== key));
       return true;
     },
-    [additions, defaultLookup]
+    [defaultLookup, setAndPersistAdditions]
   );
 
   const isCustomOption = useCallback(

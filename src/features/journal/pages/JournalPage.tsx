@@ -11,9 +11,13 @@ import {
   type MPPWindowResult
 } from "../../../lib/analytics/mppAnalytics";
 import { getMPPDayRecordsForTrades } from "../../../lib/analytics/assetMppAnalytics";
-import { getDatabaseStats, getTradeSummary } from "../../../lib/analytics/tradeAnalytics";
+import { getDatabaseStats, getHourlyBreakdown, getTradeSummary } from "../../../lib/analytics/tradeAnalytics";
 import { hasJournalDocContent } from "../../../lib/journal/journalContent";
-import type { JournalChecklistTemplates, NamedChecklistTemplate } from "../../../lib/journal/journalTemplateStore";
+import type {
+  JournalChecklistTemplateType,
+  JournalChecklistTemplates,
+  NamedChecklistTemplate
+} from "../../../lib/journal/journalTemplateStore";
 import {
   JOURNAL_PAGES_STORAGE_KEY,
   collectRichTextAttachmentPaths,
@@ -84,16 +88,16 @@ interface JournalPageProps {
   ) => void;
   onUpdateContent: (pageId: string, field: JournalContentField, content: JournalPageRecord[JournalContentField]) => void;
   onSaveChecklistTemplateAs: (
-    type: "morning" | "closing" | "mpp",
+    type: JournalChecklistTemplateType,
     name: string,
     content: NamedChecklistTemplate["content"]
   ) => void;
   onUpdateChecklistTemplate: (
-    type: "morning" | "closing" | "mpp",
+    type: JournalChecklistTemplateType,
     templateId: string,
     content: NamedChecklistTemplate["content"]
   ) => void;
-  onDeleteChecklistTemplate: (type: "morning" | "closing" | "mpp", templateId: string) => void;
+  onDeleteChecklistTemplate: (type: JournalChecklistTemplateType, templateId: string) => void;
   onUpdateTradeTag: (trade: EditableTradeRow, field: EditableTradeTagField, value: string | string[] | null) => void;
   onBulkUpdateTradeTags: (tradeIds: string[], field: EditableTradeTagField, value: string | string[] | null) => void;
   onCreateTradeTagOption: (field: EditableTradeTagField, value: string) => void;
@@ -109,6 +113,7 @@ interface JournalPageSummary {
   winRate: number;
   avgTrade: number;
   totalSharesTraded: number;
+  totalValueTraded: number;
   tickers: string[];
 }
 
@@ -118,6 +123,7 @@ const emptyJournalPageSummary: JournalPageSummary = {
   winRate: 0,
   avgTrade: 0,
   totalSharesTraded: 0,
+  totalValueTraded: 0,
   tickers: []
 };
 
@@ -430,12 +436,24 @@ const getSortableTimestamp = (value: string) => {
 };
 
 const formatSignedMoney = (value: number) => `${value >= 0 ? "+" : ""}$${value.toFixed(2)}`;
+const formatUnsignedMoney = (value: number) => `$${Math.abs(value).toFixed(2)}`;
 const formatSignedWholeNumber = (value: number) => `${value >= 0 ? "+" : ""}${value.toLocaleString()}`;
+const formatTradedValue = (value: number) =>
+  `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 interface MppLockInProjectionRow {
   step: number;
   positiveProjection: number;
   negativeProjection: number;
+}
+
+type HourlyBreakdownRow = ReturnType<typeof getHourlyBreakdown>[number];
+
+interface JournalHourlyComparisonRow {
+  label: string;
+  currentNetPnl: number;
+  previousNetPnl: number | null;
+  matchingWeekdayNetPnl: number | null;
 }
 
 const getMppWindowNote = (mppWindow: MPPWindowResult, sourceDayCount: number): string => {
@@ -503,6 +521,40 @@ const buildMppLockInProjectionRows = ({
     positiveProjection: computeProjectedMPP(step),
     negativeProjection: computeProjectedMPP(-step)
   }));
+};
+
+const buildJournalHourlyComparisonRows = (
+  currentRows: HourlyBreakdownRow[],
+  previousRows: HourlyBreakdownRow[],
+  includePrevious: boolean,
+  matchingWeekdayRows: HourlyBreakdownRow[],
+  includeMatchingWeekday: boolean
+): JournalHourlyComparisonRow[] => {
+  const currentByLabel = new Map(currentRows.map((row) => [row.label, row.netPnl]));
+  const previousByLabel = new Map(previousRows.map((row) => [row.label, row.netPnl]));
+  const matchingWeekdayByLabel = new Map(matchingWeekdayRows.map((row) => [row.label, row.netPnl]));
+  const labels = new Set<string>(currentByLabel.keys());
+
+  if (includePrevious) {
+    for (const label of previousByLabel.keys()) {
+      labels.add(label);
+    }
+  }
+
+  if (includeMatchingWeekday) {
+    for (const label of matchingWeekdayByLabel.keys()) {
+      labels.add(label);
+    }
+  }
+
+  return Array.from(labels)
+    .sort((left, right) => left.localeCompare(right))
+    .map((label) => ({
+      label,
+      currentNetPnl: currentByLabel.get(label) ?? 0,
+      previousNetPnl: includePrevious ? (previousByLabel.get(label) ?? 0) : null,
+      matchingWeekdayNetPnl: includeMatchingWeekday ? (matchingWeekdayByLabel.get(label) ?? 0) : null
+    }));
 };
 const formatTradePrice = (value: number): string => {
   if (!Number.isFinite(value)) {
@@ -610,6 +662,69 @@ const groupPagesByMonth = (pages: JournalPageRecord[]): Map<string, JournalPageR
   return grouped;
 };
 
+const getMonthlyPnlDrawdownNote = (monthlyNetPnl: number, drawdownLimitUsd: number): string => {
+  const drawdownLimit = Number.isFinite(drawdownLimitUsd) ? Math.max(0, drawdownLimitUsd) : 0;
+  if (drawdownLimit <= 0) {
+    return "No monthly drawdown set";
+  }
+
+  const cushion = monthlyNetPnl + drawdownLimit;
+  return cushion >= 0
+    ? `${formatUnsignedMoney(cushion)} cushion to -${formatUnsignedMoney(drawdownLimit)}`
+    : `${formatUnsignedMoney(cushion)} past -${formatUnsignedMoney(drawdownLimit)}`;
+};
+
+const getTradingDayCountLabel = (count: number): string => `${count} trading day${count === 1 ? "" : "s"}`;
+
+const getRemainingTradingDaysInMonth = (anchorTradeDate: string): number => {
+  const normalizedAnchorTradeDate = normalizeDateForInput(anchorTradeDate);
+  if (!normalizedAnchorTradeDate) {
+    return 0;
+  }
+
+  const anchorDate = new Date(`${normalizedAnchorTradeDate}T00:00:00`);
+  if (Number.isNaN(anchorDate.getTime())) {
+    return 0;
+  }
+
+  const anchorMonth = anchorDate.getMonth();
+  let remainingTradingDays = 0;
+
+  for (
+    const cursorDate = new Date(anchorDate);
+    cursorDate.getMonth() === anchorMonth;
+    cursorDate.setDate(cursorDate.getDate() + 1)
+  ) {
+    const dayOfWeek = cursorDate.getDay();
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+      remainingTradingDays += 1;
+    }
+  }
+
+  return remainingTradingDays;
+};
+
+const getMonthlyRiskPerTradingDayNote = (
+  monthlyNetPnl: number,
+  drawdownLimitUsd: number,
+  anchorTradeDate: string
+): string => {
+  const drawdownLimit = Number.isFinite(drawdownLimitUsd) ? Math.max(0, drawdownLimitUsd) : 0;
+  if (drawdownLimit <= 0) {
+    return "";
+  }
+
+  const remainingTradingDays = getRemainingTradingDaysInMonth(anchorTradeDate);
+  if (remainingTradingDays <= 0) {
+    return "No trading days left this month";
+  }
+
+  const cushion = Math.max(0, monthlyNetPnl + drawdownLimit);
+  return `${formatUnsignedMoney(cushion / remainingTradingDays)} risk/day over ${getTradingDayCountLabel(
+    remainingTradingDays
+  )} left`;
+};
+
 const getTagToneIndex = (value: string): number =>
   value.split("").reduce((sum, character) => sum + character.charCodeAt(0), 0) % 6;
 
@@ -673,6 +788,7 @@ export const JournalPage = ({
   const [playbookPickerSearchQuery, setPlaybookPickerSearchQuery] = useState("");
   const [selectedMorningTemplateId, setSelectedMorningTemplateId] = useState("");
   const [selectedClosingTemplateId, setSelectedClosingTemplateId] = useState("");
+  const [selectedClosingJournalTemplateId, setSelectedClosingJournalTemplateId] = useState("");
   const [selectedMppTemplateId, setSelectedMppTemplateId] = useState("");
   const [selectedJournalTradeId, setSelectedJournalTradeId] = useState("");
   const [selectedJournalTradeIds, setSelectedJournalTradeIds] = useState<string[]>([]);
@@ -1139,6 +1255,7 @@ export const JournalPage = ({
         winRate: summary.winRate,
         avgTrade: summary.avgTrade,
         totalSharesTraded: summary.totalSharesTraded,
+        totalValueTraded: summary.totalValueTraded,
         tickers: Array.from(new Set(dateTrades.map((trade) => trade.symbol))).sort()
       });
     }
@@ -1169,6 +1286,37 @@ export const JournalPage = ({
 
   const linkedTradeSummary = useMemo(() => getTradeSummary(linkedTrades), [linkedTrades]);
   const linkedDatabaseStats = useMemo(() => getDatabaseStats(linkedTrades), [linkedTrades]);
+  const selectedMonthRunningPnl = useMemo(() => {
+    const anchorTradeDate = selectedPage?.tradeDate ?? "";
+    const monthKey = getMonthKey(anchorTradeDate);
+    if (!anchorTradeDate || monthKey === "No Date") {
+      return 0;
+    }
+
+    const monthToDatePnl = trades
+      .filter((trade) => trade.tradeDate.startsWith(monthKey) && trade.tradeDate <= anchorTradeDate)
+      .reduce((sum, trade) => sum + trade.netPnlUsd, 0);
+
+    const firmAdjustment =
+      monthKey === settings.monthlyPnlAdjustmentMonth ? settings.monthlyPnlAdjustmentUsd : 0;
+
+    return Number((monthToDatePnl + firmAdjustment).toFixed(2));
+  }, [selectedPage?.tradeDate, settings.monthlyPnlAdjustmentMonth, settings.monthlyPnlAdjustmentUsd, trades]);
+  const selectedMonthCushion = Number(
+    (selectedMonthRunningPnl + Math.max(0, settings.monthlyDrawdownLimitUsd)).toFixed(2)
+  );
+  const selectedMonthRunningPnlNote = selectedPage
+    ? `Through ${formatJournalDate(selectedPage.tradeDate)} - Firm P&L ${formatSignedMoney(
+        selectedMonthRunningPnl
+      )} of -${formatUnsignedMoney(settings.monthlyDrawdownLimitUsd)}`
+    : getMonthlyPnlDrawdownNote(selectedMonthRunningPnl, settings.monthlyDrawdownLimitUsd);
+  const selectedMonthRiskPerTradingDayNote = selectedPage
+    ? getMonthlyRiskPerTradingDayNote(
+        selectedMonthRunningPnl,
+        settings.monthlyDrawdownLimitUsd,
+        selectedPage.tradeDate
+      )
+    : "";
   const handleBulkUpdateJournalTradeTags = (
     tradeIds: string[],
     field: EditableTradeTagField,
@@ -1284,6 +1432,83 @@ export const JournalPage = ({
           left.playbook.localeCompare(right.playbook)
       );
   }, [linkedTrades]);
+  const previousJournalTradeDate = useMemo(() => {
+    const anchorTradeDate = selectedPage?.tradeDate ?? "";
+    if (!anchorTradeDate) {
+      return "";
+    }
+
+    const previousTradeDates = Array.from(tradesByDate.keys())
+      .filter((tradeDate) => tradeDate < anchorTradeDate)
+      .sort((left, right) => left.localeCompare(right));
+
+    return previousTradeDates[previousTradeDates.length - 1] ?? "";
+  }, [selectedPage?.tradeDate, tradesByDate]);
+  const previousJournalTrades = useMemo(
+    () => (previousJournalTradeDate ? tradesByDate.get(previousJournalTradeDate) ?? [] : []),
+    [previousJournalTradeDate, tradesByDate]
+  );
+  const matchingWeekdayTradeDate = useMemo(() => {
+    const anchorTradeDate = selectedPage?.tradeDate ?? "";
+    const anchorDate = new Date(`${anchorTradeDate}T00:00:00`);
+    if (!anchorTradeDate || Number.isNaN(anchorDate.getTime())) {
+      return "";
+    }
+
+    const matchingTradeDates = Array.from(tradesByDate.keys())
+      .filter((tradeDate) => {
+        if (tradeDate >= anchorTradeDate) {
+          return false;
+        }
+
+        const candidateDate = new Date(`${tradeDate}T00:00:00`);
+        return !Number.isNaN(candidateDate.getTime()) && candidateDate.getDay() === anchorDate.getDay();
+      })
+      .sort((left, right) => left.localeCompare(right));
+
+    return matchingTradeDates[matchingTradeDates.length - 1] ?? "";
+  }, [selectedPage?.tradeDate, tradesByDate]);
+  const matchingWeekdayTrades = useMemo(
+    () => (matchingWeekdayTradeDate ? tradesByDate.get(matchingWeekdayTradeDate) ?? [] : []),
+    [matchingWeekdayTradeDate, tradesByDate]
+  );
+  const currentHourlyBreakdown = useMemo(() => getHourlyBreakdown(linkedTrades), [linkedTrades]);
+  const previousHourlyBreakdown = useMemo(() => getHourlyBreakdown(previousJournalTrades), [previousJournalTrades]);
+  const matchingWeekdayHourlyBreakdown = useMemo(
+    () => getHourlyBreakdown(matchingWeekdayTrades),
+    [matchingWeekdayTrades]
+  );
+  const hasPreviousHourlyBreakdown = previousHourlyBreakdown.length > 0;
+  const hasMatchingWeekdayHourlyBreakdown = matchingWeekdayHourlyBreakdown.length > 0;
+  const journalHourlyComparisonRows = useMemo(
+    () =>
+      buildJournalHourlyComparisonRows(
+        currentHourlyBreakdown,
+        previousHourlyBreakdown,
+        hasPreviousHourlyBreakdown,
+        matchingWeekdayHourlyBreakdown,
+        hasMatchingWeekdayHourlyBreakdown
+      ),
+    [
+      currentHourlyBreakdown,
+      hasMatchingWeekdayHourlyBreakdown,
+      hasPreviousHourlyBreakdown,
+      matchingWeekdayHourlyBreakdown,
+      previousHourlyBreakdown
+    ]
+  );
+  const maxJournalHourlyMagnitude = useMemo(
+    () =>
+      Math.max(
+        ...journalHourlyComparisonRows.flatMap((row) => [
+          Math.abs(row.currentNetPnl),
+          ...(row.previousNetPnl === null ? [] : [Math.abs(row.previousNetPnl)]),
+          ...(row.matchingWeekdayNetPnl === null ? [] : [Math.abs(row.matchingWeekdayNetPnl)])
+        ]),
+        1
+      ),
+    [journalHourlyComparisonRows]
+  );
   const visibleScreenshotSlots = useMemo(() => {
     const requiredSlots = Math.max(3, selectedPage?.screenshotUrls.length ?? 0);
     return Math.max(requiredSlots, visibleScreenshotRows * 3);
@@ -1381,6 +1606,13 @@ export const JournalPage = ({
       null,
     [checklistTemplates.closingTemplates, selectedClosingTemplateId]
   );
+  const selectedClosingJournalTemplate = useMemo(
+    () =>
+      checklistTemplates.closingJournalTemplates.find((template) => template.id === selectedClosingJournalTemplateId) ??
+      checklistTemplates.closingJournalTemplates[0] ??
+      null,
+    [checklistTemplates.closingJournalTemplates, selectedClosingJournalTemplateId]
+  );
   const selectedMppTemplate = useMemo(
     () =>
       checklistTemplates.mppTemplates.find((template) => template.id === selectedMppTemplateId) ??
@@ -1465,6 +1697,20 @@ export const JournalPage = ({
   }, [checklistTemplates.closingTemplates, selectedClosingTemplateId]);
 
   useEffect(() => {
+    if (!selectedClosingJournalTemplateId && checklistTemplates.closingJournalTemplates[0]) {
+      setSelectedClosingJournalTemplateId(checklistTemplates.closingJournalTemplates[0].id);
+      return;
+    }
+
+    if (
+      selectedClosingJournalTemplateId &&
+      !checklistTemplates.closingJournalTemplates.some((template) => template.id === selectedClosingJournalTemplateId)
+    ) {
+      setSelectedClosingJournalTemplateId(checklistTemplates.closingJournalTemplates[0]?.id ?? "");
+    }
+  }, [checklistTemplates.closingJournalTemplates, selectedClosingJournalTemplateId]);
+
+  useEffect(() => {
     if (!selectedMppTemplateId && checklistTemplates.mppTemplates[0]) {
       setSelectedMppTemplateId(checklistTemplates.mppTemplates[0].id);
       return;
@@ -1478,14 +1724,23 @@ export const JournalPage = ({
     }
   }, [checklistTemplates.mppTemplates, selectedMppTemplateId]);
 
-  const promptForTemplateName = (type: "morning" | "closing" | "mpp") => {
-    const suggestion = `${type === "morning" ? "Morning" : type === "closing" ? "Closing" : "MPP"} Template`;
+  const getTemplateTypeLabel = (type: JournalChecklistTemplateType) =>
+    type === "morning"
+      ? "Morning"
+      : type === "closing"
+        ? "Closing Checklist"
+        : type === "closingJournal"
+          ? "Closing Journal"
+          : "MPP";
+
+  const promptForTemplateName = (type: JournalChecklistTemplateType) => {
+    const suggestion = `${getTemplateTypeLabel(type)} Template`;
     const response = window.prompt("Template name", suggestion);
     const trimmed = response?.trim();
     return trimmed || "";
   };
 
-  const confirmDeleteTemplate = (type: "morning" | "closing" | "mpp", template: NamedChecklistTemplate | null) => {
+  const confirmDeleteTemplate = (type: JournalChecklistTemplateType, template: NamedChecklistTemplate | null) => {
     if (!template) {
       return;
     }
@@ -1495,7 +1750,9 @@ export const JournalPage = ({
         ? checklistTemplates.morningTemplates.length
         : type === "closing"
           ? checklistTemplates.closingTemplates.length
-          : checklistTemplates.mppTemplates.length;
+          : type === "closingJournal"
+            ? checklistTemplates.closingJournalTemplates.length
+            : checklistTemplates.mppTemplates.length;
 
     if (templateCount <= 1) {
       return;
@@ -1795,6 +2052,26 @@ export const JournalPage = ({
                         })
                       )}
                     </div>
+                    <section
+                      className={`journal-header-monthly-pnl-card ${
+                        selectedMonthCushion >= 0
+                          ? "journal-header-monthly-pnl-card-positive"
+                          : "journal-header-monthly-pnl-card-negative"
+                      }`}
+                      aria-label="Monthly drawdown cushion"
+                    >
+                      <span>{selectedMonthCushion >= 0 ? "Monthly Cushion" : "Over Monthly Limit"}</span>
+                      <strong>{formatUnsignedMoney(selectedMonthCushion)}</strong>
+                      <small>
+                        {selectedMonthRunningPnlNote}
+                        {selectedMonthRiskPerTradingDayNote ? (
+                          <>
+                            <br />
+                            {selectedMonthRiskPerTradingDayNote}
+                          </>
+                        ) : null}
+                      </small>
+                    </section>
                   </div>
                   <div className="journal-header-stat-group">
                     <div className="journal-header-stat-row journal-header-stat-row-core">
@@ -1977,12 +2254,20 @@ export const JournalPage = ({
                           <strong>{linkedTradeSummary.winRate.toFixed(1)}%</strong>
                         </div>
                         <div>
+                          <span>Loss From Top</span>
+                          <strong>{formatUnsignedMoney(linkedTradeSummary.lossFromTop)}</strong>
+                        </div>
+                        <div>
                           <span>Trades</span>
                           <strong>{linkedTradeSummary.totalTrades}</strong>
                         </div>
                         <div>
                           <span>Fees</span>
                           <strong>${linkedTradeSummary.totalFees.toFixed(2)}</strong>
+                        </div>
+                        <div>
+                          <span>Value Traded</span>
+                          <strong>{formatTradedValue(linkedTradeSummary.totalValueTraded)}</strong>
                         </div>
                         <div>
                           <span>Avg Trade</span>
@@ -2011,6 +2296,10 @@ export const JournalPage = ({
                         <div>
                           <span>Shares Traded</span>
                           <strong>{linkedDatabaseStats.totalSharesTraded.toLocaleString()}</strong>
+                        </div>
+                        <div>
+                          <span>Value Traded</span>
+                          <strong>{formatTradedValue(linkedDatabaseStats.totalValueTraded)}</strong>
                         </div>
                         <div>
                           <span>Gross P&amp;L</span>
@@ -2151,6 +2440,79 @@ export const JournalPage = ({
                     </section>
                   </div>
                 </div>
+              </section>
+
+              <section className="placeholder-panel analytics-panel journal-hourly-pnl-card" aria-label="30-minute P and L">
+                <div className="panel-header">
+                  <div className="panel-title-inline">
+                    <WorkspaceIcon icon="hourglass" alt="30-minute P and L icon" className="panel-header-icon" />
+                    <h2>30-Min P&amp;L</h2>
+                  </div>
+                  {hasPreviousHourlyBreakdown || hasMatchingWeekdayHourlyBreakdown ? (
+                    <span
+                      className="report-line-chart-readout journal-hourly-legend"
+                      title={`Previous trading day: ${formatJournalDate(previousJournalTradeDate)}. Same weekday: ${formatJournalDate(matchingWeekdayTradeDate)}.`}
+                    >
+                      <span><i className="journal-hourly-legend-dot journal-hourly-legend-current" />Current</span>
+                      <span><i className="journal-hourly-legend-dot journal-hourly-legend-previous" />Previous day</span>
+                      <span><i className="journal-hourly-legend-dot journal-hourly-legend-weekday" />Same weekday</span>
+                    </span>
+                  ) : null}
+                </div>
+                {journalHourlyComparisonRows.length > 0 ? (
+                  <div className="hourly-pnl-chart">
+                    {journalHourlyComparisonRows.map((row) => (
+                      <div key={row.label} className="hourly-pnl-row">
+                        <span className="hourly-pnl-label">{row.label}</span>
+                        <div className="hourly-pnl-track">
+                          {row.previousNetPnl !== null ? (
+                            <div
+                              className={`hourly-pnl-bar hourly-pnl-bar-compare ${
+                                row.previousNetPnl >= 0 ? "hourly-pnl-bar-positive" : "hourly-pnl-bar-negative"
+                              }`}
+                              style={{
+                                width: `${(Math.abs(row.previousNetPnl) / maxJournalHourlyMagnitude) * 100}%`
+                              }}
+                            />
+                          ) : null}
+                          {row.matchingWeekdayNetPnl !== null ? (
+                            <div
+                              className={`hourly-pnl-bar hourly-pnl-bar-weekday ${
+                                row.matchingWeekdayNetPnl >= 0 ? "hourly-pnl-bar-positive" : "hourly-pnl-bar-negative"
+                              }`}
+                              style={{
+                                width: `${(Math.abs(row.matchingWeekdayNetPnl) / maxJournalHourlyMagnitude) * 100}%`
+                              }}
+                            />
+                          ) : null}
+                          <div
+                            className={`hourly-pnl-bar hourly-pnl-bar-primary ${
+                              row.currentNetPnl >= 0 ? "hourly-pnl-bar-positive" : "hourly-pnl-bar-negative"
+                            }`}
+                            style={{ width: `${(Math.abs(row.currentNetPnl) / maxJournalHourlyMagnitude) * 100}%` }}
+                          />
+                        </div>
+                        <span
+                          className="hourly-pnl-value"
+                        >
+                          <strong className="journal-hourly-value-current">{formatSignedMoney(row.currentNetPnl)}</strong>
+                          {row.previousNetPnl !== null ? (
+                            <small className="journal-hourly-value-previous">
+                              Previous: {formatSignedMoney(row.previousNetPnl)}
+                            </small>
+                          ) : null}
+                          {row.matchingWeekdayNetPnl !== null ? (
+                            <small className="journal-hourly-value-weekday">
+                              Same weekday: {formatSignedMoney(row.matchingWeekdayNetPnl)}
+                            </small>
+                          ) : null}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty-state">Link trades to this journal date to see 30-minute P&amp;L bars.</div>
+                )}
               </section>
 
               <section className="journal-writing-split-grid journal-checklist-grid">
@@ -2452,6 +2814,101 @@ export const JournalPage = ({
                   <div className="journal-writing-header-title">
                     <WorkspaceIcon icon="journal-notebook" alt="Closing journal icon" className="mini-action-icon" />
                     <strong>Closing Journal</strong>
+                  </div>
+                  <div className="journal-writing-header-actions journal-template-disclosure-wrap">
+                    <details className="journal-template-disclosure">
+                      <summary className="mini-action mini-action-soft journal-template-disclosure-toggle">
+                        Manage Templates
+                      </summary>
+                      <div className="journal-writing-header-actions journal-template-toolbar">
+                        <div className="journal-template-toolbar-primary">
+                          <select
+                            className="calendar-date-select journal-template-select"
+                            value={selectedClosingJournalTemplate?.id ?? ""}
+                            onChange={(event) => setSelectedClosingJournalTemplateId(event.target.value)}
+                          >
+                            {checklistTemplates.closingJournalTemplates.map((template) => (
+                              <option key={template.id} value={template.id}>
+                                {template.name}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            className="mini-action mini-action-soft"
+                            onClick={() => {
+                              if (!selectedClosingJournalTemplate) {
+                                return;
+                              }
+
+                              onUpdateContent(
+                                selectedPage.id,
+                                "closingContent",
+                                selectedClosingJournalTemplate.content
+                              );
+                            }}
+                          >
+                            Load Template
+                          </button>
+                        </div>
+                        <div className="journal-template-toolbar-secondary">
+                          <button
+                            type="button"
+                            className="mini-action"
+                            disabled={!selectedClosingJournalTemplate}
+                            onClick={() => {
+                              if (!selectedClosingJournalTemplate) {
+                                return;
+                              }
+
+                              const confirmed = window.confirm(
+                                `Overwrite template "${selectedClosingJournalTemplate.name}" with the current closing journal?`
+                              );
+                              if (!confirmed) {
+                                return;
+                              }
+
+                              onUpdateChecklistTemplate(
+                                "closingJournal",
+                                selectedClosingJournalTemplate.id,
+                                selectedPage.closingContent
+                              );
+                            }}
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            className="mini-action"
+                            onClick={() => {
+                              const templateName = promptForTemplateName("closingJournal");
+                              if (!templateName) {
+                                return;
+                              }
+
+                              onSaveChecklistTemplateAs(
+                                "closingJournal",
+                                templateName,
+                                selectedPage.closingContent
+                              );
+                            }}
+                          >
+                            Save As
+                          </button>
+                          <button
+                            type="button"
+                            className="mini-action mini-action-danger"
+                            disabled={
+                              checklistTemplates.closingJournalTemplates.length <= 1 ||
+                              !selectedClosingJournalTemplate
+                            }
+                            onClick={() => confirmDeleteTemplate("closingJournal", selectedClosingJournalTemplate)}
+                          >
+                            Delete Template
+                          </button>
+                        </div>
+                      </div>
+                    </details>
                   </div>
                 </div>
                 <JournalRichTextEditor
